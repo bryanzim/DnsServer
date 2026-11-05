@@ -437,7 +437,7 @@ namespace DnsServerCore.Dhcp
             }
         }
 
-        private static bool IsAddressInRange(IPAddress address, IPAddress startingAddress, IPAddress endingAddress)
+        internal static bool IsAddressInRange(IPAddress address, IPAddress startingAddress, IPAddress endingAddress)
         {
             uint addressNumber = address.ConvertIpToNumber();
             uint startingAddressNumber = startingAddress.ConvertIpToNumber();
@@ -1478,12 +1478,7 @@ namespace DnsServerCore.Dhcp
             if (startingAddressNumber >= endingAddressNumber)
                 throw new ArgumentException("Ending address must be greater than starting address.");
 
-            _startingAddress = startingAddress;
-            _endingAddress = endingAddress;
-            _subnetMask = subnetMask;
-
-            //compute other parameters
-            uint subnetMaskNumber = _subnetMask.ConvertIpToNumber();
+            uint subnetMaskNumber = subnetMask.ConvertIpToNumber();
             uint networkAddressNumber = startingAddressNumber & subnetMaskNumber;
             uint broadcastAddressNumber = networkAddressNumber | ~subnetMaskNumber;
 
@@ -1493,6 +1488,9 @@ namespace DnsServerCore.Dhcp
             if (broadcastAddressNumber == endingAddressNumber)
                 throw new ArgumentException("Ending address cannot be same as the broadcast address.");
 
+            _startingAddress = startingAddress;
+            _endingAddress = endingAddress;
+            _subnetMask = subnetMask;
             _networkAddress = IPAddressExtensions.ConvertNumberToIp(networkAddressNumber);
             _broadcastAddress = IPAddressExtensions.ConvertNumberToIp(broadcastAddressNumber);
 

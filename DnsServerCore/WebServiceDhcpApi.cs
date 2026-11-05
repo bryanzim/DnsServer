@@ -24,6 +24,7 @@ using Microsoft.AspNetCore.Http;
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading.Tasks;
 using TechnitiumLibrary;
@@ -372,6 +373,167 @@ namespace DnsServerCore
                 jsonWriter.WriteBoolean("ignoreClientIdentifierOption", scope.IgnoreClientIdentifierOption);
             }
 
+            void ValidateDhcpScopeRequest(HttpRequest request, Scope scope, string scopeName, IPAddress startingAddress, IPAddress endingAddress)
+            {
+                if (request.TryGetQueryOrForm("leaseTimeDays", ushort.Parse, out ushort leaseTimeDays) && (leaseTimeDays > 999))
+                    throw new ArgumentOutOfRangeException(nameof(Scope.LeaseTimeDays), "Lease time in days must be between 0 to 999.");
+
+                if (request.TryGetQueryOrForm("leaseTimeHours", byte.Parse, out byte leaseTimeHours) && (leaseTimeHours > 23))
+                    throw new ArgumentOutOfRangeException(nameof(Scope.LeaseTimeHours), "Lease time in hours must be between 0 to 23.");
+
+                if (request.TryGetQueryOrForm("leaseTimeMinutes", byte.Parse, out byte leaseTimeMinutes) && (leaseTimeMinutes > 59))
+                    throw new ArgumentOutOfRangeException(nameof(Scope.LeaseTimeMinutes), "Lease time in minutes must be between 0 to 59.");
+
+                _ = request.TryGetQueryOrForm("offerDelayTime", ushort.Parse, out ushort _);
+                _ = request.TryGetQueryOrForm("pingCheckEnabled", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("pingCheckTimeout", ushort.Parse, out ushort _);
+                _ = request.TryGetQueryOrForm("pingCheckRetries", byte.Parse, out byte _);
+
+                string domainName = request.QueryOrForm("domainName");
+                if ((domainName is not null) && (domainName.Length > 0))
+                    DnsClient.IsDomainNameValid(domainName, true);
+
+                string domainSearchList = request.QueryOrForm("domainSearchList");
+                if (!string.IsNullOrEmpty(domainSearchList))
+                {
+                    foreach (string domainSearchString in domainSearchList.Split(_commaSeparator, StringSplitOptions.RemoveEmptyEntries))
+                        DnsClient.IsDomainNameValid(domainSearchString, true);
+                }
+
+                _ = request.TryGetQueryOrForm("dnsUpdates", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("dnsOverwriteForDynamicLease", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("dnsTtl", ZoneFile.ParseTtl, out uint _);
+
+                string serverAddress = request.QueryOrForm("serverAddress");
+                if (!string.IsNullOrEmpty(serverAddress))
+                    ValidateDhcpIpv4(IPAddress.Parse(serverAddress), nameof(Scope.ServerAddress));
+
+                string serverHostName = request.QueryOrForm("serverHostName");
+                if ((serverHostName is not null) && (serverHostName.Length >= 64))
+                    throw new ArgumentException("Server host name cannot exceed 63 bytes.");
+
+                string bootFileName = request.QueryOrForm("bootFileName");
+                if ((bootFileName is not null) && (bootFileName.Length >= 128))
+                    throw new ArgumentException("Boot file name cannot exceed 127 bytes.");
+
+                string routerAddress = request.QueryOrForm("routerAddress");
+                if (!string.IsNullOrEmpty(routerAddress))
+                    ValidateDhcpIpv4(IPAddress.Parse(routerAddress), nameof(Scope.RouterAddress));
+
+                bool useThisDnsServer = (scope is not null) && scope.UseThisDnsServer;
+                if (request.TryGetQueryOrForm("useThisDnsServer", bool.Parse, out bool parsedUseThisDnsServer))
+                    useThisDnsServer = parsedUseThisDnsServer;
+
+                if (!useThisDnsServer)
+                    ValidateDhcpIpv4List(request.QueryOrForm("dnsServers"), nameof(Scope.DnsServers));
+
+                ValidateDhcpIpv4List(request.QueryOrForm("winsServers"), nameof(Scope.WinsServers));
+                ValidateDhcpIpv4List(request.QueryOrForm("ntpServers"), nameof(Scope.NtpServers));
+
+                string ntpServerDomainNames = request.QueryOrForm("ntpServerDomainNames");
+                if (!string.IsNullOrEmpty(ntpServerDomainNames))
+                {
+                    foreach (string ntpServerDomainName in ntpServerDomainNames.Split(_commaSeparator, StringSplitOptions.RemoveEmptyEntries))
+                        DnsClient.IsDomainNameValid(ntpServerDomainName, true);
+                }
+
+                string strStaticRoutes = request.QueryOrForm("staticRoutes");
+                if (!string.IsNullOrEmpty(strStaticRoutes))
+                {
+                    string[] strStaticRoutesParts = strStaticRoutes.Split('|');
+
+                    for (int i = 0; i < strStaticRoutesParts.Length; i += 3)
+                        _ = new ClasslessStaticRouteOption.Route(IPAddress.Parse(strStaticRoutesParts[i + 0]), IPAddress.Parse(strStaticRoutesParts[i + 1]), IPAddress.Parse(strStaticRoutesParts[i + 2]));
+                }
+
+                string strVendorInfo = request.QueryOrForm("vendorInfo");
+                if (!string.IsNullOrEmpty(strVendorInfo))
+                {
+                    string[] strVendorInfoParts = strVendorInfo.Split('|');
+                    HashSet<string> vendorClasses = new HashSet<string>();
+
+                    for (int i = 0; i < strVendorInfoParts.Length; i += 2)
+                    {
+                        if (!vendorClasses.Add(strVendorInfoParts[i + 0]))
+                            throw new ArgumentException("An item with the same key has already been added.");
+
+                        _ = new VendorSpecificInformationOption(strVendorInfoParts[i + 1]);
+                    }
+                }
+
+                ValidateDhcpIpv4List(request.QueryOrForm("capwapAcIpAddresses"), nameof(Scope.CAPWAPAcIpAddresses));
+                ValidateDhcpIpv4List(request.QueryOrForm("tftpServerAddresses"), nameof(Scope.TftpServerAddresses));
+
+                string strGenericOptions = request.QueryOrForm("genericOptions");
+                if (!string.IsNullOrEmpty(strGenericOptions))
+                {
+                    string[] strGenericOptionsParts = strGenericOptions.Split('|');
+
+                    for (int i = 0; i < strGenericOptionsParts.Length; i += 2)
+                        _ = new DhcpOption((DhcpOptionCode)byte.Parse(strGenericOptionsParts[i + 0]), strGenericOptionsParts[i + 1]);
+                }
+
+                string strExclusions = request.QueryOrForm("exclusions");
+                if (!string.IsNullOrEmpty(strExclusions))
+                {
+                    string[] strExclusionsParts = strExclusions.Split('|');
+
+                    for (int i = 0; i < strExclusionsParts.Length; i += 2)
+                    {
+                        IPAddress exclusionStart = IPAddress.Parse(strExclusionsParts[i + 0]);
+                        IPAddress exclusionEnd = IPAddress.Parse(strExclusionsParts[i + 1]);
+                        _ = new Exclusion(exclusionStart, exclusionEnd);
+
+                        if (!Scope.IsAddressInRange(exclusionStart, startingAddress, endingAddress))
+                            throw new ArgumentOutOfRangeException(nameof(Scope.Exclusions), "Exclusion starting address must be in scope range.");
+
+                        if (!Scope.IsAddressInRange(exclusionEnd, startingAddress, endingAddress))
+                            throw new ArgumentOutOfRangeException(nameof(Scope.Exclusions), "Exclusion ending address must be in scope range.");
+                    }
+                }
+
+                string strReservedLeases = request.QueryOrForm("reservedLeases");
+                if (!string.IsNullOrEmpty(strReservedLeases))
+                {
+                    string[] strReservedLeaseParts = strReservedLeases.Split('|');
+
+                    for (int i = 0; i < strReservedLeaseParts.Length; i += 4)
+                    {
+                        Lease reservedLease = new Lease(LeaseType.Reserved, strReservedLeaseParts[i + 0], DhcpMessageHardwareAddressType.Ethernet, strReservedLeaseParts[i + 1], IPAddress.Parse(strReservedLeaseParts[i + 2]), strReservedLeaseParts[i + 3]);
+
+                        if (!Scope.IsAddressInRange(reservedLease.Address, startingAddress, endingAddress))
+                            throw new ArgumentOutOfRangeException(nameof(Scope.ReservedLeases), "Reserved address must be in scope range.");
+                    }
+                }
+
+                _ = request.TryGetQueryOrForm("allowOnlyReservedLeases", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("blockLocallyAdministeredMacAddresses", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("ignoreClientIdentifierOption", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("newName", out string newName) && !newName.Equals(scopeName, StringComparison.Ordinal))
+                {
+                    Scope.ValidateScopeName(newName);
+
+                    if (_dnsWebService._dhcpServer.GetScope(newName) is not null)
+                        throw new DhcpServerException("Scope with name '" + newName + "' already exists.");
+                }
+            }
+
+            static void ValidateDhcpIpv4(IPAddress address, string paramName)
+            {
+                if ((address is not null) && (address.AddressFamily != AddressFamily.InterNetwork))
+                    throw new ArgumentException("The address must be an IPv4 address: " + address.ToString(), paramName);
+            }
+
+            static void ValidateDhcpIpv4List(string addresses, string paramName)
+            {
+                if (string.IsNullOrEmpty(addresses))
+                    return;
+
+                foreach (IPAddress address in addresses.Split(IPAddress.Parse, ','))
+                    ValidateDhcpIpv4(address, paramName);
+            }
+
             public async Task SetDhcpScopeAsync(HttpContext context)
             {
                 User sessionUser = _dnsWebService.GetSessionUser(context);
@@ -387,30 +549,27 @@ namespace DnsServerCore
                 string strSubnetMask = request.QueryOrForm("subnetMask");
 
                 bool scopeExists;
+                IPAddress startingAddress;
+                IPAddress endingAddress;
+                IPAddress subnetMask;
                 Scope scope = _dnsWebService._dhcpServer.GetScope(scopeName);
                 if (scope is null)
                 {
                     //scope does not exists; create new scope
-                    if (string.IsNullOrEmpty(strStartingAddress) || !IPAddress.TryParse(strStartingAddress, out IPAddress startingAddress))
+                    if (string.IsNullOrEmpty(strStartingAddress) || !IPAddress.TryParse(strStartingAddress, out startingAddress))
                         throw new DnsWebServiceException("Parameter 'startingAddress' is missing or invalid.");
 
-                    if (string.IsNullOrEmpty(strEndingAddress) || !IPAddress.TryParse(strEndingAddress, out IPAddress endingAddress))
+                    if (string.IsNullOrEmpty(strEndingAddress) || !IPAddress.TryParse(strEndingAddress, out endingAddress))
                         throw new DnsWebServiceException("Parameter 'endingAddress' is missing or invalid.");
 
-                    if (string.IsNullOrEmpty(strSubnetMask) || !IPAddress.TryParse(strSubnetMask, out IPAddress subnetMask))
+                    if (string.IsNullOrEmpty(strSubnetMask) || !IPAddress.TryParse(strSubnetMask, out subnetMask))
                         throw new DnsWebServiceException("Parameter 'subnetMask' is missing or invalid.");
 
                     scopeExists = false;
-                    scope = new Scope(scopeName, true, startingAddress, endingAddress, subnetMask, _dnsWebService._log, _dnsWebService._dhcpServer);
-                    scope.IgnoreClientIdentifierOption = true;
                 }
                 else
                 {
                     scopeExists = true;
-
-                    IPAddress startingAddress;
-                    IPAddress endingAddress;
-                    IPAddress subnetMask;
 
                     if (string.IsNullOrEmpty(strStartingAddress))
                         startingAddress = scope.StartingAddress;
@@ -438,7 +597,17 @@ namespace DnsServerCore
                         if (existingScope.IsRangeOverlapping(startingAddress, endingAddress))
                             throw new DhcpServerException("Scope with overlapping range already exists: " + existingScope.StartingAddress.ToString() + "-" + existingScope.EndingAddress.ToString());
                     }
+                }
 
+                ValidateDhcpScopeRequest(request, scope, scopeName, startingAddress, endingAddress);
+
+                if (scope is null)
+                {
+                    scope = new Scope(scopeName, true, startingAddress, endingAddress, subnetMask, _dnsWebService._log, _dnsWebService._dhcpServer);
+                    scope.IgnoreClientIdentifierOption = true;
+                }
+                else
+                {
                     scope.ChangeNetwork(startingAddress, endingAddress, subnetMask);
                 }
 
