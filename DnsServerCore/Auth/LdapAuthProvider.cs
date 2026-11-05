@@ -117,6 +117,19 @@ namespace DnsServerCore.Auth
             }
 
             LdapConnection connection = new LdapConnection(ldapDirectoryIdentifier);
+            try
+            {
+                return BindConnectionWindows(connection, bindUsername, bindPassword);
+            }
+            catch
+            {
+                connection.Dispose(); //Bind() throws on every failed login; do not leak the connection
+                throw;
+            }
+        }
+
+        private LdapConnection BindConnectionWindows(LdapConnection connection, string bindUsername, string bindPassword)
+        {
             connection.SessionOptions.ProtocolVersion = 3;
             connection.SessionOptions.ReferralChasing = ReferralChasingOptions.None;
             connection.Timeout = TimeSpan.FromSeconds(15);
@@ -186,6 +199,19 @@ namespace DnsServerCore.Auth
             LdapDirectoryIdentifier ldapDirectoryIdentifier = new LdapDirectoryIdentifier(_server, _port);
 
             LdapConnection connection = new LdapConnection(ldapDirectoryIdentifier);
+            try
+            {
+                return BindConnectionUnix(connection, bindUsername, bindPassword);
+            }
+            catch
+            {
+                connection.Dispose(); //Bind() throws on every failed login; do not leak the connection
+                throw;
+            }
+        }
+
+        private LdapConnection BindConnectionUnix(LdapConnection connection, string bindUsername, string bindPassword)
+        {
             connection.SessionOptions.ProtocolVersion = 3;
             connection.SessionOptions.ReferralChasing = ReferralChasingOptions.None;
             connection.Timeout = TimeSpan.FromSeconds(15);

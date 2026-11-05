@@ -148,8 +148,15 @@ namespace Failover
                 }
                 finally
                 {
-                    if (!_disposed && (_healthCheck is not null))
-                        _healthCheckTimer?.Change(_healthCheck.Interval, Timeout.Infinite);
+                    try
+                    {
+                        if (!_disposed && (_healthCheck is not null))
+                            _healthCheckTimer?.Change(_healthCheck.Interval, Timeout.Infinite);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        //Dispose() raced with the check above; an unhandled exception here would terminate the process
+                    }
                 }
             }, null, Timeout.Infinite, Timeout.Infinite);
 

@@ -767,9 +767,29 @@ namespace DnsServerCore.Dns
             }
 
             _udpPayloadSize = bR.ReadUInt16();
+            //assigning fields directly bypasses the property setters, so replicate their side effects here (matters when config is loaded at runtime via restore or cluster sync)
+            bool oldDnssecValidation = _dnssecValidation;
             _dnssecValidation = bR.ReadBoolean();
+            if (!oldDnssecValidation && _dnssecValidation)
+                _cacheZoneManager.Flush(); //flush cache to remove non validated data
 
+            bool oldEDnsClientSubnet = _eDnsClientSubnet;
             _eDnsClientSubnet = bR.ReadBoolean();
+            if (oldEDnsClientSubnet && !_eDnsClientSubnet)
+            {
+                ThreadPool.QueueUserWorkItem(delegate (object state)
+                {
+                    try
+                    {
+                        _cacheZoneManager.DeleteEDnsClientSubnetData();
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Write(ex);
+                    }
+                });
+            }
+
             _eDnsClientSubnetIPv4PrefixLength = bR.ReadByte();
             _eDnsClientSubnetIPv6PrefixLength = bR.ReadByte();
 
@@ -802,6 +822,8 @@ namespace DnsServerCore.Dns
 
                 _qpmPrefixLimitsIPv6 = qpmPrefixLimitsIPv6;
             }
+
+            ResetQpsLimitTimer(); //start/stop sampling timer to match loaded limits; no-op unless the server is already running
 
             _qpmLimitSampleMinutes = bR.ReadInt32();
             _qpmLimitUdpTruncationPercentage = bR.ReadInt32();
@@ -4399,7 +4421,7 @@ namespace DnsServerCore.Dns
                     eDnsClientSubnetOption = [new EDnsOption(EDnsOptionCode.EDNS_CLIENT_SUBNET, requestECS)];
             }
 
-            Queue<Task<IReadOnlyList<DnsResourceRecord>>> resolveQueue = new Queue<Task<IReadOnlyList<DnsResourceRecord>>>();
+            ConcurrentQueue<Task<IReadOnlyList<DnsResourceRecord>>> resolveQueue = new ConcurrentQueue<Task<IReadOnlyList<DnsResourceRecord>>>(); //concurrent: ResolveANAMEAsync tasks enqueue from thread pool threads while this method dequeues
 
             async Task<IReadOnlyList<DnsResourceRecord>> ResolveANAMEAsync(DnsResourceRecord anameRR, int queryCount = 0)
             {
@@ -4526,7 +4548,7 @@ namespace DnsServerCore.Dns
                         break;
 
                     default:
-                        if (resolveQueue.Count == 0)
+                        if (resolveQueue.IsEmpty)
                             responseAnswer.Add(answer);
 
                         break;
@@ -4535,9 +4557,9 @@ namespace DnsServerCore.Dns
 
             bool foundErrors = false;
 
-            while (resolveQueue.Count > 0)
+            while (resolveQueue.TryDequeue(out Task<IReadOnlyList<DnsResourceRecord>> resolveTask))
             {
-                IReadOnlyList<DnsResourceRecord> records = await resolveQueue.Dequeue();
+                IReadOnlyList<DnsResourceRecord> records = await resolveTask;
                 if (records is null)
                     foundErrors = true;
                 else if (records.Count > 0)

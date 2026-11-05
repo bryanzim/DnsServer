@@ -56,7 +56,7 @@ namespace AdvancedBlocking
         int _blockListUrlUpdateIntervalHours;
         int _blockListUrlUpdateIntervalMinutes;
 
-        Dictionary<EndPoint, string>? _localEndPointGroupMap;
+        Dictionary<EndPoint, string> _localEndPointGroupMap = []; //never null: legacy configs lack the section and the migration below does not reload the app
         Dictionary<NetworkAddress, string>? _networkGroupMap;
         Dictionary<string, Group>? _groups;
 
@@ -287,7 +287,7 @@ namespace AdvancedBlocking
                 Uri requestLocalUriEP = request.Metadata.NameServer.DoHEndPoint;
                 if (requestLocalUriEP is not null)
                 {
-                    foreach (KeyValuePair<EndPoint, string> entry in _localEndPointGroupMap!)
+                    foreach (KeyValuePair<EndPoint, string> entry in _localEndPointGroupMap)
                     {
                         if (entry.Key is DomainEndPoint ep)
                         {
@@ -300,7 +300,7 @@ namespace AdvancedBlocking
                 DomainEndPoint requestLocalDomainEP = request.Metadata.NameServer.DomainEndPoint;
                 if (requestLocalDomainEP is not null)
                 {
-                    foreach (KeyValuePair<EndPoint, string> entry in _localEndPointGroupMap!)
+                    foreach (KeyValuePair<EndPoint, string> entry in _localEndPointGroupMap)
                     {
                         if (entry.Key is DomainEndPoint ep)
                         {
@@ -313,7 +313,7 @@ namespace AdvancedBlocking
                 IPEndPoint requestLocalEP = request.Metadata.NameServer.IPEndPoint;
                 if (requestLocalEP is not null)
                 {
-                    foreach (KeyValuePair<EndPoint, string> entry in _localEndPointGroupMap!)
+                    foreach (KeyValuePair<EndPoint, string> entry in _localEndPointGroupMap)
                     {
                         if (entry.Key is IPEndPoint ep)
                         {
@@ -373,7 +373,11 @@ namespace AdvancedBlocking
                 },
                 out Dictionary<EndPoint, string>? localEndPointGroupMap))
             {
-                _localEndPointGroupMap = localEndPointGroupMap;
+                _localEndPointGroupMap = localEndPointGroupMap ?? [];
+            }
+            else
+            {
+                _localEndPointGroupMap = [];
             }
 
             _networkGroupMap = jsonConfig.ReadObjectAsMap("networkGroupMap", delegate (string network, JsonElement jsonGroup)

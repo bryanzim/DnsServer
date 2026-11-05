@@ -44,6 +44,8 @@ namespace DnsServerCore.Dns.Zones
         readonly Lock _refreshTimerLock = new Lock();
         Timer _refreshTimer;
         bool _refreshTimerTriggered;
+        bool _refreshInProgress; //guarded by _refreshTimerLock; prevents two RefreshZoneAsync calls overlapping on the same zone
+        bool _refreshPending; //guarded by _refreshTimerLock; set when the timer fires while a refresh is in progress
         const int REFRESH_TIMER_INTERVAL = 5000;
 
         const int REFRESH_SOA_TIMEOUT = 10000;
@@ -228,6 +230,18 @@ namespace DnsServerCore.Dns.Zones
             //refresh zone in DNS server's resolver thread pool
             if (!_dnsServer.TryQueueResolverTask(async delegate (object state)
                 {
+                    lock (_refreshTimerLock)
+                    {
+                        if (_refreshInProgress)
+                        {
+                            //a refresh is already running (e.g. NOTIFY arrived mid transfer); run again once it completes
+                            _refreshPending = true;
+                            return;
+                        }
+
+                        _refreshInProgress = true;
+                    }
+
                     try
                     {
                         if (Disabled && !_resync)
@@ -314,7 +328,19 @@ namespace DnsServerCore.Dns.Zones
                     }
                     finally
                     {
-                        _refreshTimerTriggered = false;
+                        bool refreshPending;
+
+                        lock (_refreshTimerLock)
+                        {
+                            _refreshInProgress = false;
+                            _refreshTimerTriggered = false;
+
+                            refreshPending = _refreshPending;
+                            _refreshPending = false;
+                        }
+
+                        if (refreshPending)
+                            ResetRefreshTimer(REFRESH_TIMER_INTERVAL); //a trigger was missed while refreshing; schedule it now
                     }
                 })
             )
@@ -839,22 +865,28 @@ namespace DnsServerCore.Dns.Zones
             if (Disabled)
                 return;
 
-            if (_refreshTimerTriggered)
-                return;
+            lock (_refreshTimerLock)
+            {
+                if (_refreshTimerTriggered)
+                    return;
 
-            _refreshTimerTriggered = true;
-            ResetRefreshTimer(refreshInterval);
+                _refreshTimerTriggered = true;
+                _refreshTimer?.Change(refreshInterval, Timeout.Infinite);
+            }
         }
 
         public void TriggerResync()
         {
-            if (_refreshTimerTriggered)
-                return;
+            lock (_refreshTimerLock)
+            {
+                if (_refreshTimerTriggered)
+                    return;
 
-            _resync = true;
+                _resync = true;
 
-            _refreshTimerTriggered = true;
-            ResetRefreshTimer(0);
+                _refreshTimerTriggered = true;
+                _refreshTimer?.Change(0, Timeout.Infinite);
+            }
         }
 
         public override void SetRecords(DnsResourceRecordType type, IReadOnlyList<DnsResourceRecord> records)

@@ -2825,7 +2825,7 @@ namespace DnsServerCore.Dns.Zones
 
                 lock (_dnssecPrivateKeys)
                 {
-                    return _dnssecPrivateKeys.Values;
+                    return new List<DnssecPrivateKey>(_dnssecPrivateKeys.Values); //snapshot: callers enumerate outside the lock while key rollover mutates the dictionary
                 }
             }
         }

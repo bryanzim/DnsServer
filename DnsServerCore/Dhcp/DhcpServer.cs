@@ -408,8 +408,16 @@ namespace DnsServerCore.Dhcp
                                 if (leaseOffer == null)
                                 {
                                     //no existing lease or offer available for client
-                                    //send nak
-                                    return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                                    if (!scope.IsAddressInNetwork(request.RequestedIpAddress.Address))
+                                    {
+                                        //client is on the wrong network - RFC 2131 section 4.3.2
+                                        //send nak
+                                        return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                                    }
+
+                                    //server has no record of this client so it MUST remain silent - RFC 2131 section 4.3.2
+                                    //another DHCP server on the network may have the lease
+                                    return null;
                                 }
 
                                 if (!request.RequestedIpAddress.Address.Equals(leaseOffer.Address))

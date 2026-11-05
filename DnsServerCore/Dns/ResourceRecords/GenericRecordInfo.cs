@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 using System;
 using System.IO;
+using System.Text;
 using TechnitiumLibrary.IO;
 
 namespace DnsServerCore.Dns.ResourceRecords
@@ -131,8 +132,8 @@ namespace DnsServerCore.Dns.ResourceRecords
             get { return _comments; }
             set
             {
-                if ((value is not null) && (value.Length > 255))
-                    throw new ArgumentOutOfRangeException(nameof(Comments), "Resource record comment text cannot exceed 255 characters.");
+                if ((value is not null) && ((value.Length > 255) || (Encoding.UTF8.GetByteCount(value) > 255)))
+                    throw new ArgumentOutOfRangeException(nameof(Comments), "Resource record comment text cannot exceed 255 bytes when UTF-8 encoded."); //WriteShortString() stores a single length byte
 
                 _comments = value;
             }
