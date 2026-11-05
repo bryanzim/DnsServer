@@ -52,6 +52,7 @@ namespace DnsServerCore.Dns.ZoneManagers
         readonly DnsServer _dnsServer;
 
         readonly CacheZoneTree _root = new CacheZoneTree();
+        readonly Lock _cacheUpdateLock = new Lock(); //orders GetOrAdd with removal so an empty instance cannot delete its replacement
 
         uint _serveStaleResetTtl = SERVE_STALE_RESET_TTL;
         long _maximumEntries;
@@ -133,8 +134,11 @@ namespace DnsServerCore.Dns.ZoneManagers
                                 CacheZone zone = CacheZone.ReadFrom(bR, serveStale);
                                 if (!zone.IsEmpty)
                                 {
-                                    if (_root.TryAdd(zone.Name, zone))
-                                        addedEntries += zone.TotalEntries;
+                                    lock (_cacheUpdateLock)
+                                    {
+                                        if (_root.TryAdd(zone.Name, zone))
+                                            addedEntries += zone.TotalEntries;
+                                    }
                                 }
                             }
                         }
@@ -628,18 +632,21 @@ namespace DnsServerCore.Dns.ZoneManagers
         {
             while (true)
             {
-                CacheZone zone = _root.GetOrAdd(name, delegate (string key)
+                lock (_cacheUpdateLock)
                 {
-                    return new CacheZone(key, capacity);
-                });
+                    CacheZone zone = _root.GetOrAdd(name, delegate (string key)
+                    {
+                        return new CacheZone(key, capacity);
+                    });
 
-                lock (zone)
-                {
-                    //an eviction may have removed this instance after GetOrAdd returned it; write only into the live zone
-                    if (!_root.TryGet(name, out CacheZone live) || !ReferenceEquals(live, zone))
-                        continue;
+                    lock (zone)
+                    {
+                        //an eviction may have removed this instance after GetOrAdd returned it; write only into the live zone
+                        if (!_root.TryGet(name, out CacheZone live) || !ReferenceEquals(live, zone))
+                            continue;
 
-                    return zone.SetRecords(records, serveStale);
+                        return zone.SetRecords(records, serveStale);
+                    }
                 }
             }
         }
@@ -649,9 +656,10 @@ namespace DnsServerCore.Dns.ZoneManagers
             if (!zone.IsEmpty)
                 return;
 
-            lock (zone)
+            lock (_cacheUpdateLock)
             {
-                if (zone.IsEmpty)
+                //removal is by name; drop the node only when this empty instance is still the one in the tree
+                if (zone.IsEmpty && _root.TryGet(zone.Name, out CacheZone live) && ReferenceEquals(live, zone))
                     _root.TryRemove(zone.Name, out _);
             }
         }
@@ -774,7 +782,10 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         public override void Flush()
         {
-            _root.Clear();
+            lock (_cacheUpdateLock)
+            {
+                _root.Clear();
+            }
 
             long totalEntries = Volatile.Read(ref _totalEntries);
             totalEntries = Interlocked.Add(ref _totalEntries, -totalEntries);
@@ -784,7 +795,15 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         public bool DeleteZone(string domain)
         {
-            if (_root.TryRemoveTree(domain, out _, out int removedEntries))
+            bool removed;
+            int removedEntries;
+
+            lock (_cacheUpdateLock)
+            {
+                removed = _root.TryRemoveTree(domain, out _, out removedEntries);
+            }
+
+            if (removed)
             {
                 if (removedEntries > 0)
                 {
