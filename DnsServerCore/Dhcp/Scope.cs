@@ -1616,6 +1616,12 @@ namespace DnsServerCore.Dhcp
             if ((reservedLease.Address is null) || !IsAddressInRange(reservedLease.Address))
                 throw new ArgumentOutOfRangeException(nameof(reservedLease), "Reserved address must be in scope range.");
 
+            foreach (KeyValuePair<ClientIdentifierOption, Lease> existingReservedLease in _reservedLeases)
+            {
+                if (existingReservedLease.Value.Address.Equals(reservedLease.Address) && !existingReservedLease.Key.Equals(reservedLease.ClientIdentifier))
+                    throw new ArgumentException("Reserved address is already reserved for another client: " + reservedLease.Address.ToString());
+            }
+
             if (_reservedLeases.TryAdd(reservedLease.ClientIdentifier, reservedLease))
             {
                 _dhcpServer.AddDnsEntries(this, reservedLease);
@@ -2314,10 +2320,15 @@ namespace DnsServerCore.Dhcp
                 }
                 else
                 {
+                    HashSet<IPAddress> reservedAddresses = new HashSet<IPAddress>();
+
                     foreach (Lease reservedLease in value)
                     {
                         if (!IsAddressInRange(reservedLease.Address))
                             throw new ArgumentOutOfRangeException(nameof(ReservedLeases), "Reserved address must be in scope range.");
+
+                        if (!reservedAddresses.Add(reservedLease.Address))
+                            throw new ArgumentException("Reserved address is already reserved for another client: " + reservedLease.Address.ToString());
                     }
 
                     //remove DNS entries for reserved leases being removed, renamed, or moved to another address
