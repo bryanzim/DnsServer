@@ -1237,6 +1237,9 @@ namespace DnsServerCore.Dhcp
                     {
                         case DhcpOptionCode.SubnetMask:
                             options.Add(new SubnetMaskOption(_subnetMask));
+                            break;
+
+                        case DhcpOptionCode.BroadcastAddress:
                             options.Add(new BroadcastAddressOption(_broadcastAddress));
                             break;
 
