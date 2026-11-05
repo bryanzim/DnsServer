@@ -10,7 +10,6 @@ type
     	dwCheckPoint				: cardinal;
     	dwWaitHint					: cardinal;
 	end;
-	HANDLE = cardinal;
 
 const
 	SERVICE_QUERY_CONFIG		= $1;
