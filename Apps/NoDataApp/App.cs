@@ -33,6 +33,8 @@ namespace NoData
 
         readonly static JsonDocumentOptions _jsonParseOptions = new JsonDocumentOptions() { CommentHandling = JsonCommentHandling.Skip };
 
+        IDnsServer _dnsServer;
+
         #endregion
 
         #region IDisposable
@@ -48,16 +50,16 @@ namespace NoData
 
         public Task InitializeAsync(IDnsServer dnsServer, string config)
         {
-            //do nothing
+            _dnsServer = dnsServer;
             return Task.CompletedTask;
         }
 
-        public Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed, string zoneName, string appRecordName, uint appRecordTtl, string appRecordData)
+        public async Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed, string zoneName, string appRecordName, uint appRecordTtl, string appRecordData)
         {
             DnsQuestionRecord question = request.Question[0];
 
             if (!question.Name.Equals(appRecordName, StringComparison.OrdinalIgnoreCase) && !appRecordName.StartsWith('*'))
-                return Task.FromResult<DnsDatagram>(null);
+                return null;
 
             using JsonDocument jsonDocument = JsonDocument.Parse(appRecordData, _jsonParseOptions);
             JsonElement jsonAppRecordData = jsonDocument.RootElement;
@@ -66,10 +68,30 @@ namespace NoData
             {
                 DnsResourceRecordType blockedType = Enum.Parse<DnsResourceRecordType>(jsonBlockedType.GetString(), true);
                 if ((blockedType == question.Type) || (blockedType == DnsResourceRecordType.ANY))
-                    return Task.FromResult(new DnsDatagram(request.Identifier, true, request.OPCODE, false, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.NoError, request.Question));
+                {
+                    DnsResourceRecord[] authority = null;
+
+                    try
+                    {
+                        DnsDatagram soaResponse = await _dnsServer.DirectQueryAsync(new DnsQuestionRecord(zoneName, DnsResourceRecordType.SOA, question.Class));
+                        DnsResourceRecord soaRecord = null;
+
+                        if ((soaResponse.Answer.Count > 0) && (soaResponse.Answer[soaResponse.Answer.Count - 1].Type == DnsResourceRecordType.SOA))
+                            soaRecord = soaResponse.Answer[soaResponse.Answer.Count - 1];
+                        else if ((soaResponse.Authority.Count > 0) && (soaResponse.Authority[0].Type == DnsResourceRecordType.SOA))
+                            soaRecord = soaResponse.Authority[0];
+
+                        if (soaRecord is not null)
+                            authority = new DnsResourceRecord[] { soaRecord };
+                    }
+                    catch
+                    { }
+
+                    return new DnsDatagram(request.Identifier, true, request.OPCODE, false, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.NoError, request.Question, null, authority);
+                }
             }
 
-            return Task.FromResult<DnsDatagram>(null);
+            return null;
         }
 
         #endregion
