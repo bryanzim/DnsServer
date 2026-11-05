@@ -327,42 +327,43 @@ namespace DnsServerCore.Dhcp
             {
                 case DhcpMessageType.Discover:
                     {
-                        Scope scope = FindScope(request, remoteEP.Address, ipPacketInformation);
-                        if (scope == null)
-                            return null; //no scope available; do nothing
-
-                        if ((request.ServerHostName != null) && (request.ServerHostName != scope.ServerHostName))
-                            return null; //discard request; since this request is for another server with the specified server host name
-
-                        if ((request.BootFileName != null) && (request.BootFileName != scope.BootFileName))
-                            return null; //discard request; since this request wants boot file not available on this server
-
-                        if (scope.OfferDelayTime > 0)
-                            await Task.Delay(scope.OfferDelayTime); //delay sending offer
-
-                        Lease offer = await scope.GetOfferAsync(request);
-                        if (offer == null)
-                            return null; //no offer available, do nothing
-
-                        IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
-                        string reservedLeaseHostName = null;
-
-                        if (!string.IsNullOrWhiteSpace(scope.DomainName))
+                        foreach (Scope scope in FindScopesForDiscover(request, remoteEP.Address, ipPacketInformation))
                         {
-                            //get override host name from reserved lease
-                            Lease reservedLease = scope.GetReservedLease(request);
-                            if (reservedLease is not null)
-                                reservedLeaseHostName = reservedLease.HostName;
+                            if ((request.ServerHostName != null) && (request.ServerHostName != scope.ServerHostName))
+                                continue; //this request is for another server with the specified server host name
+
+                            if ((request.BootFileName != null) && (request.BootFileName != scope.BootFileName))
+                                continue; //this request wants a boot file not available on this scope
+
+                            if (scope.OfferDelayTime > 0)
+                                await Task.Delay(scope.OfferDelayTime); //delay sending offer
+
+                            Lease offer = await scope.GetOfferAsync(request);
+                            if (offer == null)
+                                continue; //this pool is full; try the next scope on the same interface
+
+                            IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
+                            string reservedLeaseHostName = null;
+
+                            if (!string.IsNullOrWhiteSpace(scope.DomainName))
+                            {
+                                //get override host name from reserved lease
+                                Lease reservedLease = scope.GetReservedLease(request);
+                                if (reservedLease is not null)
+                                    reservedLeaseHostName = reservedLease.HostName;
+                            }
+
+                            List<DhcpOption> options = await scope.GetOptionsAsync(request, serverIdentifierAddress, reservedLeaseHostName, _dnsServer);
+                            if (options is null)
+                                continue;
+
+                            //log ip offer
+                            _log.Write(remoteEP, "DHCP Server offered IP address [" + offer.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope: " + scope.Name);
+
+                            return DhcpMessage.CreateReply(request, offer.Address, scope.ServerAddress ?? serverIdentifierAddress, scope.ServerHostName, scope.BootFileName, options);
                         }
 
-                        List<DhcpOption> options = await scope.GetOptionsAsync(request, serverIdentifierAddress, reservedLeaseHostName, _dnsServer);
-                        if (options is null)
-                            return null;
-
-                        //log ip offer
-                        _log.Write(remoteEP, "DHCP Server offered IP address [" + offer.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope: " + scope.Name);
-
-                        return DhcpMessage.CreateReply(request, offer.Address, scope.ServerAddress ?? serverIdentifierAddress, scope.ServerHostName, scope.BootFileName, options);
+                        return null; //no scope could offer an address
                     }
 
                 case DhcpMessageType.Request:
@@ -658,6 +659,88 @@ namespace DnsServerCore.Dhcp
 
                 default:
                     return null;
+            }
+        }
+
+        private List<Scope> FindScopesForDiscover(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            List<Scope> scopes = new List<Scope>();
+
+            if (request.RelayAgentIpAddress.Equals(IPAddress.Any))
+            {
+                if (request.ClientIpAddress.Equals(IPAddress.Any) || remoteAddress.Equals(IPAddress.Any))
+                {
+                    if (!ipPacketInformation.Address.Equals(IPAddress.Broadcast))
+                        return scopes; //message destination address must be broadcast address
+
+                    Scope reservedScope = null;
+
+                    foreach (KeyValuePair<string, Scope> entry in _scopes)
+                    {
+                        Scope scope = entry.Value;
+
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && (scope.InterfaceIndex == ipPacketInformation.Interface))
+                        {
+                            if (scope.GetReservedLease(request) != null)
+                            {
+                                reservedScope = scope;
+                                break;
+                            }
+
+                            if (!scope.AllowOnlyReservedLeases)
+                                scopes.Add(scope);
+                        }
+                    }
+
+                    if (reservedScope is not null)
+                    {
+                        scopes.Clear();
+                        scopes.Add(reservedScope);
+                    }
+
+                    return scopes;
+                }
+
+                Scope unicastScope = FindScope(request, remoteAddress, ipPacketInformation);
+                if (unicastScope is not null)
+                    scopes.Add(unicastScope);
+
+                return scopes;
+            }
+            else
+            {
+                Scope selectedScope = null;
+
+                foreach (KeyValuePair<string, Scope> entry in _scopes)
+                {
+                    Scope scope = entry.Value;
+
+                    if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.InterfaceAddress.Equals(IPAddress.Any) && scope.IsAddressInNetwork(request.RelayAgentIpAddress))
+                    {
+                        if (scope.GetReservedLease(request) != null)
+                        {
+                            selectedScope = scope;
+                            break;
+                        }
+
+                        if (!request.ClientIpAddress.Equals(IPAddress.Any) && scope.IsAddressInRange(request.ClientIpAddress))
+                        {
+                            selectedScope = scope;
+                            break;
+                        }
+
+                        if (!scope.AllowOnlyReservedLeases)
+                            scopes.Add(scope);
+                    }
+                }
+
+                if (selectedScope is not null)
+                {
+                    scopes.Clear();
+                    scopes.Add(selectedScope);
+                }
+
+                return scopes;
             }
         }
 
