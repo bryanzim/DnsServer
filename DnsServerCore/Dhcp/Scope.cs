@@ -2249,23 +2249,24 @@ namespace DnsServerCore.Dhcp
                             throw new ArgumentOutOfRangeException(nameof(ReservedLeases), "Reserved address must be in scope range.");
                     }
 
-                    //remove DNS entries for reserved leases being removed or has updated domain name
+                    //remove DNS entries for reserved leases being removed, renamed, or moved to another address
                     foreach (KeyValuePair<ClientIdentifierOption, Lease> entry in _reservedLeases)
                     {
                         Lease existingReservedLease = entry.Value;
-                        bool domainNameMatches = false;
+                        bool keepDnsEntries = false;
 
                         foreach (Lease reservedLease in value)
                         {
                             if (existingReservedLease.ClientIdentifier.Equals(reservedLease.ClientIdentifier))
                             {
-                                domainNameMatches = (existingReservedLease.HostName is null) || existingReservedLease.HostName.Equals(reservedLease.HostName, StringComparison.Ordinal);
+                                bool hostNameMatches = (existingReservedLease.HostName is null) || existingReservedLease.HostName.Equals(reservedLease.HostName, StringComparison.Ordinal);
+                                keepDnsEntries = hostNameMatches && existingReservedLease.Address.Equals(reservedLease.Address);
                                 break;
                             }
                         }
 
-                        if (!domainNameMatches)
-                            _dhcpServer.RemoveDnsEntries(this, existingReservedLease, true); //existing reserved lease is being removed or domain name updated; remove DNS entries for it
+                        if (!keepDnsEntries)
+                            _dhcpServer.RemoveDnsEntries(this, existingReservedLease, true); //existing reserved lease is being removed, renamed, or moved; remove DNS entries for it
                     }
 
                     _reservedLeases.Clear();
