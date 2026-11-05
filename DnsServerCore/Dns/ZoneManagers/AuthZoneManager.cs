@@ -481,7 +481,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         catch
                         {
-                            DeleteZone(zoneInfo);
+                            RemoveFailedApexZone(zoneInfo);
                             throw;
                         }
 
@@ -529,7 +529,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         catch
                         {
-                            DeleteZone(zoneInfo);
+                            RemoveFailedApexZone(zoneInfo);
                             throw;
                         }
 
@@ -563,7 +563,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         catch
                         {
-                            DeleteZone(zoneInfo);
+                            RemoveFailedApexZone(zoneInfo);
                             throw;
                         }
 
@@ -648,7 +648,7 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                         if (soa.PrimaryNameServer.Equals(_serverDomain, StringComparison.OrdinalIgnoreCase))
                         {
-                            SetRecord(zone.Name, new DnsResourceRecord(record.Name, record.Type, DnsClass.IN, ttl, new DnsSOARecordData(serverDomain, soa.ResponsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, minimum)));
+                            SetRecord(zone.Name, new DnsResourceRecord(record.Name, record.Type, DnsClass.IN, ttl, new DnsSOARecordData(serverDomain, soa.ResponsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, minimum)) { Tag = record.Tag }); //preserve record info (serial date scheme, comments)
 
                             //update NS records
                             IReadOnlyList<DnsResourceRecord> nsResourceRecords = zone.ApexZone.GetRecords(DnsResourceRecordType.NS);
@@ -748,6 +748,14 @@ namespace DnsServerCore.Dns.ZoneManagers
                 return apexZone;
 
             throw new DnsServerException("Zone already exists: " + zoneInfo.DisplayName);
+        }
+
+        private void RemoveFailedApexZone(AuthZoneInfo zoneInfo)
+        {
+            //removes a partially loaded apex zone from the zone tree only; the zone was never added to the zone index
+            //and the caller holds the non-recursive _zoneIndexLock write lock so DeleteZone() must not be used here
+            if (_root.TryRemove(zoneInfo.Name, out ApexZone removedApexZone))
+                removedApexZone.Dispose();
         }
 
         internal AuthZone GetOrAddSubDomainZone(string zoneName, string domain)
@@ -2404,6 +2412,22 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                     else
                     {
+                        //add the new record first so that a failure while adding (CNAME conflict, TTL validation, bailiwick) does not lose the old record
+                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
+
+                        try
+                        {
+                            newZone.SetRecords(newRecord.Type, new DnsResourceRecord[] { newRecord });
+                        }
+                        catch
+                        {
+                            RemoveSubDomainZoneIfEmpty(newZone, newRecord.Name);
+                            throw;
+                        }
+
+                        if (newZone is SubDomainZone subDomainZone1)
+                            subDomainZone1.AutoUpdateState();
+
                         authZone.DeleteRecords(oldRecord.Type);
 
                         if (authZone is SubDomainZone subDomainZone)
@@ -2413,13 +2437,6 @@ namespace DnsServerCore.Dns.ZoneManagers
                             else
                                 subDomainZone.AutoUpdateState();
                         }
-
-                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
-
-                        newZone.SetRecords(newRecord.Type, new DnsResourceRecord[] { newRecord });
-
-                        if (newZone is SubDomainZone subDomainZone1)
-                            subDomainZone1.AutoUpdateState();
                     }
                     break;
 
@@ -2433,6 +2450,37 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                     else
                     {
+                        //check that the old record exists before making any changes
+                        bool oldRecordExists = false;
+
+                        foreach (DnsResourceRecord existingRecord in authZone.GetRecords(oldRecord.Type))
+                        {
+                            if (oldRecord.RDATA.Equals(existingRecord.RDATA))
+                            {
+                                oldRecordExists = true;
+                                break;
+                            }
+                        }
+
+                        if (!oldRecordExists)
+                            throw new DnsWebServiceException("Cannot update record: the old record does not exists.");
+
+                        //add the new record first so that a failure while adding (CNAME conflict, TTL validation, bailiwick) does not lose the old record
+                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
+
+                        try
+                        {
+                            newZone.AddRecord(newRecord);
+                        }
+                        catch
+                        {
+                            RemoveSubDomainZoneIfEmpty(newZone, newRecord.Name);
+                            throw;
+                        }
+
+                        if (newZone is SubDomainZone subDomainZone1)
+                            subDomainZone1.AutoUpdateState();
+
                         if (!authZone.DeleteRecord(oldRecord.Type, oldRecord.RDATA))
                             throw new DnsWebServiceException("Cannot update record: the old record does not exists.");
 
@@ -2443,16 +2491,15 @@ namespace DnsServerCore.Dns.ZoneManagers
                             else
                                 subDomainZone.AutoUpdateState();
                         }
-
-                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
-
-                        newZone.AddRecord(newRecord);
-
-                        if (newZone is SubDomainZone subDomainZone1)
-                            subDomainZone1.AutoUpdateState();
                     }
                     break;
             }
+        }
+
+        private void RemoveSubDomainZoneIfEmpty(AuthZone authZone, string domain)
+        {
+            if ((authZone is SubDomainZone) && authZone.IsEmpty)
+                _root.TryRemove(domain, out SubDomainZone _);
         }
 
         public bool DeleteRecord(string zoneName, DnsResourceRecord record)
@@ -3532,6 +3579,20 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
 
                         DnsResourceRecord lastRR = answer[answer.Count - 1];
+
+                        if (dnssecOk)
+                        {
+                            //skip trailing RRSIG records appended for DNSSEC OK queries to find the actual last RR
+                            for (int i = answer.Count - 1; i >= 0; i--)
+                            {
+                                if (answer[i].Type != DnsResourceRecordType.RRSIG)
+                                {
+                                    lastRR = answer[i];
+                                    break;
+                                }
+                            }
+                        }
+
                         if ((lastRR.Type != question.Type) && (question.Type != DnsResourceRecordType.ANY))
                         {
                             switch (lastRR.Type)

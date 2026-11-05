@@ -348,13 +348,13 @@ namespace DnsServerCore.HttpApi
             if (!_loggedIn)
                 throw new HttpApiClientException("No active session exists. Please login and try again.");
 
-            string path = $"api/admin/sso/users/create?ssoIdentifier={ssoIdentifier}&user={username}";
+            string path = $"api/admin/sso/users/create?ssoIdentifier={Uri.EscapeDataString(ssoIdentifier)}&user={Uri.EscapeDataString(username)}";
 
             if (displayName is not null)
-                path += $"&displayName={displayName}";
+                path += $"&displayName={Uri.EscapeDataString(displayName)}";
 
             if (memberOfGroups is not null)
-                path += $"&memberOfGroups={memberOfGroups.Join()}";
+                path += $"&memberOfGroups={Uri.EscapeDataString(memberOfGroups.Join())}";
 
             Stream stream = await _httpClient.GetStreamAsync(path, cancellationToken);
 
@@ -369,16 +369,16 @@ namespace DnsServerCore.HttpApi
             if (!_loggedIn)
                 throw new HttpApiClientException("No active session exists. Please login and try again.");
 
-            string path = $"api/admin/sso/users/set?user={username}";
+            string path = $"api/admin/sso/users/set?user={Uri.EscapeDataString(username)}";
 
             if (newUsername is not null)
-                path += $"&newUser={newUsername}";
+                path += $"&newUser={Uri.EscapeDataString(newUsername)}";
 
             if (displayName is not null)
-                path += $"&displayName={displayName}";
+                path += $"&displayName={Uri.EscapeDataString(displayName)}";
 
             if (memberOfGroups is not null)
-                path += $"&memberOfGroups={memberOfGroups.Join()}";
+                path += $"&memberOfGroups={Uri.EscapeDataString(memberOfGroups.Join())}";
 
             Stream stream = await _httpClient.GetStreamAsync(path, cancellationToken);
 

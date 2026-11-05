@@ -2148,7 +2148,8 @@ namespace DnsServerCore
             {
                 User sessionUser = _dnsWebService.GetSessionUser(context);
 
-                if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.View))
+                //requires same permission as SetLdapConfig since the test can use the stored bind password against a caller supplied LDAP server
+                if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Delete))
                     throw new DnsWebServiceException("Access was denied.");
 
                 string ldapServer = context.Request.GetQueryOrForm("ldapServer", _dnsWebService._authManager.LdapServer);

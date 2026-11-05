@@ -85,13 +85,15 @@ namespace LogExporter
 
             foreach (EDnsOption extendedErrorLog in response.EDNS.Options.Where(o => o.Code == EDnsOptionCode.EXTENDED_DNS_ERROR))
             {
-                string[] extractedData = extendedErrorLog.Data.ToString().Replace("[", string.Empty).Replace("]", string.Empty).Split(":", StringSplitOptions.TrimEntries);
-
-                EDNS.Add(new EDNSLog
+                //use the typed option data instead of parsing ToString() output which has no ':' separator when EXTRA-TEXT is absent
+                if (extendedErrorLog.Data is EDnsExtendedDnsErrorOptionData ede)
                 {
-                    ErrType = extractedData[0],
-                    Message = extractedData[1]
-                });
+                    EDNS.Add(new EDNSLog
+                    {
+                        ErrType = ede.InfoCode.ToString(),
+                        Message = ede.ExtraText ?? string.Empty
+                    });
+                }
             }
         }
 

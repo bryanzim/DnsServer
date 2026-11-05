@@ -22,6 +22,7 @@ using MaxMind.GeoIP2.Model;
 using MaxMind.GeoIP2.Responses;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -133,8 +134,8 @@ namespace GeoDistance
 
                 foreach (JsonElement jsonServer in jsonAppRecordData.EnumerateArray())
                 {
-                    double lat = Convert.ToDouble(jsonServer.GetProperty("lat").GetString());
-                    double @long = Convert.ToDouble(jsonServer.GetProperty("long").GetString());
+                    double lat = double.Parse(jsonServer.GetProperty("lat").GetString()!, CultureInfo.InvariantCulture); //config values always use '.' as decimal separator regardless of host culture
+                    double @long = double.Parse(jsonServer.GetProperty("long").GetString()!, CultureInfo.InvariantCulture);
 
                     double distance = GetDistance(lat, @long, location.Latitude.Value, location.Longitude.Value);
 

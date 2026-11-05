@@ -141,6 +141,18 @@ namespace NxDomainOverride
 
             DnsQuestionRecord question = request.Question[0];
 
+            string nxDomain = question.Name;
+
+            foreach (DnsResourceRecord record in response.Answer)
+            {
+                if (record.Type == DnsResourceRecordType.CNAME)
+                    nxDomain = (record.RDATA as DnsCNAMERecordData).Domain;
+            }
+
+            //check mapping first so that responses for unmapped domains are never modified
+            if (!TryGetMappedSets(nxDomain, out string[] setNames))
+                return Task.FromResult(response);
+
             switch (question.Type)
             {
                 case DnsResourceRecordType.A:
@@ -151,17 +163,6 @@ namespace NxDomainOverride
                     //NO DATA response
                     return Task.FromResult(new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, response.Answer, response.Authority, response.Additional) { Tag = response.Tag });
             }
-
-            string nxDomain = question.Name;
-
-            foreach (DnsResourceRecord record in response.Answer)
-            {
-                if (record.Type == DnsResourceRecordType.CNAME)
-                    nxDomain = (record.RDATA as DnsCNAMERecordData).Domain;
-            }
-
-            if (!TryGetMappedSets(nxDomain, out string[] setNames))
-                return Task.FromResult(response);
 
             List<DnsResourceRecord> newAnswer = new List<DnsResourceRecord>();
             newAnswer.AddRange(response.Answer);

@@ -346,7 +346,7 @@ namespace DnsServerSystemTrayApp
         {
             if (!Program.IsAdmin)
             {
-                Program.RunAsAdmin("--network-dns-item " + dnsProvider.Name);
+                Program.RunAsAdmin("--network-dns-item \"" + dnsProvider.Name.Replace("\"", "\\\"") + "\""); //quote since provider names can contain spaces
                 return;
             }
 

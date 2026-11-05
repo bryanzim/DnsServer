@@ -4725,7 +4725,7 @@ namespace DnsServerCore
                                 }
 
                                 //add new PTR record and save reverse zone
-                                DnsResourceRecord ptrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(domain));
+                                DnsResourceRecord ptrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(newDomain)); //PTR must point to the updated record name
                                 ptrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
                                 ptrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
 

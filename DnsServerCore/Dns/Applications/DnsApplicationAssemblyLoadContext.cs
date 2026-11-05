@@ -24,6 +24,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using System.Threading.Tasks;
 
 namespace DnsServerCore.Dns.Applications
 {
@@ -50,15 +51,35 @@ namespace DnsServerCore.Dns.Applications
 
             Unloading += delegate (AssemblyLoadContext obj)
             {
-                foreach (string dllTempPath in _dllTempPaths)
+                //this event fires synchronously inside Unload() while the assemblies are still mapped so deleting the temp
+                //files fails on Windows; the files can only be deleted once the collectible context has actually been collected
+                //so retry in the background without capturing a reference to this context
+                List<string> dllTempPaths = new List<string>(_dllTempPaths);
+
+                _ = Task.Run(async delegate ()
                 {
-                    try
+                    for (int attempt = 0; (attempt < 10) && (dllTempPaths.Count > 0); attempt++)
                     {
-                        File.Delete(dllTempPath);
+                        if (attempt > 0)
+                        {
+                            await Task.Delay(1000 * attempt);
+
+                            GC.Collect();
+                            GC.WaitForPendingFinalizers();
+                        }
+
+                        for (int i = dllTempPaths.Count - 1; i >= 0; i--)
+                        {
+                            try
+                            {
+                                File.Delete(dllTempPaths[i]);
+                                dllTempPaths.RemoveAt(i);
+                            }
+                            catch
+                            { }
+                        }
                     }
-                    catch
-                    { }
-                }
+                });
             };
 
             //load all app assemblies

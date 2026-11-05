@@ -48,26 +48,36 @@ namespace DnsServerCore.Dns.Trees
 
         public bool TryRemoveTree(string domain, out CacheZone value, out int removedEntries)
         {
+            byte[] bKey = ConvertToByteKey(domain, false);
+            if (bKey is null)
+            {
+                value = null;
+                removedEntries = 0;
+                return false;
+            }
+
             bool removed = TryRemove(domain, out value, out Node currentNode);
             if (removed)
                 removedEntries = value.TotalEntries;
             else
                 removedEntries = 0;
 
+            if (currentNode is null)
+                return removed;
+
             //remove all cache zones under current zone
+            //note: when the domain itself is not in the tree, currentNode is the deepest node reached on the path which
+            //may be a stem shared with unrelated domains (or a leaf holding a sub domain), so every value found must be
+            //checked to be a sub domain of the requested domain before it is removed
             Node current = currentNode;
+            NodeValue v = current.Value;
 
-            do
+            while (true)
             {
-                current = current.GetNextNodeWithValue(currentNode.Depth);
-                if (current is null)
-                    break;
-
-                NodeValue v = current.Value;
                 if (v is not null)
                 {
                     CacheZone zone = v.Value;
-                    if (zone is not null)
+                    if ((zone is not null) && IsKeySubDomain(bKey, v.Key, false))
                     {
                         current.RemoveNodeValue(v.Key, out _); //remove node value
                         current.CleanThisBranch();
@@ -75,8 +85,13 @@ namespace DnsServerCore.Dns.Trees
                         removedEntries += zone.TotalEntries;
                     }
                 }
+
+                current = current.GetNextNodeWithValue(currentNode.Depth);
+                if (current is null)
+                    break;
+
+                v = current.Value;
             }
-            while (true);
 
             if (removed)
                 currentNode.CleanThisBranch();

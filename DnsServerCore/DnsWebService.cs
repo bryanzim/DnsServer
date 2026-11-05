@@ -932,7 +932,9 @@ namespace DnsServerCore
 
                     if (logs && !isConfigTransfer)
                     {
-                        _log.BulkManipulateLogFiles(async delegate ()
+                        //note: BulkManipulateLogFiles() takes a synchronous Action and runs it under a lock with the current log file closed;
+                        //an async delegate here would become async void and run after the lock is released and the log file is reopened
+                        _log.BulkManipulateLogFiles(delegate ()
                         {
                             if (deleteExistingFiles)
                             {
@@ -959,7 +961,7 @@ namespace DnsServerCore
                                 {
                                     try
                                     {
-                                        await entry.ExtractToFileAsync(Path.Combine(_log.LogFolderAbsolutePath, entry.Name), true);
+                                        entry.ExtractToFile(Path.Combine(_log.LogFolderAbsolutePath, entry.Name), true);
                                     }
                                     catch (Exception ex)
                                     {

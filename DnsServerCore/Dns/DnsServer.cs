@@ -3606,7 +3606,7 @@ namespace DnsServerCore.Dns
 
                         TsigKey key = null;
 
-                        if (!string.IsNullOrEmpty(tsigAuthenticatedKeyName) && ((_tsigKeys is null) || !_tsigKeys.TryGetValue(tsigAuthenticatedKeyName, out key)))
+                        if (!string.IsNullOrEmpty(tsigAuthenticatedKeyName) && ((_tsigKeys is null) || !_tsigKeys.TryGetValue(tsigAuthenticatedKeyName.ToLowerInvariant(), out key)))
                             throw new DnsServerException("DNS Server does not have TSIG key '" + tsigAuthenticatedKeyName + "' configured to authenticate dynamic updates for " + zoneInfo.TypeName + " zone: " + zoneInfo.DisplayName);
 
                         DnsClient dnsClient = new DnsClient(primaryNameServerAddresses);
@@ -3885,6 +3885,8 @@ namespace DnsServerCore.Dns
                             case DnsResourceRecordType.FWD:
                                 //do conditional forwarding (with blocking support)
                                 response = await ProcessRecursiveQueryAsync(request, remoteEP, protocol, response.Authority, _dnssecValidation, skipDnsAppAuthoritativeRequestHandlers, _clientTimeout);
+                                if (response is null)
+                                    return null; //drop request
 
                                 if (_dnssecValidation && (response.EDNS is not null) && firstAuthority.RDATA is DnsForwarderRecordData fwd && !fwd.DnssecValidation)
                                 {

@@ -164,6 +164,8 @@ namespace QueryLogsPostgreSql
 
             StopChannel();
 
+            _dataSource?.Dispose();
+
             _disposed = true;
             GC.SuppressFinalize(this);
         }
@@ -374,7 +376,12 @@ namespace QueryLogsPostgreSql
                 if (!_connectionString.TrimEnd().EndsWith(';'))
                     _connectionString += ";";
 
+                NpgsqlDataSource? oldDataSource = _dataSource;
+
                 _dataSource = NpgsqlDataSource.Create(_connectionString + $" Database={_databaseName};");
+
+                if (oldDataSource is not null)
+                    await oldDataSource.DisposeAsync(); //dispose previous data source (and its connection pool) on config reload
 
                 async Task ApplyConfig()
                 {

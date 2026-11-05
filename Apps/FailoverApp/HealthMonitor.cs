@@ -41,7 +41,7 @@ namespace Failover
         HealthCheckResponse? _lastHealthCheckResponse;
 
         const int MONITOR_EXPIRY = 1 * 60 * 60 * 1000; //1 hour
-        DateTime _lastHealthStatusCheckedOn;
+        DateTime _lastHealthStatusCheckedOn = DateTime.UtcNow; //initialize so that a newly created monitor is not immediately considered expired by the maintenance timer
 
         #endregion
 

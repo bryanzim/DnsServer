@@ -435,7 +435,7 @@ namespace DnsServerCore
                         if (existingScope.Equals(scope))
                             continue;
 
-                        if (existingScope.IsAddressInRange(startingAddress) || existingScope.IsAddressInRange(endingAddress))
+                        if (existingScope.IsRangeOverlapping(startingAddress, endingAddress))
                             throw new DhcpServerException("Scope with overlapping range already exists: " + existingScope.StartingAddress.ToString() + "-" + existingScope.EndingAddress.ToString());
                     }
 

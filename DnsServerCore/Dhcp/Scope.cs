@@ -878,6 +878,15 @@ namespace DnsServerCore.Dhcp
             return IsAddressInRange(address, _startingAddress, _endingAddress);
         }
 
+        internal bool IsRangeOverlapping(IPAddress startingAddress, IPAddress endingAddress)
+        {
+            //two ranges overlap when each one starts before the other one ends; this also covers a range that fully contains this scope's range
+            uint startingAddressNumber = startingAddress.ConvertIpToNumber();
+            uint endingAddressNumber = endingAddress.ConvertIpToNumber();
+
+            return (startingAddressNumber <= _endingAddress.ConvertIpToNumber()) && (_startingAddress.ConvertIpToNumber() <= endingAddressNumber);
+        }
+
         internal bool IsAddressInNetwork(IPAddress address)
         {
             uint addressNumber = address.ConvertIpToNumber();
@@ -1794,19 +1803,26 @@ namespace DnsServerCore.Dhcp
                 }
             }
 
-            bW.Write(_reservedLeases.Count);
+            //take a snapshot of the concurrent dictionaries so that the count written always matches the number of records that follow
+            {
+                KeyValuePair<ClientIdentifierOption, Lease>[] reservedLeases = _reservedLeases.ToArray();
 
-            foreach (KeyValuePair<ClientIdentifierOption, Lease> reservedLease in _reservedLeases)
-                reservedLease.Value.WriteTo(bW);
+                bW.Write(reservedLeases.Length);
+
+                foreach (KeyValuePair<ClientIdentifierOption, Lease> reservedLease in reservedLeases)
+                    reservedLease.Value.WriteTo(bW);
+            }
 
             bW.Write(_allowOnlyReservedLeases);
             bW.Write(_blockLocallyAdministeredMacAddresses);
             bW.Write(_ignoreClientIdentifierOption);
 
             {
-                bW.Write(_leases.Count);
+                KeyValuePair<ClientIdentifierOption, Lease>[] leases = _leases.ToArray();
 
-                foreach (KeyValuePair<ClientIdentifierOption, Lease> lease in _leases)
+                bW.Write(leases.Length);
+
+                foreach (KeyValuePair<ClientIdentifierOption, Lease> lease in leases)
                     lease.Value.WriteTo(bW);
             }
         }

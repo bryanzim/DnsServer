@@ -1201,7 +1201,7 @@ namespace DnsServerCore.Dns.Zones
             switch (_type)
             {
                 case AuthZoneType.Primary:
-                    bW.Write(_catalogZoneName ?? "");
+                    bW.BaseStream.WriteShortString(_catalogZoneName ?? ""); //must match ReadShortString() used in ReadFrom()
                     bW.Write(_overrideCatalogQueryAccess);
                     bW.Write(_overrideCatalogZoneTransfer);
                     bW.Write(_overrideCatalogNotify);
@@ -1225,7 +1225,7 @@ namespace DnsServerCore.Dns.Zones
                     break;
 
                 case AuthZoneType.Secondary:
-                    bW.Write(_catalogZoneName ?? "");
+                    bW.BaseStream.WriteShortString(_catalogZoneName ?? ""); //must match ReadShortString() used in ReadFrom()
                     bW.Write(_overrideCatalogQueryAccess);
                     bW.Write(_overrideCatalogZoneTransfer);
                     bW.Write(_overrideCatalogPrimaryNameServers);
@@ -1256,7 +1256,7 @@ namespace DnsServerCore.Dns.Zones
                     break;
 
                 case AuthZoneType.Stub:
-                    bW.Write(_catalogZoneName ?? "");
+                    bW.BaseStream.WriteShortString(_catalogZoneName ?? ""); //must match ReadShortString() used in ReadFrom()
                     bW.Write(_overrideCatalogQueryAccess);
 
                     bW.Write((byte)_queryAccess);
@@ -1268,7 +1268,7 @@ namespace DnsServerCore.Dns.Zones
                     break;
 
                 case AuthZoneType.Forwarder:
-                    bW.Write(_catalogZoneName ?? "");
+                    bW.BaseStream.WriteShortString(_catalogZoneName ?? ""); //must match ReadShortString() used in ReadFrom()
                     bW.Write(_overrideCatalogQueryAccess);
                     bW.Write(_overrideCatalogZoneTransfer);
                     bW.Write(_overrideCatalogNotify);
@@ -1290,7 +1290,7 @@ namespace DnsServerCore.Dns.Zones
                     break;
 
                 case AuthZoneType.SecondaryForwarder:
-                    bW.Write(_catalogZoneName ?? "");
+                    bW.BaseStream.WriteShortString(_catalogZoneName ?? ""); //must match ReadShortString() used in ReadFrom()
                     bW.Write(_overrideCatalogQueryAccess);
 
                     bW.Write((byte)_queryAccess);

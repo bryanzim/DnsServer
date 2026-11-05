@@ -528,11 +528,17 @@ namespace DnsServerCore.Dns
 
             DateTime dailyDateTime = new DateTime(dateTime.Year, dateTime.Month, dateTime.Day, 0, 0, 0, 0, DateTimeKind.Utc);
 
-            if (!_dailyStatsCache.TryGetValue(dailyDateTime, out StatCounter dailyStats))
+            //daily stats for the current day (or a future date) are incomplete and must be computed on demand from hourly stats
+            //and must never be saved to a .dstat file or cached since that would freeze a partial day's data permanently
+            bool isCompleteDay = dailyDateTime < DateTime.UtcNow.Date;
+
+            StatCounter dailyStats = null;
+
+            if (!isCompleteDay || !_dailyStatsCache.TryGetValue(dailyDateTime, out dailyStats))
             {
                 string dailyStatsFile = Path.Combine(_statsFolder, dateTime.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".dstat");
 
-                if (File.Exists(dailyStatsFile))
+                if (isCompleteDay && File.Exists(dailyStatsFile))
                 {
                     try
                     {
@@ -565,7 +571,7 @@ namespace DnsServerCore.Dns
                         dailyStats.Merge(hourlyStats.HourStat);
                     }
 
-                    if (dailyStats.TotalQueries > 0)
+                    if (isCompleteDay && (dailyStats.TotalQueries > 0))
                     {
                         _ = dailyStats.Truncate(STATS_TOP_LIMIT);
                         SaveDailyStats(dailyDateTime, dailyStats);
@@ -573,7 +579,7 @@ namespace DnsServerCore.Dns
                     }
                 }
 
-                if (!_dailyStatsCache.TryAdd(dailyDateTime, dailyStats))
+                if (isCompleteDay && !_dailyStatsCache.TryAdd(dailyDateTime, dailyStats))
                 {
                     if (!_dailyStatsCache.TryGetValue(dailyDateTime, out dailyStats))
                         throw new DnsServerException("Unable to load daily stats.");

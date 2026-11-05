@@ -469,32 +469,56 @@ namespace DnsServerCore.Dns.Applications
 
                     await using (ZipArchive appZip = new ZipArchive(zipCopyStream, ZipArchiveMode.Read, false, Encoding.UTF8))
                     {
-                        UnloadApplication(applicationName);
-
+                        //validate all entries before unloading the running app so that a bad archive leaves it untouched
                         foreach (ZipArchiveEntry entry in appZip.Entries)
                         {
                             string filePath = Path.GetFullPath(Path.Combine(applicationFolder, entry.FullName));
                             if (!filePath.StartsWith(applicationFolder + Path.DirectorySeparatorChar, Environment.OSVersion.Platform == PlatformID.Win32NT ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                                 throw new IOException("Extracting Zip entry would have resulted in a file outside the specified destination directory.");
-
-                            if ((entry.Name == "dnsApp.config") && File.Exists(filePath))
-                                continue; //avoid overwriting existing config file
-
-                            if ((entry.Length == 0) && (entry.Name.Length == 0) && entry.FullName.EndsWith('/'))
-                            {
-                                //directory entry
-                                Directory.CreateDirectory(filePath);
-                            }
-                            else
-                            {
-                                //file entry
-                                Directory.CreateDirectory(Path.GetDirectoryName(filePath));
-
-                                await entry.ExtractToFileAsync(filePath, true);
-                            }
                         }
 
-                        return await LoadApplicationAsync(applicationFolder, true);
+                        UnloadApplication(applicationName);
+
+                        try
+                        {
+                            foreach (ZipArchiveEntry entry in appZip.Entries)
+                            {
+                                string filePath = Path.GetFullPath(Path.Combine(applicationFolder, entry.FullName));
+
+                                if ((entry.Name == "dnsApp.config") && File.Exists(filePath))
+                                    continue; //avoid overwriting existing config file
+
+                                if ((entry.Length == 0) && (entry.Name.Length == 0) && entry.FullName.EndsWith('/'))
+                                {
+                                    //directory entry
+                                    Directory.CreateDirectory(filePath);
+                                }
+                                else
+                                {
+                                    //file entry
+                                    Directory.CreateDirectory(Path.GetDirectoryName(filePath));
+
+                                    await entry.ExtractToFileAsync(filePath, true);
+                                }
+                            }
+
+                            return await LoadApplicationAsync(applicationFolder, true);
+                        }
+                        catch
+                        {
+                            //update failed after the app was unloaded; reload it from its folder so that it does not remain
+                            //unloaded (which would make further update or uninstall attempts fail until the server is restarted)
+                            try
+                            {
+                                _ = await LoadApplicationAsync(applicationFolder, true);
+                            }
+                            catch (Exception ex)
+                            {
+                                _dnsServer.LogManager.Write(ex);
+                            }
+
+                            throw;
+                        }
                     }
                 }
             }

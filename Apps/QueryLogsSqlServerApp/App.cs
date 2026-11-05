@@ -687,7 +687,7 @@ END
                         command.Parameters.AddWithValue("@qname", qname);
 
                     if (qtype is not null)
-                        command.Parameters.AddWithValue("@qtype", (ushort)qtype);
+                        command.Parameters.AddWithValue("@qtype", (int)qtype);
 
                     if (qclass is not null)
                         command.Parameters.AddWithValue("@qclass", (short)qclass);
@@ -753,7 +753,7 @@ FETCH NEXT @limit ROWS ONLY";
                         command.Parameters.AddWithValue("@qname", qname);
 
                     if (qtype is not null)
-                        command.Parameters.AddWithValue("@qtype", (ushort)qtype);
+                        command.Parameters.AddWithValue("@qtype", (int)qtype);
 
                     if (qclass is not null)
                         command.Parameters.AddWithValue("@qclass", (short)qclass);
