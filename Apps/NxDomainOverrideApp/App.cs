@@ -119,7 +119,7 @@ namespace NxDomainOverride
             {
                 Set set = new Set(jsonSet);
 
-                return new Tuple<string, Set>(set.Name, set);
+                return new Tuple<string, Set>(set.Name.ToLowerInvariant(), set);
             });
 
             return Task.CompletedTask;
@@ -169,7 +169,7 @@ namespace NxDomainOverride
 
             foreach (string setName in setNames)
             {
-                if (_sets.TryGetValue(setName, out Set set))
+                if (_sets.TryGetValue(setName.ToLowerInvariant(), out Set set))
                 {
                     switch (question.Type)
                     {
