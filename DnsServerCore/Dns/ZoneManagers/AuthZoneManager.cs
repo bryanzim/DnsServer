@@ -3872,17 +3872,14 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if (lastCNAME.Name.Equals(cnameDomain, StringComparison.OrdinalIgnoreCase))
                     break; //loop detected
 
-                _ = _root.FindZone(cnameDomain, out _, out _, out cnameApex, out _);
-                if ((cnameApex is null) || !cnameApex.IsActive)
+                AuthZone cnameZone = _root.FindZone(cnameDomain, out _, out _, out cnameApex, out _);
+                if ((cnameZone is null) || !cnameZone.IsActive || (cnameApex is null) || !cnameApex.IsActive)
                     break; //do not serve data from a disabled zone
 
                 if ((remoteIP is not null) && !await IsQueryAllowedAsync(cnameApex, remoteIP))
                     break; //do not serve data from a zone this client cannot query
 
-                if (!_root.TryGet(cnameDomain, out AuthZoneNode zoneNode))
-                    break;
-
-                IReadOnlyList<DnsResourceRecord> records = zoneNode.QueryRecords(question.Type, dnssecOk);
+                IReadOnlyList<DnsResourceRecord> records = cnameZone.QueryRecordsWildcard(question.Type, dnssecOk, cnameDomain);
                 if (records.Count < 1)
                     break;
 
