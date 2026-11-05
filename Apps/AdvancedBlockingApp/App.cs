@@ -1716,12 +1716,16 @@ namespace AdvancedBlocking
                                     string domain = line.Substring(2, i - 2);
                                     string options = line.Substring(i + 1);
 
+                                    domain = domain.ToLowerInvariant();
+
                                     if (IsDnsAdblockRule(options) && DnsClient.IsDomainNameValid(domain))
                                         blockedDomains.Enqueue(domain);
                                 }
                                 else
                                 {
                                     string domain = line.Substring(2);
+
+                                    domain = domain.ToLowerInvariant();
 
                                     if (DnsClient.IsDomainNameValid(domain))
                                         blockedDomains.Enqueue(domain);
@@ -1735,12 +1739,16 @@ namespace AdvancedBlocking
                                     string domain = line.Substring(4, i - 4);
                                     string options = line.Substring(i + 1);
 
+                                    domain = domain.ToLowerInvariant();
+
                                     if (IsDnsAdblockRule(options) && DnsClient.IsDomainNameValid(domain))
                                         allowedDomains.Enqueue(domain);
                                 }
                                 else
                                 {
                                     string domain = line.Substring(4);
+
+                                    domain = domain.ToLowerInvariant();
 
                                     if (DnsClient.IsDomainNameValid(domain))
                                         allowedDomains.Enqueue(domain);
