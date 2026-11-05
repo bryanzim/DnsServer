@@ -255,6 +255,58 @@ namespace DnsServerCore.Auth
             return _subItemPermissions.TryRemove(subItemName, out _);
         }
 
+        /// <summary>
+        /// Removes the user's entries from this permission and all sub item permissions and returns them.
+        /// User/Group hash by name, so entries must be detached before a rename and re-added via <see cref="ReattachPermissions(User, IReadOnlyList{KeyValuePair{Permission, PermissionFlag}})"/> after.
+        /// </summary>
+        public List<KeyValuePair<Permission, PermissionFlag>> DetachPermissions(User user)
+        {
+            List<KeyValuePair<Permission, PermissionFlag>> detached = new List<KeyValuePair<Permission, PermissionFlag>>();
+            DetachPermissions(user, detached);
+            return detached;
+        }
+
+        private void DetachPermissions(User user, List<KeyValuePair<Permission, PermissionFlag>> detached)
+        {
+            if (_userPermissions.TryRemove(user, out PermissionFlag flags))
+                detached.Add(new KeyValuePair<Permission, PermissionFlag>(this, flags));
+
+            foreach (KeyValuePair<string, Permission> subItemPermission in _subItemPermissions)
+                subItemPermission.Value.DetachPermissions(user, detached);
+        }
+
+        public static void ReattachPermissions(User user, IReadOnlyList<KeyValuePair<Permission, PermissionFlag>> detached)
+        {
+            foreach (KeyValuePair<Permission, PermissionFlag> entry in detached)
+                entry.Key.SetPermission(user, entry.Value);
+        }
+
+        /// <summary>
+        /// Removes the group's entries from this permission and all sub item permissions and returns them.
+        /// User/Group hash by name, so entries must be detached before a rename and re-added via <see cref="ReattachPermissions(Group, IReadOnlyList{KeyValuePair{Permission, PermissionFlag}})"/> after.
+        /// </summary>
+        public List<KeyValuePair<Permission, PermissionFlag>> DetachPermissions(Group group)
+        {
+            List<KeyValuePair<Permission, PermissionFlag>> detached = new List<KeyValuePair<Permission, PermissionFlag>>();
+            DetachPermissions(group, detached);
+            return detached;
+        }
+
+        private void DetachPermissions(Group group, List<KeyValuePair<Permission, PermissionFlag>> detached)
+        {
+            if (_groupPermissions.TryRemove(group, out PermissionFlag flags))
+                detached.Add(new KeyValuePair<Permission, PermissionFlag>(this, flags));
+
+            foreach (KeyValuePair<string, Permission> subItemPermission in _subItemPermissions)
+                subItemPermission.Value.DetachPermissions(group, detached);
+        }
+
+        public static void ReattachPermissions(Group group, IReadOnlyList<KeyValuePair<Permission, PermissionFlag>> detached)
+        {
+            foreach (KeyValuePair<Permission, PermissionFlag> entry in detached)
+                entry.Key.SetPermission(group, entry.Value);
+        }
+
         public Permission GetSubItemPermission(string subItemName)
         {
             if (_subItemPermissions.TryGetValue(subItemName.ToLowerInvariant(), out Permission subItemPermission))

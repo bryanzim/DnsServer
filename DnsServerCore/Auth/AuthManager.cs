@@ -1337,15 +1337,49 @@ namespace DnsServerCore.Auth
                 return;
 
             string oldUsername = user.Username;
-            user.SetUsername(newUsername);
 
-            if (!_users.TryAdd(user.Username, user))
+            //permission dictionaries hash User by username; detach entries under the old name and re-add them under the new name
+            List<KeyValuePair<Permission, PermissionFlag>> detachedPermissions = DetachPermissions(user);
+
+            try
             {
-                user.SetUsername(oldUsername); //revert
-                throw new DnsWebServiceException("User already exists: " + newUsername);
+                user.SetUsername(newUsername);
+
+                if (!_users.TryAdd(user.Username, user))
+                {
+                    user.SetUsername(oldUsername); //revert
+                    throw new DnsWebServiceException("User already exists: " + newUsername);
+                }
+            }
+            catch
+            {
+                Permission.ReattachPermissions(user, detachedPermissions); //username is unchanged at this point
+                throw;
             }
 
             _users.TryRemove(oldUsername, out _);
+
+            Permission.ReattachPermissions(user, detachedPermissions);
+        }
+
+        private List<KeyValuePair<Permission, PermissionFlag>> DetachPermissions(User user)
+        {
+            List<KeyValuePair<Permission, PermissionFlag>> detached = new List<KeyValuePair<Permission, PermissionFlag>>();
+
+            foreach (KeyValuePair<PermissionSection, Permission> permission in _permissions)
+                detached.AddRange(permission.Value.DetachPermissions(user));
+
+            return detached;
+        }
+
+        private List<KeyValuePair<Permission, PermissionFlag>> DetachPermissions(Group group)
+        {
+            List<KeyValuePair<Permission, PermissionFlag>> detached = new List<KeyValuePair<Permission, PermissionFlag>>();
+
+            foreach (KeyValuePair<PermissionSection, Permission> permission in _permissions)
+                detached.AddRange(permission.Value.DetachPermissions(group));
+
+            return detached;
         }
 
         public async Task<User> ChangePasswordAsync(string username, string password, string totp, IPAddress remoteAddress, string newPassword, int iterations)
@@ -1446,12 +1480,24 @@ namespace DnsServerCore.Auth
             }
 
             string oldGroupName = group.Name;
-            group.Name = newGroupName;
 
-            if (!_groups.TryAdd(group.Name.ToLowerInvariant(), group))
+            //permission dictionaries hash Group by name; detach entries under the old name and re-add them under the new name
+            List<KeyValuePair<Permission, PermissionFlag>> detachedPermissions = DetachPermissions(group);
+
+            try
             {
-                group.Name = oldGroupName; //revert
-                throw new DnsWebServiceException("Group already exists: " + newGroupName);
+                group.Name = newGroupName;
+
+                if (!_groups.TryAdd(group.Name.ToLowerInvariant(), group))
+                {
+                    group.Name = oldGroupName; //revert
+                    throw new DnsWebServiceException("Group already exists: " + newGroupName);
+                }
+            }
+            catch
+            {
+                Permission.ReattachPermissions(group, detachedPermissions); //group name is unchanged at this point
+                throw;
             }
 
             _groups.TryRemove(oldGroupName.ToLowerInvariant(), out _);
@@ -1459,6 +1505,8 @@ namespace DnsServerCore.Auth
             //update users
             foreach (KeyValuePair<string, User> user in _users)
                 user.Value.RenameGroup(oldGroupName);
+
+            Permission.ReattachPermissions(group, detachedPermissions);
         }
 
         public bool DeleteGroup(string name)
