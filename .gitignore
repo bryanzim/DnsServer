@@ -245,3 +245,8 @@ ModelManifest.xml
 .fake/
 
 Other/
+
+# CMake
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
