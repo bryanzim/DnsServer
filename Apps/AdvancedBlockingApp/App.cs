@@ -1613,6 +1613,71 @@ namespace AdvancedBlocking
 
             #region private
 
+            private static bool IsDnsAdblockRule(string options)
+            {
+                if (options.Length == 0)
+                    return true;
+
+                if (!options.StartsWith('$'))
+                    return false;
+
+                bool appliesToDns = false;
+                bool hasContentType = false;
+
+                foreach (string rawOption in options.Substring(1).Split(','))
+                {
+                    string option = rawOption.Trim();
+                    int valueIndex = option.IndexOf('=');
+                    if (valueIndex > -1)
+                        option = option.Substring(0, valueIndex);
+
+                    if (option.Length == 0)
+                        continue;
+
+                    switch (option.ToLowerInvariant())
+                    {
+                        case "doc":
+                        case "document":
+                        case "all":
+                            appliesToDns = true;
+                            break;
+
+                        case "~doc":
+                        case "~document":
+                            return false;
+
+                        case "third-party":
+                        case "~third-party":
+                        case "3p":
+                        case "~3p":
+                        case "first-party":
+                        case "~first-party":
+                        case "1p":
+                        case "~1p":
+                        case "match-case":
+                        case "important":
+                        case "domain":
+                        case "from":
+                        case "to":
+                        case "denyallow":
+                        case "badfilter":
+                        case "dnstype":
+                        case "dnsrewrite":
+                        case "client":
+                        case "ctag":
+                            break;
+
+                        default:
+                            if (!option.StartsWith('~'))
+                                hasContentType = true;
+
+                            break;
+                    }
+                }
+
+                return appliesToDns || !hasContentType;
+            }
+
             private void ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains)
             {
                 allowedDomains = new Queue<string>();
@@ -1651,7 +1716,7 @@ namespace AdvancedBlocking
                                     string domain = line.Substring(2, i - 2);
                                     string options = line.Substring(i + 1);
 
-                                    if (((options.Length == 0) || (options.StartsWith('$') && (options.Contains("doc") || options.Contains("all")))) && DnsClient.IsDomainNameValid(domain))
+                                    if (IsDnsAdblockRule(options) && DnsClient.IsDomainNameValid(domain))
                                         blockedDomains.Enqueue(domain);
                                 }
                                 else
@@ -1670,7 +1735,7 @@ namespace AdvancedBlocking
                                     string domain = line.Substring(4, i - 4);
                                     string options = line.Substring(i + 1);
 
-                                    if (((options.Length == 0) || (options.StartsWith('$') && (options.Contains("doc") || options.Contains("all")))) && DnsClient.IsDomainNameValid(domain))
+                                    if (IsDnsAdblockRule(options) && DnsClient.IsDomainNameValid(domain))
                                         allowedDomains.Enqueue(domain);
                                 }
                                 else
