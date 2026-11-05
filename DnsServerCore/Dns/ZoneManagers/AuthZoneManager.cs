@@ -676,9 +676,15 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                                     foreach (DnsResourceRecord nsResourceRecord in nsResourceRecords)
                                     {
-                                        if (MatchesServerDomain((nsResourceRecord.RDATA as DnsNSRecordData).NameServer, _knownServerDomains))
+                                        string nameServer = (nsResourceRecord.RDATA as DnsNSRecordData).NameServer;
+
+                                        //the new name is already recorded, so skip an NS that was renamed and keep looking for the previous name
+                                        if (nameServer.Equals(serverDomain, StringComparison.OrdinalIgnoreCase))
+                                            continue;
+
+                                        if (MatchesServerDomain(nameServer, _knownServerDomains))
                                         {
-                                            UpdateRecord(zone.Name, nsResourceRecord, new DnsResourceRecord(nsResourceRecord.Name, nsResourceRecord.Type, nsResourceRecord.Class, nsResourceRecord.TTL, new DnsNSRecordData(serverDomain)) { Tag = nsResourceRecord.Tag });
+                                            UpdateRecord(zone.Name, nsResourceRecord, CreateRenamedNameServerRecord(nsResourceRecord, nameServer, serverDomain));
                                             break;
                                         }
                                     }
@@ -716,6 +722,38 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                 }
             });
+        }
+
+        private static DnsResourceRecord CreateRenamedNameServerRecord(DnsResourceRecord nsResourceRecord, string previousName, string serverDomain)
+        {
+            DnsResourceRecord newRecord = new DnsResourceRecord(nsResourceRecord.Name, nsResourceRecord.Type, nsResourceRecord.Class, nsResourceRecord.TTL, new DnsNSRecordData(serverDomain));
+            NSRecordInfo oldInfo = nsResourceRecord.GetAuthNSRecordInfo();
+            NSRecordInfo newInfo = newRecord.GetAuthNSRecordInfo();
+
+            newInfo.Disabled = oldInfo.Disabled;
+            newInfo.Comments = oldInfo.Comments;
+            newInfo.LastModified = oldInfo.LastModified;
+            newInfo.ExpiryTtl = oldInfo.ExpiryTtl;
+            newInfo.LastUsedOn = oldInfo.LastUsedOn;
+
+            if (oldInfo.GlueRecords is not null)
+            {
+                DnsResourceRecord[] glueRecords = new DnsResourceRecord[oldInfo.GlueRecords.Count];
+
+                for (int i = 0; i < glueRecords.Length; i++)
+                {
+                    DnsResourceRecord glueRecord = oldInfo.GlueRecords[i];
+
+                    if (glueRecord.Name.Equals(previousName, StringComparison.OrdinalIgnoreCase))
+                        glueRecords[i] = new DnsResourceRecord(serverDomain, glueRecord.Type, glueRecord.Class, glueRecord.TTL, glueRecord.RDATA);
+                    else
+                        glueRecords[i] = glueRecord;
+                }
+
+                newInfo.GlueRecords = glueRecords;
+            }
+
+            return newRecord;
         }
 
         private static bool MatchesServerDomain(string nameServer, List<string> previousDomains)
