@@ -22,6 +22,7 @@ using DnsServerCore.ApplicationCommon;
 using LogExporter.Strategy;
 using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
@@ -104,7 +105,12 @@ namespace LogExporter
             if (_config.FileTarget!.Enabled)
             {
                 _exportManager.RemoveStrategy(typeof(FileExportStrategy));
-                _exportManager.AddStrategy(new FileExportStrategy(_config.FileTarget!.Path));
+                string logFilePath = _config.FileTarget!.Path;
+
+                if (!Path.IsPathRooted(logFilePath))
+                    logFilePath = Path.GetFullPath(Path.Combine(_dnsServer!.ApplicationFolder, logFilePath));
+
+                _exportManager.AddStrategy(new FileExportStrategy(logFilePath));
             }
             else
             {

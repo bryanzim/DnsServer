@@ -1,0 +1,10 @@
+<Project>
+	<!-- The Visual Studio generator builds C# projects as x64. Keep assemblies in bin\$(Configuration), the same folder dotnet uses. -->
+	<PropertyGroup>
+		<PlatformTarget>AnyCPU</PlatformTarget>
+		<OutputPath>$(MSBuildProjectDirectory)\bin\$(Configuration)\</OutputPath>
+		<OutDir>$(MSBuildProjectDirectory)\bin\$(Configuration)\</OutDir>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+	</PropertyGroup>
+</Project>

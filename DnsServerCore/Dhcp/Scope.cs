@@ -576,7 +576,7 @@ namespace DnsServerCore.Dhcp
             if (!string.IsNullOrWhiteSpace(reservedLeaseHostName))
             {
                 //domain name override by server
-                clientDomainName = DhcpServer.GetSanitizedHostName(reservedLeaseHostName) + "." + _domainName;
+                clientDomainName = DhcpServer.GetReservedLeaseFqdn(reservedLeaseHostName, _domainName);
             }
             else if (string.IsNullOrWhiteSpace(request.ClientFullyQualifiedDomainName.DomainName))
             {
@@ -878,6 +878,15 @@ namespace DnsServerCore.Dhcp
             return IsAddressInRange(address, _startingAddress, _endingAddress);
         }
 
+        internal bool IsRangeOverlapping(IPAddress startingAddress, IPAddress endingAddress)
+        {
+            //two ranges overlap when each one starts before the other one ends; this also covers a range that fully contains this scope's range
+            uint startingAddressNumber = startingAddress.ConvertIpToNumber();
+            uint endingAddressNumber = endingAddress.ConvertIpToNumber();
+
+            return (startingAddressNumber <= _endingAddress.ConvertIpToNumber()) && (_startingAddress.ConvertIpToNumber() <= endingAddressNumber);
+        }
+
         internal bool IsAddressInNetwork(IPAddress address)
         {
             uint addressNumber = address.ConvertIpToNumber();
@@ -956,7 +965,7 @@ namespace DnsServerCore.Dhcp
                 if (existingLease.Type == LeaseType.Reserved)
                 {
                     Lease existingReservedLease = GetReservedLease(request);
-                    if ((existingReservedLease is not null) && (existingReservedLease.Address == existingLease.Address))
+                    if ((existingReservedLease is not null) && existingReservedLease.Address.Equals(existingLease.Address))
                         return existingLease; //return existing reserved lease
 
                     //reserved lease address was changed; proceed to offer new lease
@@ -1030,6 +1039,9 @@ namespace DnsServerCore.Dhcp
             //find offer ip address
             IPAddress offerAddress = null;
 
+            try
+            {
+
             if (request.RequestedIpAddress != null)
             {
                 //client wish to get this address
@@ -1063,7 +1075,8 @@ namespace DnsServerCore.Dhcp
                             {
                                 _log.Write("DHCP Server failed to offer IP address to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': address unavailable due to address pool exhaustion.");
 
-                                return null;
+                                offerAddress = null;
+                                break;
                             }
 
                             offerAddress = IPAddressExtensions.ConvertNumberToIp(_startingAddress.ConvertIpToNumber() - 1u);
@@ -1081,7 +1094,8 @@ namespace DnsServerCore.Dhcp
                             offerAddress = addressStatus.NewAddress;
                     }
 
-                    _lastAddressOffered = offerAddress;
+                    if (offerAddress is not null)
+                        _lastAddressOffered = offerAddress;
                 }
                 finally
                 {
@@ -1089,8 +1103,26 @@ namespace DnsServerCore.Dhcp
                 }
             }
 
+            if (offerAddress is null)
+            {
+                RemovePlaceholderOffer(clientIdentifier, dummyOffer);
+                return null;
+            }
+
             Lease offerLease = new Lease(LeaseType.Dynamic, clientIdentifier, null, request.ClientHardwareAddress, offerAddress, null, GetLeaseTime());
             return _offers[clientIdentifier] = offerLease;
+            }
+            catch
+            {
+                RemovePlaceholderOffer(clientIdentifier, dummyOffer);
+                throw;
+            }
+        }
+
+        private void RemovePlaceholderOffer(ClientIdentifierOption clientIdentifier, Lease dummyOffer)
+        {
+            if (_offers.TryGetValue(clientIdentifier, out Lease currentOffer) && ReferenceEquals(currentOffer, dummyOffer))
+                _offers.TryRemove(clientIdentifier, out _);
         }
 
         internal Lease GetExistingLeaseOrOffer(DhcpMessage request)
@@ -1184,7 +1216,7 @@ namespace DnsServerCore.Dhcp
 
                         case DhcpOptionCode.HostName:
                             if (!string.IsNullOrWhiteSpace(reservedLeaseHostName))
-                                options.Add(new HostNameOption(reservedLeaseHostName));
+                                options.Add(new HostNameOption(DhcpServer.GetReservedLeaseHostLabel(reservedLeaseHostName, _domainName)));
 
                             break;
 
@@ -1522,19 +1554,14 @@ namespace DnsServerCore.Dhcp
 
             if (removedLease.Type == LeaseType.Reserved)
             {
-                //remove reserved lease
+                //always drop the allocated lease's DNS name; the reservation's own name is removed only when the reservation itself goes away
+                _dhcpServer.RemoveDnsEntries(this, removedLease, true);
+
                 ClientIdentifierOption reservedLeaseClientIdentifier = new ClientIdentifierOption((byte)DhcpMessageHardwareAddressType.Ethernet, removedLease.HardwareAddress);
-                if (_reservedLeases.TryGetValue(reservedLeaseClientIdentifier, out Lease existingReservedLease))
+                if (_reservedLeases.TryGetValue(reservedLeaseClientIdentifier, out Lease existingReservedLease) && existingReservedLease.Address.Equals(removedLease.Address))
                 {
-                    //remove reserved lease only if the IP addresses match
-                    if (existingReservedLease.Address.Equals(removedLease.Address))
-                    {
-                        if (_reservedLeases.TryRemove(reservedLeaseClientIdentifier, out Lease removedExistingLease))
-                        {
-                            _dhcpServer.RemoveDnsEntries(this, removedLease, true); //remove DNS entries for allocated lease
-                            _dhcpServer.RemoveDnsEntries(this, removedExistingLease, true); //remove DNS entries for reserved lease hostname, if any
-                        }
-                    }
+                    if (_reservedLeases.TryRemove(reservedLeaseClientIdentifier, out Lease removedExistingLease))
+                        _dhcpServer.RemoveDnsEntries(this, removedExistingLease, true);
                 }
             }
             else
@@ -1794,19 +1821,26 @@ namespace DnsServerCore.Dhcp
                 }
             }
 
-            bW.Write(_reservedLeases.Count);
+            //take a snapshot of the concurrent dictionaries so that the count written always matches the number of records that follow
+            {
+                KeyValuePair<ClientIdentifierOption, Lease>[] reservedLeases = _reservedLeases.ToArray();
 
-            foreach (KeyValuePair<ClientIdentifierOption, Lease> reservedLease in _reservedLeases)
-                reservedLease.Value.WriteTo(bW);
+                bW.Write(reservedLeases.Length);
+
+                foreach (KeyValuePair<ClientIdentifierOption, Lease> reservedLease in reservedLeases)
+                    reservedLease.Value.WriteTo(bW);
+            }
 
             bW.Write(_allowOnlyReservedLeases);
             bW.Write(_blockLocallyAdministeredMacAddresses);
             bW.Write(_ignoreClientIdentifierOption);
 
             {
-                bW.Write(_leases.Count);
+                KeyValuePair<ClientIdentifierOption, Lease>[] leases = _leases.ToArray();
 
-                foreach (KeyValuePair<ClientIdentifierOption, Lease> lease in _leases)
+                bW.Write(leases.Length);
+
+                foreach (KeyValuePair<ClientIdentifierOption, Lease> lease in leases)
                     lease.Value.WriteTo(bW);
             }
         }

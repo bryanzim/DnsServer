@@ -41,7 +41,7 @@ namespace Failover
         HealthCheckResponse? _lastHealthCheckResponse;
 
         const int MONITOR_EXPIRY = 1 * 60 * 60 * 1000; //1 hour
-        DateTime _lastHealthStatusCheckedOn;
+        DateTime _lastHealthStatusCheckedOn = DateTime.UtcNow; //initialize so that a newly created monitor is not immediately considered expired by the maintenance timer
 
         #endregion
 
@@ -148,8 +148,15 @@ namespace Failover
                 }
                 finally
                 {
-                    if (!_disposed && (_healthCheck is not null))
-                        _healthCheckTimer?.Change(_healthCheck.Interval, Timeout.Infinite);
+                    try
+                    {
+                        if (!_disposed && (_healthCheck is not null))
+                            _healthCheckTimer?.Change(_healthCheck.Interval, Timeout.Infinite);
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        //Dispose() raced with the check above; an unhandled exception here would terminate the process
+                    }
                 }
             }, null, Timeout.Infinite, Timeout.Infinite);
 

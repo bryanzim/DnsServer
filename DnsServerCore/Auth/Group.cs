@@ -80,7 +80,7 @@ namespace DnsServerCore.Auth
 
         public override int GetHashCode()
         {
-            return HashCode.Combine(_name);
+            return StringComparer.OrdinalIgnoreCase.GetHashCode(_name); //must be consistent with the case-insensitive Equals()
         }
 
         public override string ToString()

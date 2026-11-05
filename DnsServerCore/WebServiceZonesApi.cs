@@ -99,6 +99,25 @@ namespace DnsServerCore
 
             #region private
 
+            private static Dictionary<DnsSvcParamKey, DnsSvcParamValue> ParseSvcParams(string strSvcParams)
+            {
+                string[] strSvcParamsParts = strSvcParams.Split('|');
+                if ((strSvcParamsParts.Length % 2) != 0)
+                    throw new DnsWebServiceException("Invalid service parameter value: expected 'key|value' pairs.");
+
+                Dictionary<DnsSvcParamKey, DnsSvcParamValue> svcParams = new Dictionary<DnsSvcParamKey, DnsSvcParamValue>(strSvcParamsParts.Length / 2);
+
+                for (int i = 0; i < strSvcParamsParts.Length; i += 2)
+                {
+                    DnsSvcParamKey svcParamKey = Enum.Parse<DnsSvcParamKey>(strSvcParamsParts[i].Replace('-', '_'), true);
+                    DnsSvcParamValue svcParamValue = DnsSvcParamValue.Parse(svcParamKey, strSvcParamsParts[i + 1]);
+
+                    svcParams.Add(svcParamKey, svcParamValue);
+                }
+
+                return svcParams;
+            }
+
             private static void WriteRecordAsJson(DnsResourceRecord record, Utf8JsonWriter jsonWriter, bool authoritativeZoneRecords, AuthZoneInfo zoneInfo = null)
             {
                 jsonWriter.WriteStartObject();
@@ -322,7 +341,7 @@ namespace DnsServerCore
                                 jsonWriter.WriteString("mailbox", rdata.Mailbox);
                                 jsonWriter.WriteString("txtDomain", rdata.TxtDomain);
 
-                                if (DnsClient.TryConvertDomainNameToUnicode(rdata.Mailbox, out string txtDomainIdn))
+                                if (DnsClient.TryConvertDomainNameToUnicode(rdata.TxtDomain, out string txtDomainIdn))
                                     jsonWriter.WriteString("txtDomainIdn", txtDomainIdn);
                             }
                             else
@@ -1510,6 +1529,8 @@ namespace DnsServerCore
                 if (request.TryGetQueryOrForm("pageNumber", int.Parse, out int pageNumber))
                 {
                     int zonesPerPage = request.GetQueryOrForm("zonesPerPage", int.Parse, 10);
+                    if (zonesPerPage < 1)
+                        zonesPerPage = 10;
                     int totalPages;
                     int totalZones = zoneInfoList.Count;
 
@@ -1938,7 +1959,17 @@ namespace DnsServerCore
 
                 TextReader textReader;
 
-                switch (request.ContentType?.ToLowerInvariant())
+                string contentType = request.ContentType;
+                if (!string.IsNullOrEmpty(contentType))
+                {
+                    int parameterIndex = contentType.IndexOf(';');
+                    if (parameterIndex > -1)
+                        contentType = contentType.Substring(0, parameterIndex);
+
+                    contentType = contentType.Trim().ToLowerInvariant();
+                }
+
+                switch (contentType)
                 {
                     case "application/x-www-form-urlencoded":
                         string zoneRecords = request.GetQueryOrForm("records");
@@ -2896,7 +2927,7 @@ namespace DnsServerCore
                         }
                         catch (Exception ex)
                         {
-                            failed.Add(zoneName, ex.Message);
+                            failed[zoneName] = ex.Message;
                             _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] Failed to deleted zone: " + zoneName, ex);
                         }
                     }
@@ -3441,12 +3472,15 @@ namespace DnsServerCore
                             if (zoneInfo.ApexZone.SecondaryCatalogZone is not null)
                                 break; //cannot set option for zone that is a member of Secondary Catalog Zone
 
-                            if (request.TryGetQueryOrFormEnum("primaryZoneTransferProtocol", out DnsTransportProtocol primaryZoneTransferProtocol))
+                            DnsTransportProtocol primaryZoneTransferProtocol = zoneInfo.PrimaryZoneTransferProtocol;
+
+                            if (request.TryGetQueryOrFormEnum("primaryZoneTransferProtocol", out DnsTransportProtocol requestedPrimaryZoneTransferProtocol))
                             {
-                                if (primaryZoneTransferProtocol == DnsTransportProtocol.Quic)
+                                if (requestedPrimaryZoneTransferProtocol == DnsTransportProtocol.Quic)
                                     DnsServer.ValidateQuicSupport();
 
-                                zoneInfo.PrimaryZoneTransferProtocol = primaryZoneTransferProtocol;
+                                primaryZoneTransferProtocol = requestedPrimaryZoneTransferProtocol;
+                                zoneInfo.PrimaryZoneTransferProtocol = requestedPrimaryZoneTransferProtocol;
                             }
 
                             string primaryNameServerAddresses = request.QueryOrForm("primaryNameServerAddresses");
@@ -3662,6 +3696,9 @@ namespace DnsServerCore
                             else
                             {
                                 string[] strUpdateSecurityPoliciesParts = strUpdateSecurityPolicies.Split(_pipeSeparator, StringSplitOptions.RemoveEmptyEntries);
+                                if ((strUpdateSecurityPoliciesParts.Length % 3) != 0)
+                                    throw new DnsWebServiceException("Invalid 'updateSecurityPolicies' value: expected 'tsigKeyName|domain|types' triplets.");
+
                                 Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<DnsResourceRecordType>>> updateSecurityPolicies = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<DnsResourceRecordType>>>(strUpdateSecurityPoliciesParts.Length);
 
                                 for (int i = 0; i < strUpdateSecurityPoliciesParts.Length; i += 3)
@@ -4089,16 +4126,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string[] strSvcParamsParts = strSvcParams.Split('|');
-                                svcParams = new Dictionary<DnsSvcParamKey, DnsSvcParamValue>(strSvcParamsParts.Length / 2);
-
-                                for (int i = 0; i < strSvcParamsParts.Length; i += 2)
-                                {
-                                    DnsSvcParamKey svcParamKey = Enum.Parse<DnsSvcParamKey>(strSvcParamsParts[i].Replace('-', '_'), true);
-                                    DnsSvcParamValue svcParamValue = DnsSvcParamValue.Parse(svcParamKey, strSvcParamsParts[i + 1]);
-
-                                    svcParams.Add(svcParamKey, svcParamValue);
-                                }
+                                svcParams = ParseSvcParams(strSvcParams);
                             }
 
                             newRecord = new DnsResourceRecord(domain, type, DnsClass.IN, ttl, new DnsSVCBRecordData(svcPriority, targetName, svcParams));
@@ -4524,16 +4552,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string[] strSvcParamsParts = strSvcParams.Split('|');
-                                svcParams = new Dictionary<DnsSvcParamKey, DnsSvcParamValue>(strSvcParamsParts.Length / 2);
-
-                                for (int i = 0; i < strSvcParamsParts.Length; i += 2)
-                                {
-                                    DnsSvcParamKey svcParamKey = Enum.Parse<DnsSvcParamKey>(strSvcParamsParts[i].Replace('-', '_'), true);
-                                    DnsSvcParamValue svcParamValue = DnsSvcParamValue.Parse(svcParamKey, strSvcParamsParts[i + 1]);
-
-                                    svcParams.Add(svcParamKey, svcParamValue);
-                                }
+                                svcParams = ParseSvcParams(strSvcParams);
                             }
 
                             if (!_dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(zoneInfo.Name, domain, type, new DnsSVCBRecordData(svcPriority, targetName, svcParams)))
@@ -4639,6 +4658,9 @@ namespace DnsServerCore
 
                 string newDomain = request.GetQueryOrForm("newDomain", domain).Trim('.');
 
+                if (DnsClient.IsDomainNameUnicode(newDomain))
+                    newDomain = DnsClient.ConvertDomainNameToAscii(newDomain);
+
                 DnsResourceRecordType type = request.GetQueryOrFormEnum<DnsResourceRecordType>("type");
 
                 uint defaultTtl;
@@ -4725,7 +4747,7 @@ namespace DnsServerCore
                                 }
 
                                 //add new PTR record and save reverse zone
-                                DnsResourceRecord ptrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(domain));
+                                DnsResourceRecord ptrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(newDomain)); //PTR must point to the updated record name
                                 ptrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
                                 ptrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
 
@@ -5035,16 +5057,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string[] strSvcParamsParts = strSvcParams.Split('|');
-                                svcParams = new Dictionary<DnsSvcParamKey, DnsSvcParamValue>(strSvcParamsParts.Length / 2);
-
-                                for (int i = 0; i < strSvcParamsParts.Length; i += 2)
-                                {
-                                    DnsSvcParamKey svcParamKey = Enum.Parse<DnsSvcParamKey>(strSvcParamsParts[i].Replace('-', '_'), true);
-                                    DnsSvcParamValue svcParamValue = DnsSvcParamValue.Parse(svcParamKey, strSvcParamsParts[i + 1]);
-
-                                    svcParams.Add(svcParamKey, svcParamValue);
-                                }
+                                svcParams = ParseSvcParams(strSvcParams);
                             }
 
                             Dictionary<DnsSvcParamKey, DnsSvcParamValue> newSvcParams;
@@ -5055,16 +5068,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string[] strSvcParamsParts = strNewSvcParams.Split('|');
-                                newSvcParams = new Dictionary<DnsSvcParamKey, DnsSvcParamValue>(strSvcParamsParts.Length / 2);
-
-                                for (int i = 0; i < strSvcParamsParts.Length; i += 2)
-                                {
-                                    DnsSvcParamKey svcParamKey = Enum.Parse<DnsSvcParamKey>(strSvcParamsParts[i].Replace('-', '_'), true);
-                                    DnsSvcParamValue svcParamValue = DnsSvcParamValue.Parse(svcParamKey, strSvcParamsParts[i + 1]);
-
-                                    newSvcParams.Add(svcParamKey, svcParamValue);
-                                }
+                                newSvcParams = ParseSvcParams(strNewSvcParams);
                             }
 
                             oldRecord = new DnsResourceRecord(domain, type, DnsClass.IN, 0, new DnsSVCBRecordData(svcPriority, targetName, svcParams));
@@ -5219,6 +5223,9 @@ namespace DnsServerCore
                         case AuthZoneType.Catalog:
                             _dnsWebService._dnsServer.AuthZoneManager.SetRecord(zoneInfo.Name, newRecord);
                             break;
+
+                        default:
+                            throw new DnsWebServiceException("Cannot update SOA record for " + zoneInfo.TypeName + " zone.");
                     }
 
                     //get updated record to return json

@@ -68,6 +68,7 @@ namespace DnsServerCore.Dns.ZoneManagers
         readonly ReaderWriterLockSlim _zoneIndexLock = new ReaderWriterLockSlim();
 
         readonly Lock _saveLock = new Lock();
+        readonly Lock _updateServerDomainLock = new Lock();
         readonly Dictionary<string, object> _pendingSaveZones = new Dictionary<string, object>();
         readonly Timer _saveTimer;
         const int SAVE_TIMER_INITIAL_INTERVAL = 5000;
@@ -481,7 +482,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         catch
                         {
-                            DeleteZone(zoneInfo);
+                            RemoveFailedApexZone(zoneInfo);
                             throw;
                         }
 
@@ -529,7 +530,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         catch
                         {
-                            DeleteZone(zoneInfo);
+                            RemoveFailedApexZone(zoneInfo);
                             throw;
                         }
 
@@ -563,7 +564,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         catch
                         {
-                            DeleteZone(zoneInfo);
+                            RemoveFailedApexZone(zoneInfo);
                             throw;
                         }
 
@@ -614,67 +615,104 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             ThreadPool.QueueUserWorkItem(delegate (object state)
             {
-                string serverDomain = _dnsServer.ServerDomain;
-
-                //update authoritative zone SOA and NS records
-                try
+                lock (_updateServerDomainLock)
                 {
-                    IReadOnlyList<AuthZoneInfo> zones = GetAllZones();
+                    //domains this server has already written into SOA/NS; a superseded run must still match them
+                    List<string> previousDomains = new List<string>(2);
 
-                    foreach (AuthZoneInfo zone in zones)
+                    if (!string.IsNullOrEmpty(_serverDomain))
+                        previousDomains.Add(_serverDomain);
+
+                    while (true)
                     {
-                        if (_updateServerDomainId != id)
-                            return; //stop current update since another update has been triggerred
+                        int runId = _updateServerDomainId;
+                        string serverDomain = _dnsServer.ServerDomain;
+                        bool superseded = false;
+                        bool failed = false;
 
-                        if (zone.Type != AuthZoneType.Primary)
-                            continue;
-
-                        DnsResourceRecord record = zone.ApexZone.GetRecords(DnsResourceRecordType.SOA)[0];
-                        DnsSOARecordData soa = record.RDATA as DnsSOARecordData;
-
-                        uint ttl;
-                        uint minimum;
-
-                        if (useBlockingAnswerTtl)
+                        try
                         {
-                            ttl = _dnsServer.BlockingAnswerTtl;
-                            minimum = ttl;
-                        }
-                        else
-                        {
-                            ttl = record.TTL;
-                            minimum = soa.Minimum;
-                        }
+                            IReadOnlyList<AuthZoneInfo> zones = GetAllZones();
 
-                        if (soa.PrimaryNameServer.Equals(_serverDomain, StringComparison.OrdinalIgnoreCase))
-                        {
-                            SetRecord(zone.Name, new DnsResourceRecord(record.Name, record.Type, DnsClass.IN, ttl, new DnsSOARecordData(serverDomain, soa.ResponsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, minimum)));
-
-                            //update NS records
-                            IReadOnlyList<DnsResourceRecord> nsResourceRecords = zone.ApexZone.GetRecords(DnsResourceRecordType.NS);
-
-                            foreach (DnsResourceRecord nsResourceRecord in nsResourceRecords)
+                            foreach (AuthZoneInfo zone in zones)
                             {
-                                if ((nsResourceRecord.RDATA as DnsNSRecordData).NameServer.Equals(_serverDomain, StringComparison.OrdinalIgnoreCase))
+                                if (_updateServerDomainId != runId)
                                 {
-                                    UpdateRecord(zone.Name, nsResourceRecord, new DnsResourceRecord(nsResourceRecord.Name, nsResourceRecord.Type, nsResourceRecord.Class, nsResourceRecord.TTL, new DnsNSRecordData(serverDomain)) { Tag = nsResourceRecord.Tag });
+                                    superseded = true;
                                     break;
                                 }
-                            }
 
-                            //save zone file
-                            SaveZoneFile(zone.Name);
+                                if (zone.Type != AuthZoneType.Primary)
+                                    continue;
+
+                                DnsResourceRecord record = zone.ApexZone.GetRecords(DnsResourceRecordType.SOA)[0];
+                                DnsSOARecordData soa = record.RDATA as DnsSOARecordData;
+
+                                if (!MatchesServerDomain(soa.PrimaryNameServer, previousDomains))
+                                    continue;
+
+                                uint ttl;
+                                uint minimum;
+
+                                if (useBlockingAnswerTtl)
+                                {
+                                    ttl = _dnsServer.BlockingAnswerTtl;
+                                    minimum = ttl;
+                                }
+                                else
+                                {
+                                    ttl = record.TTL;
+                                    minimum = soa.Minimum;
+                                }
+
+                                SetRecord(zone.Name, new DnsResourceRecord(record.Name, record.Type, DnsClass.IN, ttl, new DnsSOARecordData(serverDomain, soa.ResponsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, minimum)) { Tag = record.Tag }); //preserve record info (serial date scheme, comments)
+
+                                //update NS records
+                                IReadOnlyList<DnsResourceRecord> nsResourceRecords = zone.ApexZone.GetRecords(DnsResourceRecordType.NS);
+
+                                foreach (DnsResourceRecord nsResourceRecord in nsResourceRecords)
+                                {
+                                    if (MatchesServerDomain((nsResourceRecord.RDATA as DnsNSRecordData).NameServer, previousDomains))
+                                    {
+                                        UpdateRecord(zone.Name, nsResourceRecord, new DnsResourceRecord(nsResourceRecord.Name, nsResourceRecord.Type, nsResourceRecord.Class, nsResourceRecord.TTL, new DnsNSRecordData(serverDomain)) { Tag = nsResourceRecord.Tag });
+                                        break;
+                                    }
+                                }
+
+                                //save zone file
+                                SaveZoneFile(zone.Name);
+                            }
                         }
+                        catch (Exception ex)
+                        {
+                            _dnsServer.LogManager.Write(ex);
+                            failed = true;
+                        }
+
+                        if (!previousDomains.Exists(delegate (string previousDomain) { return previousDomain.Equals(serverDomain, StringComparison.OrdinalIgnoreCase); }))
+                            previousDomains.Add(serverDomain);
+
+                        if (superseded || (_updateServerDomainId != runId))
+                            continue; //a newer domain was saved while this pass was writing; rewrite again so every zone converges
+
+                        if (!failed)
+                            _serverDomain = serverDomain;
+
+                        return;
                     }
                 }
-                catch (Exception ex)
-                {
-                    _dnsServer.LogManager.Write(ex);
-                }
-
-                //update server domain
-                _serverDomain = serverDomain;
             });
+        }
+
+        private static bool MatchesServerDomain(string nameServer, List<string> previousDomains)
+        {
+            foreach (string previousDomain in previousDomains)
+            {
+                if (nameServer.Equals(previousDomain, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         internal static string GetParentZone(string domain)
@@ -748,6 +786,14 @@ namespace DnsServerCore.Dns.ZoneManagers
                 return apexZone;
 
             throw new DnsServerException("Zone already exists: " + zoneInfo.DisplayName);
+        }
+
+        private void RemoveFailedApexZone(AuthZoneInfo zoneInfo)
+        {
+            //removes a partially loaded apex zone from the zone tree only; the zone was never added to the zone index
+            //and the caller holds the non-recursive _zoneIndexLock write lock so DeleteZone() must not be used here
+            if (_root.TryRemove(zoneInfo.Name, out ApexZone removedApexZone))
+                removedApexZone.Dispose();
         }
 
         internal AuthZone GetOrAddSubDomainZone(string zoneName, string domain)
@@ -2404,6 +2450,22 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                     else
                     {
+                        //add the new record first so that a failure while adding (CNAME conflict, TTL validation, bailiwick) does not lose the old record
+                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
+
+                        try
+                        {
+                            newZone.SetRecords(newRecord.Type, new DnsResourceRecord[] { newRecord });
+                        }
+                        catch
+                        {
+                            RemoveSubDomainZoneIfEmpty(newZone, newRecord.Name);
+                            throw;
+                        }
+
+                        if (newZone is SubDomainZone subDomainZone1)
+                            subDomainZone1.AutoUpdateState();
+
                         authZone.DeleteRecords(oldRecord.Type);
 
                         if (authZone is SubDomainZone subDomainZone)
@@ -2413,13 +2475,6 @@ namespace DnsServerCore.Dns.ZoneManagers
                             else
                                 subDomainZone.AutoUpdateState();
                         }
-
-                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
-
-                        newZone.SetRecords(newRecord.Type, new DnsResourceRecord[] { newRecord });
-
-                        if (newZone is SubDomainZone subDomainZone1)
-                            subDomainZone1.AutoUpdateState();
                     }
                     break;
 
@@ -2433,6 +2488,37 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                     else
                     {
+                        //check that the old record exists before making any changes
+                        bool oldRecordExists = false;
+
+                        foreach (DnsResourceRecord existingRecord in authZone.GetRecords(oldRecord.Type))
+                        {
+                            if (oldRecord.RDATA.Equals(existingRecord.RDATA))
+                            {
+                                oldRecordExists = true;
+                                break;
+                            }
+                        }
+
+                        if (!oldRecordExists)
+                            throw new DnsWebServiceException("Cannot update record: the old record does not exists.");
+
+                        //add the new record first so that a failure while adding (CNAME conflict, TTL validation, bailiwick) does not lose the old record
+                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
+
+                        try
+                        {
+                            newZone.AddRecord(newRecord);
+                        }
+                        catch
+                        {
+                            RemoveSubDomainZoneIfEmpty(newZone, newRecord.Name);
+                            throw;
+                        }
+
+                        if (newZone is SubDomainZone subDomainZone1)
+                            subDomainZone1.AutoUpdateState();
+
                         if (!authZone.DeleteRecord(oldRecord.Type, oldRecord.RDATA))
                             throw new DnsWebServiceException("Cannot update record: the old record does not exists.");
 
@@ -2443,16 +2529,15 @@ namespace DnsServerCore.Dns.ZoneManagers
                             else
                                 subDomainZone.AutoUpdateState();
                         }
-
-                        AuthZone newZone = GetOrAddSubDomainZone(zoneName, newRecord.Name);
-
-                        newZone.AddRecord(newRecord);
-
-                        if (newZone is SubDomainZone subDomainZone1)
-                            subDomainZone1.AutoUpdateState();
                     }
                     break;
             }
+        }
+
+        private void RemoveSubDomainZoneIfEmpty(AuthZone authZone, string domain)
+        {
+            if ((authZone is SubDomainZone) && authZone.IsEmpty)
+                _root.TryRemove(domain, out SubDomainZone _);
         }
 
         public bool DeleteRecord(string zoneName, DnsResourceRecord record)
@@ -3263,7 +3348,11 @@ namespace DnsServerCore.Dns.ZoneManagers
         public DnsDatagram QueryClosestDelegation(DnsDatagram request)
         {
             _ = _root.FindZone(request.Question[0].Name, out _, out SubDomainZone delegation, out ApexZone apexZone, out _);
-            if (delegation is not null)
+
+            if ((apexZone is null) || !apexZone.IsActive)
+                return null;
+
+            if ((delegation is not null) && delegation.IsActive && (delegation.Name.Length > apexZone.Name.Length))
             {
                 bool dnssecOk = request.DnssecOk && (apexZone.DnssecStatus != AuthZoneDnssecStatus.Unsigned);
 
@@ -3532,6 +3621,20 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
 
                         DnsResourceRecord lastRR = answer[answer.Count - 1];
+
+                        if (dnssecOk)
+                        {
+                            //skip trailing RRSIG records appended for DNSSEC OK queries to find the actual last RR
+                            for (int i = answer.Count - 1; i >= 0; i--)
+                            {
+                                if (answer[i].Type != DnsResourceRecordType.RRSIG)
+                                {
+                                    lastRR = answer[i];
+                                    break;
+                                }
+                            }
+                        }
+
                         if ((lastRR.Type != question.Type) && (question.Type != DnsResourceRecordType.ANY))
                         {
                             switch (lastRR.Type)
@@ -3682,12 +3785,17 @@ namespace DnsServerCore.Dns.ZoneManagers
         private void ResolveCNAME(DnsQuestionRecord question, bool dnssecOk, DnsResourceRecord lastCNAME, List<DnsResourceRecord> answerRecords)
         {
             int queryCount = 0;
+            ApexZone cnameApex;
 
             do
             {
                 string cnameDomain = (lastCNAME.RDATA as DnsCNAMERecordData).Domain;
                 if (lastCNAME.Name.Equals(cnameDomain, StringComparison.OrdinalIgnoreCase))
                     break; //loop detected
+
+                _ = _root.FindZone(cnameDomain, out _, out _, out cnameApex, out _);
+                if ((cnameApex is null) || !cnameApex.IsActive)
+                    break; //do not serve data from a disabled zone
 
                 if (!_root.TryGet(cnameDomain, out AuthZoneNode zoneNode))
                     break;
@@ -3803,12 +3911,13 @@ namespace DnsServerCore.Dns.ZoneManagers
         private void ResolveAdditionalRecords(DnsResourceRecord refRecord, string domain, bool dnssecOk, List<DnsResourceRecord> additionalRecords)
         {
             int count = 0;
+            ApexZone apexZone;
 
             while (count++ < DnsServer.MAX_CNAME_HOPS)
             {
-                AuthZone zone = _root.FindZone(domain, out _, out _, out _, out _);
-                if ((zone is null) || !zone.IsActive)
-                    break;
+                AuthZone zone = _root.FindZone(domain, out _, out _, out apexZone, out _);
+                if ((zone is null) || (apexZone is null) || !apexZone.IsActive || !zone.IsActive)
+                    break; //a subdomain of a disabled apex is not authoritative glue
 
                 if (((refRecord.Type == DnsResourceRecordType.SVCB) || (refRecord.Type == DnsResourceRecordType.HTTPS)) && ((refRecord.RDATA as DnsSVCBRecordData).SvcPriority == 0))
                 {

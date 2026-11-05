@@ -65,6 +65,7 @@ namespace DnsServerCore.Cluster
         DateTime _upSince;
         DateTime _lastSeen;
         HttpApiClient _apiClient;
+        readonly object _apiClientLock = new object();
 
         Timer _heartbeatTimer;
         const int HEARTBEAT_TIMER_INITIAL_INTERVAL = 5000;
@@ -160,26 +161,23 @@ namespace DnsServerCore.Cluster
 
         public void Dispose()
         {
-            if (_disposed)
-                return;
+            HttpApiClient apiClient;
+
+            lock (_apiClientLock)
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                apiClient = _apiClient;
+                _apiClient = null;
+            }
 
             _heartbeatTimer?.Dispose();
 
-            if (_apiClient is not null)
-            {
-                ThreadPool.QueueUserWorkItem(async delegate (object state)
-                {
-                    try
-                    {
-                        await Task.Delay(2000); //give some time for any in-progress API calls to complete
-                        _apiClient?.Dispose();
-                    }
-                    catch
-                    { }
-                });
-            }
+            if (apiClient is not null)
+                ReleaseApiClient(apiClient);
 
-            _disposed = true;
             GC.SuppressFinalize(this);
         }
 
@@ -192,30 +190,36 @@ namespace DnsServerCore.Cluster
             if (_state == ClusterNodeState.Self)
                 throw new InvalidOperationException();
 
-            if (_apiClient is null)
+            lock (_apiClientLock)
             {
-                HttpApiClient apiClient = new HttpApiClient(_url, _clusterManager.DnsWebService.DnsServer.Proxy, _clusterManager.DnsWebService.DnsServer.IPv6Mode, false, new InternalDnsClient(_clusterManager.DnsWebService.DnsServer, this));
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(ClusterNode));
 
-                UserSession clusterApiToken = null;
-
-                foreach (UserSession session in _clusterManager.DnsWebService.AuthManager.Sessions)
+                if (_apiClient is null)
                 {
-                    if (session.Type == UserSessionType.ClusterApiToken)
+                    HttpApiClient apiClient = new HttpApiClient(_url, _clusterManager.DnsWebService.DnsServer.Proxy, _clusterManager.DnsWebService.DnsServer.IPv6Mode, false, new InternalDnsClient(_clusterManager.DnsWebService.DnsServer, this));
+
+                    UserSession clusterApiToken = null;
+
+                    foreach (UserSession session in _clusterManager.DnsWebService.AuthManager.Sessions)
                     {
-                        clusterApiToken = session;
-                        break;
+                        if (session.Type == UserSessionType.ClusterApiToken)
+                        {
+                            clusterApiToken = session;
+                            break;
+                        }
                     }
+
+                    if (clusterApiToken is null)
+                        throw new InvalidOperationException("No API token was found for the Cluster domain.");
+
+                    apiClient.UseApiToken(clusterApiToken.Token);
+
+                    _apiClient = apiClient;
                 }
 
-                if (clusterApiToken is null)
-                    throw new InvalidOperationException("No API token was found for the Cluster domain.");
-
-                apiClient.UseApiToken(clusterApiToken.Token);
-
-                _apiClient = apiClient;
+                return _apiClient;
             }
-
-            return _apiClient;
         }
 
         private async void HeartbeatTimerCallbackAsync(object state)
@@ -321,11 +325,8 @@ namespace DnsServerCore.Cluster
                 changed = true;
             }
 
-            if (changed && (_apiClient is not null))
-            {
-                _apiClient.Dispose();
-                _apiClient = null;
-            }
+            if (changed)
+                ReplaceApiClient();
         }
 
         public void UpdateNode(ClusterInfo.ClusterNodeInfo nodeInfo)
@@ -350,11 +351,36 @@ namespace DnsServerCore.Cluster
 
             _type = Enum.Parse<ClusterNodeType>(nodeInfo.Type, true);
 
-            if (changed && (_apiClient is not null))
+            if (changed)
+                ReplaceApiClient();
+        }
+
+        private void ReplaceApiClient()
+        {
+            HttpApiClient apiClient;
+
+            lock (_apiClientLock)
             {
-                _apiClient.Dispose();
+                apiClient = _apiClient;
                 _apiClient = null;
             }
+
+            if (apiClient is not null)
+                ReleaseApiClient(apiClient);
+        }
+
+        private static void ReleaseApiClient(HttpApiClient apiClient)
+        {
+            ThreadPool.QueueUserWorkItem(async delegate (object state)
+            {
+                try
+                {
+                    await Task.Delay(2000); //give in-flight calls time to finish before the client is disposed
+                    apiClient.Dispose();
+                }
+                catch
+                { }
+            });
         }
 
         public void InitializeHeartbeatTimer()

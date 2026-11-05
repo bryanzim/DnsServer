@@ -178,7 +178,17 @@ namespace DnsServerCore.Dns.Applications
                 if (_dnsApplications is not null)
                 {
                     foreach (KeyValuePair<string, IDnsApplication> app in _dnsApplications)
-                        app.Value.Dispose();
+                    {
+                        try
+                        {
+                            app.Value.Dispose();
+                        }
+                        catch (Exception ex)
+                        {
+                            //one app failing to dispose must not prevent the remaining apps from being disposed and the assembly context from unloading
+                            _dnsServer.WriteLog(ex);
+                        }
+                    }
                 }
 
                 if (_appContext != null)
@@ -197,9 +207,10 @@ namespace DnsServerCore.Dns.Applications
 
         #region internal
 
-        internal async Task InitializeAsync()
+        internal async Task InitializeAsync(bool throwOnFailure = false)
         {
             string config = await GetConfigAsync();
+            List<Exception> failures = null;
 
             foreach (KeyValuePair<string, IDnsApplication> app in _dnsApplications)
             {
@@ -210,8 +221,14 @@ namespace DnsServerCore.Dns.Applications
                 catch (Exception ex)
                 {
                     _dnsServer.WriteLog(ex);
+
+                    if (throwOnFailure)
+                        (failures ??= new List<Exception>()).Add(ex);
                 }
             }
+
+            if (failures is not null)
+                throw new AggregateException("DNS application failed to initialize.", failures);
         }
 
         #endregion

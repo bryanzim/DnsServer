@@ -177,12 +177,11 @@ namespace DnsServerCore
                     if (type == DnsResourceRecordType.AXFR)
                         throw new DnsServerException("Cannot do zone transfer (AXFR) for 'recursive-resolver'.");
 
-                    DnsQuestionRecord question;
-
+                    //convert IP address to reverse domain so that zone import does not create a zone named after the IP address literal
                     if ((type == DnsResourceRecordType.PTR) && IPAddress.TryParse(domain, out IPAddress address))
-                        question = new DnsQuestionRecord(address, DnsClass.IN);
-                    else
-                        question = new DnsQuestionRecord(domain, type, DnsClass.IN);
+                        domain = address.GetReverseDomain();
+
+                    DnsQuestionRecord question = new DnsQuestionRecord(domain, type, DnsClass.IN);
 
                     DnsCache dnsCache = new DnsCache();
                     dnsCache.MinimumRecordTtl = 0;
@@ -298,11 +297,12 @@ namespace DnsServerCore
                     dnsClient.DnssecValidation = dnssecValidation;
                     dnsClient.EDnsClientSubnet = eDnsClientSubnet;
 
+                    //convert IP address to reverse domain so that zone import does not create a zone named after the IP address literal
+                    if ((type == DnsResourceRecordType.PTR) && IPAddress.TryParse(domain, out IPAddress ptrIp))
+                        domain = ptrIp.GetReverseDomain();
+
                     if (dnssecValidation)
                     {
-                        if ((type == DnsResourceRecordType.PTR) && IPAddress.TryParse(domain, out IPAddress ptrIp))
-                            domain = ptrIp.GetReverseDomain();
-
                         //load trust anchors into dns client if domain is locally hosted
                         _dnsWebService._dnsServer.AuthZoneManager.LoadTrustAnchorsTo(dnsClient, domain, type);
                     }

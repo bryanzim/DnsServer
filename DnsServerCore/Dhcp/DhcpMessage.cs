@@ -264,8 +264,8 @@ namespace DnsServerCore.Dhcp
                     option.ParseOptionValue();
             }
 
-            if (_maximumDhcpMessageSize != null)
-                _maximumDhcpMessageSize = new MaximumDhcpMessageSizeOption(576);
+            if (_maximumDhcpMessageSize == null)
+                _maximumDhcpMessageSize = new MaximumDhcpMessageSizeOption(576); //RFC 2131: default minimum message size when the client does not specify option 57
         }
 
         #endregion

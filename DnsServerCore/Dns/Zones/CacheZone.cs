@@ -105,6 +105,12 @@ namespace DnsServerCore.Dns.Zones
                     return []; //RR Set is special cache record
             }
 
+            //update last used on
+            DateTime utcNow = DateTime.UtcNow;
+
+            foreach (DnsResourceRecord record in records)
+                record.GetCacheRecordInfo().LastUsedOn = utcNow;
+
             if (records.Count > 1)
             {
                 switch (records[0].Type)
@@ -116,12 +122,6 @@ namespace DnsServerCore.Dns.Zones
                         return newRecords;
                 }
             }
-
-            //update last used on
-            DateTime utcNow = DateTime.UtcNow;
-
-            foreach (DnsResourceRecord record in records)
-                record.GetCacheRecordInfo().LastUsedOn = utcNow;
 
             return records;
         }

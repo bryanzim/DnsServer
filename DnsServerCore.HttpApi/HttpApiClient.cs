@@ -162,6 +162,29 @@ namespace DnsServerCore.HttpApi
             }
         }
 
+        private static bool IsHopByHopHeader(string name)
+        {
+            switch (name.ToLowerInvariant())
+            {
+                case "authorization":
+                case "host":
+                case "connection":
+                case "keep-alive":
+                case "proxy-connection":
+                case "transfer-encoding":
+                case "te":
+                case "trailer":
+                case "upgrade":
+                case "proxy-authenticate":
+                case "proxy-authorization":
+                case "content-length":
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
         #endregion
 
         #region public
@@ -348,13 +371,13 @@ namespace DnsServerCore.HttpApi
             if (!_loggedIn)
                 throw new HttpApiClientException("No active session exists. Please login and try again.");
 
-            string path = $"api/admin/sso/users/create?ssoIdentifier={ssoIdentifier}&user={username}";
+            string path = $"api/admin/sso/users/create?ssoIdentifier={Uri.EscapeDataString(ssoIdentifier)}&user={Uri.EscapeDataString(username)}";
 
             if (displayName is not null)
-                path += $"&displayName={displayName}";
+                path += $"&displayName={Uri.EscapeDataString(displayName)}";
 
             if (memberOfGroups is not null)
-                path += $"&memberOfGroups={memberOfGroups.Join()}";
+                path += $"&memberOfGroups={Uri.EscapeDataString(memberOfGroups.Join())}";
 
             Stream stream = await _httpClient.GetStreamAsync(path, cancellationToken);
 
@@ -369,16 +392,16 @@ namespace DnsServerCore.HttpApi
             if (!_loggedIn)
                 throw new HttpApiClientException("No active session exists. Please login and try again.");
 
-            string path = $"api/admin/sso/users/set?user={username}";
+            string path = $"api/admin/sso/users/set?user={Uri.EscapeDataString(username)}";
 
             if (newUsername is not null)
-                path += $"&newUser={newUsername}";
+                path += $"&newUser={Uri.EscapeDataString(newUsername)}";
 
             if (displayName is not null)
-                path += $"&displayName={displayName}";
+                path += $"&displayName={Uri.EscapeDataString(displayName)}";
 
             if (memberOfGroups is not null)
-                path += $"&memberOfGroups={memberOfGroups.Join()}";
+                path += $"&memberOfGroups={Uri.EscapeDataString(memberOfGroups.Join())}";
 
             Stream stream = await _httpClient.GetStreamAsync(path, cancellationToken);
 
@@ -603,10 +626,27 @@ namespace DnsServerCore.HttpApi
                 httpRequest.Content = new StreamContent(inHttpRequest.Body);
             }
 
+            HashSet<string>? connectionOptions = null;
+
+            if (inHttpRequest.Headers.TryGetValue("Connection", out StringValues connection))
+            {
+                HashSet<string> listedConnectionOptions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                connectionOptions = listedConnectionOptions;
+
+                foreach (string? value in connection)
+                {
+                    if (string.IsNullOrEmpty(value))
+                        continue;
+
+                    foreach (string token in value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                        listedConnectionOptions.Add(token);
+                }
+            }
+
             foreach (KeyValuePair<string, StringValues> inHeader in inHttpRequest.Headers)
             {
-                if (inHeader.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
-                    continue; //skip client header
+                if (IsHopByHopHeader(inHeader.Key) || ((connectionOptions is not null) && connectionOptions.Contains(inHeader.Key)))
+                    continue; //skip client authorization, Host, and hop-by-hop headers
 
                 if (!httpRequest.Headers.TryAddWithoutValidation(inHeader.Key, inHeader.Value.ToString()))
                 {

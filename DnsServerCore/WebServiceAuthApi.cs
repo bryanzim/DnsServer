@@ -838,7 +838,11 @@ namespace DnsServerCore
 
             public void Logout(HttpContext context)
             {
-                UserSession session = _dnsWebService._authManager.DeleteSession(GetAuthorizationToken(context.Request));
+                string token = GetAuthorizationToken(context.Request);
+                if (token is null)
+                    return;
+
+                UserSession session = _dnsWebService._authManager.DeleteSession(token);
                 if (session is not null)
                 {
                     _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + session.User.Username + "] User logged out.");
@@ -1183,8 +1187,6 @@ namespace DnsServerCore
                 if (user is null)
                     throw new DnsWebServiceException("No such user exists: " + username);
 
-                try
-                {
                     if (request.TryGetQueryOrForm("newUser", out string newUsername))
                     {
                         switch (user.Type)
@@ -1345,17 +1347,14 @@ namespace DnsServerCore
 
                     if (request.TryGetQueryOrForm("sessionTimeoutSeconds", int.Parse, out int sessionTimeoutSeconds))
                         user.SessionTimeoutSeconds = sessionTimeoutSeconds;
-                }
-                finally
-                {
-                    _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] User account details were updated successfully for user: " + username);
 
-                    _dnsWebService._authManager.SaveConfigFile();
+                _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] User account details were updated successfully for user: " + username);
 
-                    //trigger cluster update
-                    if (_dnsWebService._clusterManager.ClusterInitialized)
-                        _dnsWebService._clusterManager.TriggerNotifyAllSecondaryNodesIfPrimarySelfNode();
-                }
+                _dnsWebService._authManager.SaveConfigFile();
+
+                //trigger cluster update
+                if (_dnsWebService._clusterManager.ClusterInitialized)
+                    _dnsWebService._clusterManager.TriggerNotifyAllSecondaryNodesIfPrimarySelfNode();
 
                 UserSession session = context.GetCurrentSession();
 
@@ -1500,8 +1499,6 @@ namespace DnsServerCore
                 if (group is null)
                     throw new DnsWebServiceException("No such group exists: " + groupName);
 
-                try
-                {
                     if (request.TryGetQueryOrForm("newGroup", out string newGroup))
                     {
                         _dnsWebService._authManager.RenameGroup(group, newGroup);
@@ -1550,17 +1547,14 @@ namespace DnsServerCore
 
                         _dnsWebService._authManager.SyncGroupMembers(group, users);
                     }
-                }
-                finally
-                {
-                    _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] Group details were updated successfully for group: " + groupName);
 
-                    _dnsWebService._authManager.SaveConfigFile();
+                _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] Group details were updated successfully for group: " + groupName);
 
-                    //trigger cluster update
-                    if (_dnsWebService._clusterManager.ClusterInitialized)
-                        _dnsWebService._clusterManager.TriggerNotifyAllSecondaryNodesIfPrimarySelfNode();
-                }
+                _dnsWebService._authManager.SaveConfigFile();
+
+                //trigger cluster update
+                if (_dnsWebService._clusterManager.ClusterInitialized)
+                    _dnsWebService._clusterManager.TriggerNotifyAllSecondaryNodesIfPrimarySelfNode();
 
                 Utf8JsonWriter jsonWriter = context.GetCurrentJsonWriter();
                 WriteGroupDetails(jsonWriter, group, true, false);
@@ -2017,8 +2011,6 @@ namespace DnsServerCore
                 if (user.Type != UserType.RemoteSSO)
                     throw new DnsWebServiceException("User is not a SSO user: " + username);
 
-                try
-                {
                     if (request.TryGetQueryOrForm("newUser", out string newUsername))
                     {
                         _dnsWebService._authManager.ChangeUsername(user, newUsername);
@@ -2049,16 +2041,13 @@ namespace DnsServerCore
 
                         user.SyncGroups(groups);
                     }
-                }
-                finally
-                {
-                    _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "SSO user account was updated successfully with username: " + user.Username);
 
-                    _dnsWebService._authManager.SaveConfigFile();
+                _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "SSO user account was updated successfully with username: " + user.Username);
 
-                    //trigger cluster update
-                    _dnsWebService._clusterManager.TriggerNotifyAllSecondaryNodes();
-                }
+                _dnsWebService._authManager.SaveConfigFile();
+
+                //trigger cluster update
+                _dnsWebService._clusterManager.TriggerNotifyAllSecondaryNodes();
 
                 Utf8JsonWriter jsonWriter = context.GetCurrentJsonWriter();
                 WriteUserDetails(jsonWriter, user, null, false, false);
@@ -2148,7 +2137,8 @@ namespace DnsServerCore
             {
                 User sessionUser = _dnsWebService.GetSessionUser(context);
 
-                if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.View))
+                //requires same permission as SetLdapConfig since the test can use the stored bind password against a caller supplied LDAP server
+                if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Delete))
                     throw new DnsWebServiceException("Access was denied.");
 
                 string ldapServer = context.Request.GetQueryOrForm("ldapServer", _dnsWebService._authManager.LdapServer);

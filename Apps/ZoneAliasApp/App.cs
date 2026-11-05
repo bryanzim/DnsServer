@@ -99,9 +99,12 @@ namespace ZoneAlias
                 DnsResourceRecord record = records[i];
 
                 j = record.Name.LastIndexOf(zone, StringComparison.OrdinalIgnoreCase);
-                if (j == 0)
+                bool atLabelBoundary = (j == 0) || ((j > 0) && (record.Name[j - 1] == '.'));
+                bool isSuffix = (j > -1) && ((j + zone.Length) == record.Name.Length);
+
+                if (atLabelBoundary && isSuffix && (j == 0))
                     newRecords[i] = new DnsResourceRecord(alias, record.Type, record.Class, record.TTL, record.RDATA);
-                else if (j > 0)
+                else if (atLabelBoundary && isSuffix)
                     newRecords[i] = new DnsResourceRecord(string.Concat(record.Name.AsSpan(0, j), alias), record.Type, record.Class, record.TTL, record.RDATA);
                 else
                     newRecords[i] = record;

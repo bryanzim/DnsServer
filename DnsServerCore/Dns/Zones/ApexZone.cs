@@ -253,7 +253,8 @@ namespace DnsServerCore.Dns.Zones
                         }
                     }
 
-                    notifiedNameServers.Add(nameServerHost);
+                    lock (notifiedNameServers)
+                        notifiedNameServers.Add(nameServerHost);
 
                     List<NameServerAddress> nameServers = new List<NameServerAddress>(2);
                     await ResolveNameServerAddressesAsync(nsRecord, nameServers);
@@ -312,7 +313,8 @@ namespace DnsServerCore.Dns.Zones
                         }
                     }
 
-                    notifiedNameServers.Add(nameServerHost);
+                    lock (notifiedNameServers)
+                        notifiedNameServers.Add(nameServerHost);
 
                     tasks.Add(NotifyNameServerAsync(nameServerHost, [new NameServerAddress(nameServerIpAddress)]));
                 }

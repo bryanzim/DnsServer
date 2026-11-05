@@ -241,6 +241,7 @@ namespace DnsServerCore.Cluster
         private void UpdateConfigRefreshTimer(int refreshInterval = CONFIG_REFRESH_TIMER_INTERVAL)
         {
             //ensure that the new refresh interval is applied using lock
+            //NOTE: _configRefreshLock is not reentrant; never call this while holding it (e.g. from ConfigRefreshTimerCallbackAsync)
             _configRefreshLock.Wait();
             try
             {
@@ -249,6 +250,8 @@ namespace DnsServerCore.Cluster
                 else
                     _configRefreshTimer.Change(Timeout.Infinite, Timeout.Infinite);
             }
+            catch (ObjectDisposedException)
+            { }
             finally
             {
                 _configRefreshLock.Release();
@@ -258,11 +261,14 @@ namespace DnsServerCore.Cluster
         private void StopConfigRefreshTimer()
         {
             //ensure that the timer is stopped using lock
+            //NOTE: _configRefreshLock is not reentrant; never call this while holding it (e.g. from ConfigRefreshTimerCallbackAsync)
             _configRefreshLock.Wait();
             try
             {
                 _configRefreshTimer.Change(Timeout.Infinite, Timeout.Infinite);
             }
+            catch (ObjectDisposedException)
+            { }
             finally
             {
                 _configRefreshLock.Release();
@@ -1665,6 +1671,7 @@ namespace DnsServerCore.Cluster
         private async void ConfigRefreshTimerCallbackAsync(object state)
         {
             bool success = false;
+            bool removedFromCluster = false;
 
             await _configRefreshLock.WaitAsync();
             try
@@ -1675,7 +1682,11 @@ namespace DnsServerCore.Cluster
                     throw new InvalidOperationException();
 
                 //update cluster options
-                UpdateClusterFromPrimaryNode(await primaryNode.GetClusterStateAsync());
+                //NOTE: _configRefreshLock is held here and is not reentrant, so this must not call UpdateConfigRefreshTimer() or StopConfigRefreshTimer();
+                //a changed config refresh interval is picked up when the timer is re-armed in finally below and removal from the cluster is handled after the lock is released
+                UpdateClusterFromPrimaryNodeInternal(await primaryNode.GetClusterStateAsync(), out removedFromCluster, out _);
+                if (removedFromCluster)
+                    return;
 
                 //sync config from primary node
                 await primaryNode.SyncConfigAsync(_configRefreshIncludeZones);
@@ -1694,12 +1705,15 @@ namespace DnsServerCore.Cluster
                     _configRefreshIncludeZones = null;
                 }
 
-                try
+                if (!removedFromCluster)
                 {
-                    _configRefreshTimer.Change(success ? _configRefreshIntervalSeconds * 1000 : _configRetryIntervalSeconds * 1000, Timeout.Infinite);
+                    try
+                    {
+                        _configRefreshTimer.Change(success ? _configRefreshIntervalSeconds * 1000 : _configRetryIntervalSeconds * 1000, Timeout.Infinite);
+                    }
+                    catch (ObjectDisposedException)
+                    { }
                 }
-                catch (ObjectDisposedException)
-                { }
 
                 try
                 {
@@ -1707,6 +1721,15 @@ namespace DnsServerCore.Cluster
                 }
                 catch (ObjectDisposedException)
                 { }
+            }
+
+            if (removedFromCluster)
+            {
+                //this node is not part of the cluster anymore; delete all cluster config
+                //done outside the lock since it stops the config refresh timer using the same lock
+                DeleteAllClusterConfig();
+
+                _dnsWebService.LogManager.Write("Failed to sync Cluster config: this Secondary node is not part of the Cluster anymore.");
             }
         }
 
@@ -1806,6 +1829,28 @@ namespace DnsServerCore.Cluster
 
         public void UpdateClusterFromPrimaryNode(ClusterInfo primaryNodeClusterInfo)
         {
+            //callers of this method must not hold _configRefreshLock; use UpdateClusterFromPrimaryNodeInternal() in that case
+            UpdateClusterFromPrimaryNodeInternal(primaryNodeClusterInfo, out bool removedFromCluster, out bool configRefreshIntervalChanged);
+
+            if (removedFromCluster)
+            {
+                //this node is not part of the cluster anymore
+                //delete all cluster config
+                DeleteAllClusterConfig();
+
+                _dnsWebService.LogManager.Write("Failed to sync Cluster config: this Secondary node is not part of the Cluster anymore.");
+                return;
+            }
+
+            if (configRefreshIntervalChanged)
+                UpdateConfigRefreshTimer(_configRefreshIntervalSeconds * 1000); //apply new interval to config refresh timer immediately
+        }
+
+        private void UpdateClusterFromPrimaryNodeInternal(ClusterInfo primaryNodeClusterInfo, out bool removedFromCluster, out bool configRefreshIntervalChanged)
+        {
+            removedFromCluster = false;
+            configRefreshIntervalChanged = false;
+
             IReadOnlyDictionary<int, ClusterNode> existingClusterNodes = _clusterNodes;
 
             //validation
@@ -1889,11 +1934,8 @@ namespace DnsServerCore.Cluster
 
                     if (!foundSelfNode)
                     {
-                        //this node is not part of the cluster anymore
-                        //delete all cluster config
-                        DeleteAllClusterConfig();
-
-                        _dnsWebService.LogManager.Write("Failed to sync Cluster config: this Secondary node is not part of the Cluster anymore.");
+                        //this node is not part of the cluster anymore; caller deletes all cluster config
+                        removedFromCluster = true;
                         return;
                     }
                 }
@@ -1924,7 +1966,7 @@ namespace DnsServerCore.Cluster
             if (primaryNodeClusterInfo.ConfigRefreshIntervalSeconds != _configRefreshIntervalSeconds)
             {
                 _configRefreshIntervalSeconds = primaryNodeClusterInfo.ConfigRefreshIntervalSeconds;
-                UpdateConfigRefreshTimer(_configRefreshIntervalSeconds * 1000); //apply new interval to config refresh timer immediately
+                configRefreshIntervalChanged = true; //caller applies the new interval to the config refresh timer
                 saveConfig = true;
             }
 

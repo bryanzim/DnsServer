@@ -97,7 +97,7 @@ namespace DnsServerCore
                 string fileName = request.GetQueryOrForm("fileName");
                 int limit = request.GetQueryOrForm("limit", int.Parse, 0);
 
-                return _dnsWebService._log.DownloadLogFileAsync(context, fileName, limit * 1024 * 1024);
+                return _dnsWebService._log.DownloadLogFileAsync(context, fileName, (long)limit * 1024 * 1024);
             }
 
             public void DeleteLog(HttpContext context)
@@ -285,6 +285,8 @@ namespace DnsServerCore
                     rcode = Enum.Parse<DnsResponseCode>(strRcode, true);
 
                 string qname = request.GetQueryOrForm("qname", null);
+                if (qname is not null)
+                    qname = qname.TrimEnd('.');
 
                 DnsResourceRecordType? qtype = null;
                 string strQtype = request.QueryOrForm("qtype");

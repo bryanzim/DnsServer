@@ -114,13 +114,21 @@ namespace DnsServerCore.Dns.Applications
 
         #region private
 
-        private async Task<DnsApplication> LoadApplicationAsync(string applicationFolder, bool refreshAppObjectList)
+        private async Task<DnsApplication> LoadApplicationAsync(string applicationFolder, bool refreshAppObjectList, bool throwOnInitializationFailure = false)
         {
             string applicationName = Path.GetFileName(applicationFolder);
 
             DnsApplication application = new DnsApplication(new InternalDnsServer(_dnsServer, applicationName, applicationFolder), applicationName);
 
-            await application.InitializeAsync();
+            try
+            {
+                await application.InitializeAsync(throwOnInitializationFailure);
+            }
+            catch
+            {
+                application.Dispose();
+                throw;
+            }
 
             if (!_applications.TryAdd(application.Name, application))
             {
@@ -430,7 +438,7 @@ namespace DnsServerCore.Dns.Applications
                         {
                             await appZip.ExtractToDirectoryAsync(applicationFolder, true);
 
-                            return await LoadApplicationAsync(applicationFolder, true);
+                            return await LoadApplicationAsync(applicationFolder, true, true);
                         }
                         catch
                         {
@@ -460,42 +468,90 @@ namespace DnsServerCore.Dns.Applications
 
                 string applicationFolder = Path.Combine(_appsPath, applicationName);
 
-                //keep a copy of the zip file in the application folder for transferring to other nodes
-                await using (FileStream zipCopyStream = new FileStream(Path.Combine(applicationFolder, applicationName + ".zip"), FileMode.Create, FileAccess.ReadWrite))
+                //validate and extract from a temp copy so a bad upload cannot replace the zip that cluster sync exports
+                string zipPath = Path.Combine(applicationFolder, applicationName + ".zip");
+                string tempZipPath = zipPath + ".uploading";
+                DnsApplication updatedApplication;
+
+                try
+                {
+                await using (FileStream zipCopyStream = new FileStream(tempZipPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
                 {
                     await appZipStream.CopyToAsync(zipCopyStream);
 
                     zipCopyStream.Position = 0;
 
-                    await using (ZipArchive appZip = new ZipArchive(zipCopyStream, ZipArchiveMode.Read, false, Encoding.UTF8))
+                    await using (ZipArchive appZip = new ZipArchive(zipCopyStream, ZipArchiveMode.Read, true, Encoding.UTF8))
                     {
-                        UnloadApplication(applicationName);
-
+                        //validate all entries before unloading the running app so that a bad archive leaves it untouched
                         foreach (ZipArchiveEntry entry in appZip.Entries)
                         {
                             string filePath = Path.GetFullPath(Path.Combine(applicationFolder, entry.FullName));
                             if (!filePath.StartsWith(applicationFolder + Path.DirectorySeparatorChar, Environment.OSVersion.Platform == PlatformID.Win32NT ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                                 throw new IOException("Extracting Zip entry would have resulted in a file outside the specified destination directory.");
-
-                            if ((entry.Name == "dnsApp.config") && File.Exists(filePath))
-                                continue; //avoid overwriting existing config file
-
-                            if ((entry.Length == 0) && (entry.Name.Length == 0) && entry.FullName.EndsWith('/'))
-                            {
-                                //directory entry
-                                Directory.CreateDirectory(filePath);
-                            }
-                            else
-                            {
-                                //file entry
-                                Directory.CreateDirectory(Path.GetDirectoryName(filePath));
-
-                                await entry.ExtractToFileAsync(filePath, true);
-                            }
                         }
 
-                        return await LoadApplicationAsync(applicationFolder, true);
+                        UnloadApplication(applicationName);
+
+                        try
+                        {
+                            foreach (ZipArchiveEntry entry in appZip.Entries)
+                            {
+                                string filePath = Path.GetFullPath(Path.Combine(applicationFolder, entry.FullName));
+
+                                if ((entry.Name == "dnsApp.config") && File.Exists(filePath))
+                                    continue; //avoid overwriting existing config file
+
+                                if ((entry.Length == 0) && (entry.Name.Length == 0) && entry.FullName.EndsWith('/'))
+                                {
+                                    //directory entry
+                                    Directory.CreateDirectory(filePath);
+                                }
+                                else
+                                {
+                                    //file entry
+                                    Directory.CreateDirectory(Path.GetDirectoryName(filePath));
+
+                                    await entry.ExtractToFileAsync(filePath, true);
+                                }
+                            }
+
+                            updatedApplication = await LoadApplicationAsync(applicationFolder, true, true);
+                        }
+                        catch
+                        {
+                            //update failed after the app was unloaded; reload it from its folder so that it does not remain
+                            //unloaded (which would make further update or uninstall attempts fail until the server is restarted)
+                            try
+                            {
+                                _ = await LoadApplicationAsync(applicationFolder, true);
+                            }
+                            catch (Exception ex)
+                            {
+                                _dnsServer.LogManager.Write(ex);
+                            }
+
+                            throw;
+                        }
                     }
+                }
+
+                File.Move(tempZipPath, zipPath, true);
+                return updatedApplication;
+                }
+                catch
+                {
+                    try
+                    {
+                        if (File.Exists(tempZipPath))
+                            File.Delete(tempZipPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        _dnsServer.LogManager.Write(ex);
+                    }
+
+                    throw;
                 }
             }
             finally

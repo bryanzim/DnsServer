@@ -151,15 +151,22 @@ namespace Dns64
                     }
 
                     IPAddress ipv6Address = (answer.RDATA as DnsAAAARecordData).Address;
+                    bool isExcluded = false;
 
                     foreach (NetworkAddress excludedIpv6 in group.ExcludedIpv6)
                     {
-                        if (!excludedIpv6.Contains(ipv6Address))
+                        if (excludedIpv6.Contains(ipv6Address))
                         {
-                            //found non-excluded AAAA record so no need to synthesize AAAA
-                            newAnswer.Add(answer);
-                            synthesizeAAAA = false;
+                            isExcluded = true;
+                            break;
                         }
+                    }
+
+                    if (!isExcluded)
+                    {
+                        //found non-excluded AAAA record so no need to synthesize AAAA
+                        newAnswer.Add(answer);
+                        synthesizeAAAA = false;
                     }
                 }
             }
@@ -317,14 +324,17 @@ namespace Dns64
                     return new Tuple<NetworkAddress, NetworkAddress>(network, dns64Prefix);
                 });
 
-                _excludedIpv6 = jsonGroup.ReadArray("excludedIpv6", delegate (string strNetworkAddress)
+                if (!jsonGroup.TryReadArray("excludedIpv6", delegate (string strNetworkAddress)
                 {
                     NetworkAddress networkAddress = NetworkAddress.Parse(strNetworkAddress);
                     if (networkAddress.Address.AddressFamily != AddressFamily.InterNetworkV6)
                         throw new InvalidOperationException("An IPv6 network address is expected for 'excludedIpv6' array.");
 
                     return networkAddress;
-                });
+                }, out NetworkAddress[] excludedIpv6) || (excludedIpv6 is null))
+                    _excludedIpv6 = [];
+                else
+                    _excludedIpv6 = excludedIpv6;
             }
 
             #endregion

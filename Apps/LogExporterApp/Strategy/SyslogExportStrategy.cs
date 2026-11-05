@@ -41,7 +41,6 @@ namespace LogExporter.Strategy
 
         readonly Facility _facility = Facility.Local6;
 
-        readonly Rfc5424Formatter _formatter;
         readonly Serilog.Core.Logger _sender;
 
         bool _disposed;
@@ -57,16 +56,17 @@ namespace LogExporter.Strategy
 
             LoggerConfiguration conf = new LoggerConfiguration();
 
+            //the sink formats the RFC 5424 header and structured data itself; do not pre-format the message or the receiver gets a header inside MSG
+            string sourceHost = Environment.MachineName;
+
             _sender = protocol.ToLowerInvariant() switch
             {
-                "tls" => conf.WriteTo.TcpSyslog(address, port.Value, _appName, FramingType.OCTET_COUNTING, SyslogFormat.RFC5424, _facility, useTls: true).Enrich.FromLogContext().CreateLogger(),
-                "tcp" => conf.WriteTo.TcpSyslog(address, port.Value, _appName, FramingType.OCTET_COUNTING, SyslogFormat.RFC5424, _facility, useTls: false).Enrich.FromLogContext().CreateLogger(),
-                "udp" => conf.WriteTo.UdpSyslog(address, port.Value, _appName, SyslogFormat.RFC5424, _facility).Enrich.FromLogContext().CreateLogger(),
-                "local" => conf.WriteTo.LocalSyslog(_appName, _facility).Enrich.FromLogContext().CreateLogger(),
+                "tls" => conf.WriteTo.TcpSyslog(address, port.Value, _appName, FramingType.OCTET_COUNTING, SyslogFormat.RFC5424, _facility, useTls: true, sourceHost: sourceHost, structuredDataId: _sdId).Enrich.FromLogContext().CreateLogger(),
+                "tcp" => conf.WriteTo.TcpSyslog(address, port.Value, _appName, FramingType.OCTET_COUNTING, SyslogFormat.RFC5424, _facility, useTls: false, sourceHost: sourceHost, structuredDataId: _sdId).Enrich.FromLogContext().CreateLogger(),
+                "udp" => conf.WriteTo.UdpSyslog(address, port.Value, _appName, SyslogFormat.RFC5424, _facility, sourceHost: sourceHost, structuredDataId: _sdId).Enrich.FromLogContext().CreateLogger(),
+                "local" => conf.WriteTo.LocalSyslog(_appName, _facility, structuredDataId: _sdId).Enrich.FromLogContext().CreateLogger(),
                 _ => throw new NotSupportedException("Syslog protocol is not supported: " + protocol),
             };
-
-            _formatter = new Rfc5424Formatter(_facility, _appName, null, _sdId, Environment.MachineName);
         }
 
         #endregion
@@ -90,7 +90,7 @@ namespace LogExporter.Strategy
         public Task ExportAsync(IReadOnlyList<LogEntry> logs)
         {
             foreach (LogEntry log in logs)
-                _sender.Information(_formatter.FormatMessage((LogEvent?)Convert(log)));
+                _sender.Write(Convert(log)); //write the structured event; the sink renders the template as MSG and the properties as [meta ...] structured data
 
             return Task.CompletedTask;
         }

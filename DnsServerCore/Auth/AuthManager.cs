@@ -44,7 +44,7 @@ namespace DnsServerCore.Auth
 
         Dictionary<string, UserSession> _staticSessions; //predefined static session via environment variables
 
-        readonly ConcurrentDictionary<IPAddress, int> _failedLoginAttemptNetworks = new ConcurrentDictionary<IPAddress, int>(1, 10);
+        readonly ConcurrentDictionary<IPAddress, FailedLoginAttempt> _failedLoginAttemptNetworks = new ConcurrentDictionary<IPAddress, FailedLoginAttempt>(1, 10);
         const int MAX_LOGIN_ATTEMPTS = 5;
 
         readonly ConcurrentDictionary<IPAddress, DateTime> _blockedNetworks = new ConcurrentDictionary<IPAddress, DateTime>(1, 10);
@@ -769,7 +769,13 @@ namespace DnsServerCore.Auth
 
                 //update all user objects in existing sessions to reflect the newly loaded config
                 foreach (KeyValuePair<string, UserSession> session in _sessions)
+                {
                     session.Value.UpdateUserObject(_users);
+
+                    //a user removed on the primary must not keep a live Standard session on this node
+                    if ((session.Value.Type == UserSessionType.Standard) && !_users.ContainsKey(session.Value.User.Username))
+                        _sessions.TryRemove(session.Key, out _);
+                }
 
                 //sync only API sessions from newly loaded config
                 foreach (KeyValuePair<string, UserSession> existingSession in _sessions)
@@ -1180,18 +1186,45 @@ namespace DnsServerCore.Auth
 
         private void MarkFailedLoginAttempt(IPAddress network)
         {
-            _failedLoginAttemptNetworks.AddOrUpdate(network, 1, delegate (IPAddress key, int attempts)
+            PruneStaleLoginState();
+
+            long now = DateTime.UtcNow.Ticks;
+
+            _failedLoginAttemptNetworks.AddOrUpdate(network, delegate (IPAddress key)
             {
-                return attempts + 1;
+                return new FailedLoginAttempt(1, now);
+            }, delegate (IPAddress key, FailedLoginAttempt attempt)
+            {
+                return new FailedLoginAttempt(attempt.Attempts + 1, now);
             });
         }
 
         private bool HasLoginAttemptExceedLimit(IPAddress network, int limit)
         {
-            if (!_failedLoginAttemptNetworks.TryGetValue(network, out int attempts))
+            if (!_failedLoginAttemptNetworks.TryGetValue(network, out FailedLoginAttempt attempt))
                 return false;
 
-            return attempts >= limit;
+            return attempt.Attempts >= limit;
+        }
+
+        private void PruneStaleLoginState()
+        {
+            long threshold = DateTime.UtcNow.AddMilliseconds(-BLOCK_NETWORK_INTERVAL).Ticks;
+
+            foreach (KeyValuePair<IPAddress, FailedLoginAttempt> entry in _failedLoginAttemptNetworks)
+            {
+                if (entry.Value.LastAttemptTicks < threshold)
+                    _failedLoginAttemptNetworks.TryRemove(entry);
+            }
+
+            foreach (KeyValuePair<IPAddress, DateTime> entry in _blockedNetworks)
+            {
+                if (entry.Value <= DateTime.UtcNow)
+                {
+                    UnblockNetwork(entry.Key);
+                    ResetFailedLoginAttempts(entry.Key);
+                }
+            }
         }
 
         private void ResetFailedLoginAttempts(IPAddress network)
@@ -1206,6 +1239,8 @@ namespace DnsServerCore.Auth
 
         private bool IsNetworkBlocked(IPAddress network)
         {
+            PruneStaleLoginState();
+
             if (!_blockedNetworks.TryGetValue(network, out DateTime expiry))
                 return false;
 
@@ -1337,15 +1372,49 @@ namespace DnsServerCore.Auth
                 return;
 
             string oldUsername = user.Username;
-            user.SetUsername(newUsername);
 
-            if (!_users.TryAdd(user.Username, user))
+            //permission dictionaries hash User by username; detach entries under the old name and re-add them under the new name
+            List<KeyValuePair<Permission, PermissionFlag>> detachedPermissions = DetachPermissions(user);
+
+            try
             {
-                user.SetUsername(oldUsername); //revert
-                throw new DnsWebServiceException("User already exists: " + newUsername);
+                user.SetUsername(newUsername);
+
+                if (!_users.TryAdd(user.Username, user))
+                {
+                    user.SetUsername(oldUsername); //revert
+                    throw new DnsWebServiceException("User already exists: " + newUsername);
+                }
+            }
+            catch
+            {
+                Permission.ReattachPermissions(user, detachedPermissions); //username is unchanged at this point
+                throw;
             }
 
             _users.TryRemove(oldUsername, out _);
+
+            Permission.ReattachPermissions(user, detachedPermissions);
+        }
+
+        private List<KeyValuePair<Permission, PermissionFlag>> DetachPermissions(User user)
+        {
+            List<KeyValuePair<Permission, PermissionFlag>> detached = new List<KeyValuePair<Permission, PermissionFlag>>();
+
+            foreach (KeyValuePair<PermissionSection, Permission> permission in _permissions)
+                detached.AddRange(permission.Value.DetachPermissions(user));
+
+            return detached;
+        }
+
+        private List<KeyValuePair<Permission, PermissionFlag>> DetachPermissions(Group group)
+        {
+            List<KeyValuePair<Permission, PermissionFlag>> detached = new List<KeyValuePair<Permission, PermissionFlag>>();
+
+            foreach (KeyValuePair<PermissionSection, Permission> permission in _permissions)
+                detached.AddRange(permission.Value.DetachPermissions(group));
+
+            return detached;
         }
 
         public async Task<User> ChangePasswordAsync(string username, string password, string totp, IPAddress remoteAddress, string newPassword, int iterations)
@@ -1446,12 +1515,24 @@ namespace DnsServerCore.Auth
             }
 
             string oldGroupName = group.Name;
-            group.Name = newGroupName;
 
-            if (!_groups.TryAdd(group.Name.ToLowerInvariant(), group))
+            //permission dictionaries hash Group by name; detach entries under the old name and re-add them under the new name
+            List<KeyValuePair<Permission, PermissionFlag>> detachedPermissions = DetachPermissions(group);
+
+            try
             {
-                group.Name = oldGroupName; //revert
-                throw new DnsWebServiceException("Group already exists: " + newGroupName);
+                group.Name = newGroupName;
+
+                if (!_groups.TryAdd(group.Name.ToLowerInvariant(), group))
+                {
+                    group.Name = oldGroupName; //revert
+                    throw new DnsWebServiceException("Group already exists: " + newGroupName);
+                }
+            }
+            catch
+            {
+                Permission.ReattachPermissions(group, detachedPermissions); //group name is unchanged at this point
+                throw;
             }
 
             _groups.TryRemove(oldGroupName.ToLowerInvariant(), out _);
@@ -1459,6 +1540,8 @@ namespace DnsServerCore.Auth
             //update users
             foreach (KeyValuePair<string, User> user in _users)
                 user.Value.RenameGroup(oldGroupName);
+
+            Permission.ReattachPermissions(group, detachedPermissions);
         }
 
         public bool DeleteGroup(string name)
@@ -1994,6 +2077,12 @@ namespace DnsServerCore.Auth
 
         public bool LdapManagedGroups
         { get { return _ldapGroupMap is not null; } }
+
+        #endregion
+
+        #region private class
+
+        readonly record struct FailedLoginAttempt(int Attempts, long LastAttemptTicks);
 
         #endregion
     }

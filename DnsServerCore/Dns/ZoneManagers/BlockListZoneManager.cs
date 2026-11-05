@@ -247,11 +247,13 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (!isConfigTransfer)
                         _blockListLastUpdatedOn = blockListLastUpdatedOn;
 
+                    ApplyBlockListUrls(blockListUrls, !isConfigTransfer);
+
                     if (!isConfigTransfer)
                     {
                         if (blockListUrls.Length > 0)
                         {
-                            //load block list URLs async
+                            //load block list URLs async, after the URL list is assigned
                             ThreadPool.QueueUserWorkItem(delegate (object state)
                             {
                                 try
@@ -265,8 +267,6 @@ namespace DnsServerCore.Dns.ZoneManagers
                             });
                         }
                     }
-
-                    ApplyBlockListUrls(blockListUrls);
                     ApplyBlockListUpdateInterval();
                     break;
 
@@ -516,9 +516,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             return false;
         }
 
-        private void ApplyBlockListUrls(IReadOnlyList<string> blockListUrls)
+        private void ApplyBlockListUrls(IReadOnlyList<string> blockListUrls, bool initialLoad = false)
         {
-            bool blockListUrlsUpdated = !blockListUrls.HasSameItems(_blockListUrls);
+            bool blockListUrlsUpdated = !initialLoad && !blockListUrls.HasSameItems(_blockListUrls);
 
             _blockListUrls = blockListUrls;
 

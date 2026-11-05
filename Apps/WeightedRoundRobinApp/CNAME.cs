@@ -89,21 +89,15 @@ namespace WeightedRoundRobin
             if (domainNames.Count == 0)
                 return Task.FromResult<DnsDatagram>(null);
 
-            int randomSelection = RandomNumberGenerator.GetInt32(1, 101);
-            int rangeFrom;
+            int randomSelection = RandomNumberGenerator.GetInt32(totalWeight);
             int rangeTo = 0;
             DnsResourceRecord answer = null;
 
             for (int i = 0; i < domainNames.Count; i++)
             {
-                rangeFrom = rangeTo + 1;
+                rangeTo += domainNames[i].Weight;
 
-                if (i == domainNames.Count - 1)
-                    rangeTo = 100;
-                else
-                    rangeTo += domainNames[i].Weight * 100 / totalWeight;
-
-                if ((rangeFrom <= randomSelection) && (randomSelection <= rangeTo))
+                if (randomSelection < rangeTo)
                 {
                     if (question.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase)) //check for zone apex
                         answer = new DnsResourceRecord(question.Name, DnsResourceRecordType.ANAME, DnsClass.IN, appRecordTtl, new DnsANAMERecordData(domainNames[i].Domain)); //use ANAME

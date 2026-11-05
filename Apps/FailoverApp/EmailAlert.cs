@@ -51,6 +51,7 @@ namespace Failover
         MailAddress? _mailFrom;
 
         readonly SmtpClientEx _smtpClient;
+        readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
 
         #endregion
 
@@ -83,6 +84,8 @@ namespace Failover
             {
                 if (_smtpClient is not null)
                     _smtpClient.Dispose();
+
+                _sendLock.Dispose();
             }
 
             _disposed = true;
@@ -105,20 +108,28 @@ namespace Failover
                 const int MAX_RETRIES = 3;
                 const int WAIT_INTERVAL = 30000;
 
-                for (int retries = 0; retries < MAX_RETRIES; retries++)
+                await _sendLock.WaitAsync();
+                try
                 {
-                    try
+                    for (int retries = 0; retries < MAX_RETRIES; retries++)
                     {
-                        await _smtpClient.SendMailAsync(message);
-                        break;
-                    }
-                    catch
-                    {
-                        if (retries == MAX_RETRIES - 1)
-                            throw;
+                        try
+                        {
+                            await _smtpClient.SendMailAsync(message);
+                            break;
+                        }
+                        catch
+                        {
+                            if (retries == MAX_RETRIES - 1)
+                                throw;
 
-                        await Task.Delay(WAIT_INTERVAL);
+                            await Task.Delay(WAIT_INTERVAL);
+                        }
                     }
+                }
+                finally
+                {
+                    _sendLock.Release();
                 }
             }
             catch (Exception ex)

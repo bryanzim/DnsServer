@@ -452,12 +452,18 @@ namespace SplitHorizon
                                     int copyBytes = external.PrefixLength / 8;
                                     int balanceBits = external.PrefixLength - (copyBytes * 8);
 
-                                    Buffer.BlockCopy(externalIpBytes, copyBytes + 1, internalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
-
                                     if (balanceBits > 0)
                                     {
+                                        //byte at copyBytes is split between network and host bits
+                                        Buffer.BlockCopy(externalIpBytes, copyBytes + 1, internalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
+
                                         int mask = 0xFF << (8 - balanceBits);
                                         internalIpBytes[copyBytes] = (byte)((internalIpBytes[copyBytes] & mask) | (externalIpBytes[copyBytes] & ~mask));
+                                    }
+                                    else if (copyBytes < 16)
+                                    {
+                                        //prefix is byte aligned so byte at copyBytes is entirely host bits and must be copied too
+                                        Buffer.BlockCopy(externalIpBytes, copyBytes, internalIpBytes, copyBytes, 16 - copyBytes);
                                     }
 
                                     internalIp = new IPAddress(internalIpBytes);
@@ -510,12 +516,18 @@ namespace SplitHorizon
                                     int copyBytes = @internal.PrefixLength / 8;
                                     int balanceBits = @internal.PrefixLength - (copyBytes * 8);
 
-                                    Buffer.BlockCopy(internalIpBytes, copyBytes + 1, externalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
-
                                     if (balanceBits > 0)
                                     {
+                                        //byte at copyBytes is split between network and host bits
+                                        Buffer.BlockCopy(internalIpBytes, copyBytes + 1, externalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
+
                                         int mask = 0xFF << (8 - balanceBits);
                                         externalIpBytes[copyBytes] = (byte)((externalIpBytes[copyBytes] & mask) | (internalIpBytes[copyBytes] & ~mask));
+                                    }
+                                    else if (copyBytes < 16)
+                                    {
+                                        //prefix is byte aligned so byte at copyBytes is entirely host bits and must be copied too
+                                        Buffer.BlockCopy(internalIpBytes, copyBytes, externalIpBytes, copyBytes, 16 - copyBytes);
                                     }
 
                                     externalIp = new IPAddress(externalIpBytes);
