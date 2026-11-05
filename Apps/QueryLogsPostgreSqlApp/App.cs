@@ -65,6 +65,8 @@ namespace QueryLogsPostgreSql
         const int CLEAN_UP_TIMER_PERIODIC_INTERVAL = 15 * 60 * 1000;
 
         bool _isStartupInit = true;
+        int _configGeneration;
+        readonly object _configSync = new object();
 
         #endregion
 
@@ -383,8 +385,40 @@ namespace QueryLogsPostgreSql
                 if (oldDataSource is not null)
                     await oldDataSource.DisposeAsync(); //dispose previous data source (and its connection pool) on config reload
 
+                int configGeneration;
+
+                lock (_configSync)
+                    configGeneration = ++_configGeneration;
+
                 async Task ApplyConfig()
                 {
+                    void CommitConfig(bool startChannel)
+                    {
+                        lock (_configSync)
+                        {
+                            if (configGeneration != _configGeneration)
+                                return;
+
+                            if (startChannel)
+                            {
+                                if (!_enableLogging || (_maxQueueSize != maxQueueSize))
+                                    StartNewChannel(maxQueueSize);
+                            }
+                            else
+                            {
+                                StopChannel();
+                            }
+
+                            _enableLogging = enableLogging;
+                            _maxQueueSize = maxQueueSize;
+
+                            if ((_maxLogDays > 0) || (_maxLogRecords > 0))
+                                _cleanupTimer.Change(CLEAN_UP_TIMER_INITIAL_INTERVAL, Timeout.Infinite);
+                            else
+                                _cleanupTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                        }
+                    }
+
                     if (enableLogging)
                     {
                         await using (NpgsqlConnection connection = await _dataSource.OpenConnectionAsync())
@@ -581,21 +615,12 @@ CREATE TABLE IF NOT EXISTS dns_logs
                             }
                         }
 
-                        if (!_enableLogging || (_maxQueueSize != maxQueueSize))
-                            StartNewChannel(maxQueueSize);
+                        CommitConfig(true);
                     }
                     else
                     {
-                        StopChannel();
+                        CommitConfig(false);
                     }
-
-                    _enableLogging = enableLogging;
-                    _maxQueueSize = maxQueueSize;
-
-                    if ((_maxLogDays > 0) || (_maxLogRecords > 0))
-                        _cleanupTimer.Change(CLEAN_UP_TIMER_INITIAL_INTERVAL, Timeout.Infinite);
-                    else
-                        _cleanupTimer.Change(Timeout.Infinite, Timeout.Infinite);
                 }
 
                 if (_isStartupInit)
@@ -611,6 +636,12 @@ CREATE TABLE IF NOT EXISTS dns_logs
 
                             while (true)
                             {
+                                lock (_configSync)
+                                {
+                                    if (configGeneration != _configGeneration)
+                                        return;
+                                }
+
                                 try
                                 {
                                     await ApplyConfig();

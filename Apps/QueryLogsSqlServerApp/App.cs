@@ -61,6 +61,8 @@ namespace QueryLogsSqlServer
         const int CLEAN_UP_TIMER_PERIODIC_INTERVAL = 15 * 60 * 1000;
 
         bool _isStartupInit = true;
+        int _configGeneration;
+        readonly object _configSync = new object();
 
         #endregion
 
@@ -374,8 +376,40 @@ namespace QueryLogsSqlServer
                 if (!_connectionString.TrimEnd().EndsWith(';'))
                     _connectionString += ";";
 
+                int configGeneration;
+
+                lock (_configSync)
+                    configGeneration = ++_configGeneration;
+
                 async Task ApplyConfig()
                 {
+                    void CommitConfig(bool startChannel)
+                    {
+                        lock (_configSync)
+                        {
+                            if (configGeneration != _configGeneration)
+                                return;
+
+                            if (startChannel)
+                            {
+                                if (!_enableLogging || (_maxQueueSize != maxQueueSize))
+                                    StartNewChannel(maxQueueSize);
+                            }
+                            else
+                            {
+                                StopChannel();
+                            }
+
+                            _enableLogging = enableLogging;
+                            _maxQueueSize = maxQueueSize;
+
+                            if ((_maxLogDays > 0) || (_maxLogRecords > 0))
+                                _cleanupTimer.Change(CLEAN_UP_TIMER_INITIAL_INTERVAL, Timeout.Infinite);
+                            else
+                                _cleanupTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                        }
+                    }
+
                     if (enableLogging)
                     {
                         await using (SqlConnection connection = new SqlConnection(_connectionString))
@@ -507,21 +541,12 @@ END
                             }
                         }
 
-                        if (!_enableLogging || (_maxQueueSize != maxQueueSize))
-                            StartNewChannel(maxQueueSize);
+                        CommitConfig(true);
                     }
                     else
                     {
-                        StopChannel();
+                        CommitConfig(false);
                     }
-
-                    _enableLogging = enableLogging;
-                    _maxQueueSize = maxQueueSize;
-
-                    if ((_maxLogDays > 0) || (_maxLogRecords > 0))
-                        _cleanupTimer.Change(CLEAN_UP_TIMER_INITIAL_INTERVAL, Timeout.Infinite);
-                    else
-                        _cleanupTimer.Change(Timeout.Infinite, Timeout.Infinite);
                 }
 
                 if (_isStartupInit)
@@ -537,6 +562,12 @@ END
 
                             while (true)
                             {
+                                lock (_configSync)
+                                {
+                                    if (configGeneration != _configGeneration)
+                                        return;
+                                }
+
                                 try
                                 {
                                     await ApplyConfig();
