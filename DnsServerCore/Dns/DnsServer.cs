@@ -3420,7 +3420,10 @@ namespace DnsServerCore.Dns
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
                                             AddToOriginalRRSets(uRecord.Name, uRecord.Type, existingRRSet);
 
-                                            GenericRecordInfo recordInfo = uRecord.GetAuthGenericRecordInfo();
+                                            SOARecordInfo recordInfo = uRecord.GetAuthSOARecordInfo();
+                                            if (existingRRSet.Count > 0)
+                                                recordInfo.UseSoaSerialDateScheme = existingRRSet[0].GetAuthSOARecordInfo().UseSoaSerialDateScheme;
+
                                             recordInfo.LastModified = DateTime.UtcNow;
                                             recordInfo.Comments = "Via Dynamic Updates (RFC 2136)" + (string.IsNullOrEmpty(tsigAuthenticatedKeyName) ? "" : " using key '" + tsigAuthenticatedKeyName + "'") + " from '" + remoteEP.ToString() + "'";
 
