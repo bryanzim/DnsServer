@@ -1494,6 +1494,9 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             //copy zone options
             zoneInfo.Disabled = sourceZoneInfo.Disabled;
+            zoneInfo.QueryAccess = sourceZoneInfo.QueryAccess;
+            zoneInfo.QueryAccessNetworkACL = sourceZoneInfo.QueryAccessNetworkACL;
+            zoneInfo.OverrideCatalogQueryAccess = sourceZoneInfo.OverrideCatalogQueryAccess;
 
             if (zoneInfo.Type == AuthZoneType.Primary)
             {
