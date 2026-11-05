@@ -1010,16 +1010,19 @@ namespace DnsServerCore.Auth
                         if (!_ldapAllowSignup)
                             throw new DnsWebServiceException("LDAP authentication succeeded for '" + username + "' but new user sign up is disabled. Please contact your administrator.");
 
-                        if (_ldapAllowSignupOnlyForMappedUsers && (_ldapGroupMap is not null))
+                        if (_ldapAllowSignupOnlyForMappedUsers)
                         {
                             bool hasMappedGroup = false;
 
-                            foreach (string remoteGroup in authInfo.Groups)
+                            if (_ldapGroupMap is not null)
                             {
-                                if (_ldapGroupMap.ContainsKey(remoteGroup))
+                                foreach (string remoteGroup in authInfo.Groups)
                                 {
-                                    hasMappedGroup = true;
-                                    break;
+                                    if (_ldapGroupMap.TryGetValue(remoteGroup, out string localGroupName) && (GetGroup(localGroupName) is not null))
+                                    {
+                                        hasMappedGroup = true;
+                                        break;
+                                    }
                                 }
                             }
 
