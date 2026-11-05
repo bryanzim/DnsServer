@@ -2480,7 +2480,7 @@ namespace DnsServerCore.Dns
                     TotalBlocked = _totalBlocked,
                     TotalDropped = _totalDropped,
 
-                    TotalClients = _totalClients
+                    TotalClients = TotalClients
                 };
             }
 
