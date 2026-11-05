@@ -243,8 +243,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 DnsResourceRecord resourceRecord = resourceRecords[0];
 
-                if (SetRecordsOnLiveZone(resourceRecord.Name, 1, resourceRecords, _dnsServer.ServeStale))
-                    Interlocked.Increment(ref _totalEntries);
+                int entriesDelta = SetRecordsOnLiveZone(resourceRecord.Name, 1, resourceRecords, _dnsServer.ServeStale);
+                if (entriesDelta != 0)
+                    Interlocked.Add(ref _totalEntries, entriesDelta);
             }
             else
             {
@@ -275,12 +276,11 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> groupedRecords in groupedByTypeRecords.Value)
                     {
-                        if (SetRecordsOnLiveZone(groupedByTypeRecords.Key, groupedByTypeRecords.Value.Count, groupedRecords.Value, serveStale))
-                            addedEntries++;
+                        addedEntries += SetRecordsOnLiveZone(groupedByTypeRecords.Key, groupedByTypeRecords.Value.Count, groupedRecords.Value, serveStale);
                     }
                 }
 
-                if (addedEntries > 0)
+                if (addedEntries != 0)
                     Interlocked.Add(ref _totalEntries, addedEntries);
             }
         }
@@ -628,7 +628,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private bool SetRecordsOnLiveZone(string name, int capacity, IReadOnlyList<DnsResourceRecord> records, bool serveStale)
+        private int SetRecordsOnLiveZone(string name, int capacity, IReadOnlyList<DnsResourceRecord> records, bool serveStale)
         {
             while (true)
             {

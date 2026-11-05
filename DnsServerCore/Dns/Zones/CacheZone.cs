@@ -178,10 +178,10 @@ namespace DnsServerCore.Dns.Zones
 
         #region public
 
-        public bool SetRecords(IReadOnlyList<DnsResourceRecord> records, bool serveStale)
+        public int SetRecords(IReadOnlyList<DnsResourceRecord> records, bool serveStale)
         {
             if (records.Count == 0)
-                return false;
+                return 0;
 
             DnsResourceRecord firstRecord = records[0];
             CacheRecordInfo cacheRecordInfo = firstRecord.GetCacheRecordInfo();
@@ -200,17 +200,18 @@ namespace DnsServerCore.Dns.Zones
                     _ecsEntries = new ConcurrentDictionary<NetworkAddress, ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>>(1, 5);
                     entries = new ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>(1, 1);
                     if (!_ecsEntries.TryAdd(eDnsClientSubnet, entries))
-                        return false;
+                        return 0;
                 }
                 else if (!_ecsEntries.TryGetValue(eDnsClientSubnet, out entries))
                 {
                     entries = new ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>(1, 1);
                     if (!_ecsEntries.TryAdd(eDnsClientSubnet, entries))
-                        return false;
+                        return 0;
                 }
             }
 
             DnsResourceRecordType type = firstRecord.Type;
+            int removedSets = 0;
 
             if (firstRecord.RDATA is DnsCache.DnsSpecialCacheRecordData splRecord)
             {
@@ -220,7 +221,7 @@ namespace DnsServerCore.Dns.Zones
                     if (entries.TryGetValue(type, out IReadOnlyList<DnsResourceRecord> existingRecords) && (existingRecords.Count > 0) && !DnsResourceRecord.IsRRSetExpired(existingRecords, serveStale))
                     {
                         if ((existingRecords[0].RDATA is not DnsCache.DnsSpecialCacheRecordData existingSplRecord) || !existingSplRecord.IsFailureOrBadCache)
-                            return false; //skip to avoid overwriting a useful record with a failure record
+                            return 0; //skip to avoid overwriting a useful record with a failure record
 
                         //copy extended errors from existing spl record
                         splRecord.CopyExtendedDnsErrorsFrom(existingSplRecord);
@@ -248,7 +249,8 @@ namespace DnsServerCore.Dns.Zones
                                 if ((existingCNAMERecords.Count > 0) && (existingCNAMERecords[0].RDATA is DnsCNAMERecordData) && existingCNAMERecords[0].IsStale)
                                 {
                                     //delete CNAME entry only when it contains stale DnsCNAMERecord RDATA and not special cache records
-                                    entries.TryRemove(DnsResourceRecordType.CNAME, out _);
+                                    if (entries.TryRemove(DnsResourceRecordType.CNAME, out _))
+                                        removedSets++;
                                 }
                             }
                             break;
@@ -263,7 +265,8 @@ namespace DnsServerCore.Dns.Zones
                         if ((existingChildNSRecords.Count > 0) && (existingChildNSRecords[0].RDATA is DnsNSRecordData) && existingChildNSRecords[0].IsStale)
                         {
                             //delete CHILD_NS entry only when it contains expired records and not special cache records
-                            entries.TryRemove(DnsResourceRecordType.CHILD_NS, out _);
+                            if (entries.TryRemove(DnsResourceRecordType.CHILD_NS, out _))
+                                removedSets++;
                         }
                     }
                 }
@@ -301,7 +304,7 @@ namespace DnsServerCore.Dns.Zones
                 return records;
             });
 
-            return added;
+            return (added ? 1 : 0) - removedSets;
         }
 
         public int RemoveExpiredRecords(bool serveStale)
