@@ -72,15 +72,12 @@ namespace SplitHorizon
                 {
                     foreach (NetworkAddress networkAddress in networkAddresses)
                     {
-                        if (networkAddress.Contains(remoteEP.Address))
+                        if (networkAddress.Contains(remoteEP.Address) && ((selectedNetwork is null) || (networkAddress.PrefixLength > selectedNetwork.PrefixLength)))
                         {
+                            selectedNetwork = networkAddress;
                             jsonCname = jsonProperty.Value;
-                            break;
                         }
                     }
-
-                    if (jsonCname.ValueKind != JsonValueKind.Undefined)
-                        break;
                 }
                 else if (NetworkAddress.TryParse(name, out NetworkAddress networkAddress))
                 {
