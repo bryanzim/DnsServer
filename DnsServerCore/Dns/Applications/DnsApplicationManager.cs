@@ -262,7 +262,6 @@ namespace DnsServerCore.Dns.Applications
                                 {
                                     string url = null;
                                     Version storeAppVersion = null;
-                                    Version lastServerVersion = null;
 
                                     foreach (JsonElement jsonVersion in jsonStoreApp.GetProperty("versions").EnumerateArray())
                                     {
@@ -272,14 +271,14 @@ namespace DnsServerCore.Dns.Applications
                                         if (currentVersion < requiredServerVersion)
                                             continue;
 
-                                        if ((lastServerVersion is not null) && (lastServerVersion > requiredServerVersion))
+                                        string version = jsonVersion.GetProperty("version").GetString();
+                                        Version appVersion = new Version(version);
+
+                                        if ((storeAppVersion is not null) && (storeAppVersion >= appVersion))
                                             continue;
 
-                                        string version = jsonVersion.GetProperty("version").GetString();
                                         url = jsonVersion.GetProperty("url").GetString();
-
-                                        storeAppVersion = new Version(version);
-                                        lastServerVersion = requiredServerVersion;
+                                        storeAppVersion = appVersion;
                                     }
 
                                     if ((storeAppVersion is not null) && (storeAppVersion > application.Version))
