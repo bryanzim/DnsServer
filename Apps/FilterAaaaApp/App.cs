@@ -112,6 +112,24 @@ namespace FilterAaaa
             }
         }
 
+        static DnsResourceRecord? FindSoaRecord(DnsDatagram response)
+        {
+            for (int i = response.Answer.Count - 1; i >= 0; i--)
+            {
+                DnsResourceRecord record = response.Answer[i];
+                if (record.Type == DnsResourceRecordType.SOA)
+                    return record;
+            }
+
+            foreach (DnsResourceRecord record in response.Authority)
+            {
+                if (record.Type == DnsResourceRecordType.SOA)
+                    return record;
+            }
+
+            return null;
+        }
+
         public async Task<DnsDatagram?> PostProcessAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, DnsDatagram response)
         {
             if (!_enableFilterAaaa)
@@ -211,9 +229,24 @@ namespace FilterAaaa
                         }
                     }
 
-                    DnsResourceRecord[] authority = [new DnsResourceRecord(qname, DnsResourceRecordType.SOA, DnsClass.IN, _defaultTtl, new DnsSOARecordData(_dnsServer.ServerDomain, _dnsServer.ResponsiblePerson.Address, 1, 3600, 900, 86400, _defaultTtl))];
+                    DnsResourceRecord? soaRecord = null;
 
-                    return new DnsDatagram(response.Identifier, true, response.OPCODE, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, DnsResponseCode.NoError, response.Question, answer, authority) { Tag = response.Tag };
+                    try
+                    {
+                        DnsDatagram soaResponse = await _dnsServer.DirectQueryAsync(new DnsQuestionRecord(qname, DnsResourceRecordType.SOA, DnsClass.IN), 2000);
+                        soaRecord = FindSoaRecord(soaResponse);
+                    }
+                    catch
+                    { }
+
+                    DnsResourceRecord[] authority;
+
+                    if (soaRecord is not null)
+                        authority = [new DnsResourceRecord(soaRecord.Name, DnsResourceRecordType.SOA, DnsClass.IN, _defaultTtl, soaRecord.RDATA)];
+                    else
+                        authority = [new DnsResourceRecord(qname, DnsResourceRecordType.SOA, DnsClass.IN, _defaultTtl, new DnsSOARecordData(_dnsServer.ServerDomain, _dnsServer.ResponsiblePerson.Address, 1, 3600, 900, 86400, _defaultTtl))];
+
+                    return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, false, response.RecursionDesired, response.RecursionAvailable, false, false, DnsResponseCode.NoError, response.Question, answer, authority) { Tag = response.Tag };
                 }
             }
 
