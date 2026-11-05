@@ -1190,7 +1190,11 @@ namespace DnsServerCore.Dhcp
                     options.Add(new DomainNameOption(_domainName));
 
                     if (request.ClientFullyQualifiedDomainName != null)
-                        options.Add(GetClientFullyQualifiedDomainNameOption(request, reservedLeaseHostName));
+                    {
+                        ClientFullyQualifiedDomainNameOption clientFqdnOption = GetClientFullyQualifiedDomainNameOption(request, reservedLeaseHostName);
+                        if (clientFqdnOption is not null)
+                            options.Add(clientFqdnOption);
+                    }
                 }
 
                 if (_domainSearchList is not null)
@@ -1234,7 +1238,11 @@ namespace DnsServerCore.Dhcp
                                 options.Add(new DomainNameOption(_domainName));
 
                                 if (request.ClientFullyQualifiedDomainName != null)
-                                    options.Add(GetClientFullyQualifiedDomainNameOption(request, reservedLeaseHostName));
+                                {
+                                    ClientFullyQualifiedDomainNameOption clientFqdnOption = GetClientFullyQualifiedDomainNameOption(request, reservedLeaseHostName);
+                                    if (clientFqdnOption is not null)
+                                        options.Add(clientFqdnOption);
+                                }
                             }
 
                             break;
