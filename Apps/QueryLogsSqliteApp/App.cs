@@ -546,7 +546,12 @@ CREATE TABLE IF NOT EXISTS dns_logs
 
             if (!jsonConfig.TryGetProperty("maxLogRecords", out _))
             {
-                config = config.Replace("\"sqliteDbPath\"", "\"maxLogRecords\": 0,\r\n  \"useInMemoryDb\": false,\r\n  \"sqliteDbPath\"");
+                string maxLogRecordsConfig = "\"maxLogRecords\": 0,\r\n  ";
+
+                if (!jsonConfig.TryGetProperty("useInMemoryDb", out _))
+                    maxLogRecordsConfig += "\"useInMemoryDb\": false,\r\n  ";
+
+                config = config.Replace("\"sqliteDbPath\"", maxLogRecordsConfig + "\"sqliteDbPath\"");
 
                 await File.WriteAllTextAsync(Path.Combine(dnsServer.ApplicationFolder, "dnsApp.config"), config);
             }
