@@ -1694,6 +1694,28 @@ namespace DnsServerCore.Dhcp
             }
         }
 
+        public async Task RebindScopeAsync(Scope scope, IPAddress previousInterface, int previousIndex)
+        {
+            if (!scope.Enabled || (previousInterface is null))
+                return;
+
+            bool found = scope.FindInterface();
+
+            if (found && previousInterface.Equals(scope.InterfaceAddress) && (previousIndex == scope.InterfaceIndex))
+                return; //the new network still uses the bound interface
+
+            if (!previousInterface.Equals(IPAddress.Any))
+                UnbindUdpListener(new IPEndPoint(previousInterface, 67));
+
+            UnbindUdpListener(_dhcpDefaultEP);
+
+            if (found && await ActivateScopeAsync(scope, false, false))
+                return;
+
+            scope.SetEnabled(false);
+            _log.Write("DHCP Server deactivated scope '" + scope.Name + "' because its network no longer matches a static interface.");
+        }
+
         public async Task<bool> EnableScopeAsync(string name, bool throwException = false)
         {
             if (_scopes.TryGetValue(name, out Scope scope))

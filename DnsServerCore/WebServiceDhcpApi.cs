@@ -608,7 +608,14 @@ namespace DnsServerCore
                 }
                 else
                 {
+                    bool networkChanged = !startingAddress.Equals(scope.StartingAddress) || !endingAddress.Equals(scope.EndingAddress) || !subnetMask.Equals(scope.SubnetMask);
+                    IPAddress previousInterface = scope.InterfaceAddress;
+                    int previousIndex = scope.InterfaceIndex;
+
                     scope.ChangeNetwork(startingAddress, endingAddress, subnetMask);
+
+                    if (networkChanged)
+                        await _dnsWebService._dhcpServer.RebindScopeAsync(scope, previousInterface, previousIndex);
                 }
 
                 if (request.TryGetQueryOrForm("leaseTimeDays", ushort.Parse, out ushort leaseTimeDays))
