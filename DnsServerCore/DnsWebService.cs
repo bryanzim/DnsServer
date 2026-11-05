@@ -2603,8 +2603,9 @@ namespace DnsServerCore
 
             if (session.Type == UserSessionType.SingleUse)
             {
-                //delete single use session immediately and continue
-                _authManager.DeleteSession(session.Token);
+                //only the request that removes the token may continue
+                if (_authManager.DeleteSession(session.Token) is null)
+                    return false;
             }
             else
             {
