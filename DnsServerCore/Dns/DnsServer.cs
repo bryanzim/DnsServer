@@ -1937,37 +1937,40 @@ namespace DnsServerCore.Dns
 
                                     lock (listeners)
                                     {
-                                        //check if socket already exists for source EP
-                                        foreach (Socket socket in listeners)
+                                        if (_state == ServiceState.Running)
                                         {
-                                            if (socket.LocalEndPoint.Equals(sourceEP))
+                                            //check if socket already exists for source EP
+                                            foreach (Socket socket in listeners)
                                             {
-                                                //use existing socket
-                                                newUdpListener = socket;
-                                                break;
-                                            }
-                                        }
-
-                                        if (newUdpListener is null)
-                                        {
-                                            //create new socket and bind socket to source EP
-                                            newUdpListener = GetUdpListenerSocket(sourceEP.AddressFamily);
-
-                                            newUdpListener.Bind(sourceEP);
-
-                                            listeners.Add(newUdpListener);
-
-                                            _log.Write(sourceEP, protocol, "DNS Server was bound successfully.");
-
-                                            //start reading query packets
-                                            int listenerTaskCount = Environment.ProcessorCount;
-
-                                            for (int i = 0; i < listenerTaskCount; i++)
-                                            {
-                                                _ = Task.Factory.StartNew(delegate ()
+                                                if (socket.LocalEndPoint.Equals(sourceEP))
                                                 {
-                                                    return ReadUdpRequestAsync(newUdpListener, protocol);
-                                                }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, _queryTaskScheduler);
+                                                    //use existing socket
+                                                    newUdpListener = socket;
+                                                    break;
+                                                }
+                                            }
+
+                                            if (newUdpListener is null)
+                                            {
+                                                //create new socket and bind socket to source EP
+                                                newUdpListener = GetUdpListenerSocket(sourceEP.AddressFamily);
+
+                                                newUdpListener.Bind(sourceEP);
+
+                                                listeners.Add(newUdpListener);
+
+                                                _log.Write(sourceEP, protocol, "DNS Server was bound successfully.");
+
+                                                //start reading query packets
+                                                int listenerTaskCount = Environment.ProcessorCount;
+
+                                                for (int i = 0; i < listenerTaskCount; i++)
+                                                {
+                                                    _ = Task.Factory.StartNew(delegate ()
+                                                    {
+                                                        return ReadUdpRequestAsync(newUdpListener, protocol);
+                                                    }, CancellationToken.None, TaskCreationOptions.DenyChildAttach, _queryTaskScheduler);
+                                                }
                                             }
                                         }
                                     }
@@ -3005,6 +3008,9 @@ namespace DnsServerCore.Dns
 
         private async Task<DnsDatagram> ProcessNotifyQueryAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol)
         {
+            if ((request.Question.Count != 1) || (request.Question[0].Type != DnsResourceRecordType.SOA))
+                return new DnsDatagram(request.Identifier, true, DnsOpcode.Notify, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.FormatError, request.Question) { Tag = DnsServerResponseType.Authoritative };
+
             AuthZoneInfo zoneInfo = _authZoneManager.GetAuthZoneInfo(request.Question[0].Name);
             if ((zoneInfo is null) || ((zoneInfo.Type != AuthZoneType.Secondary) && (zoneInfo.Type != AuthZoneType.SecondaryForwarder) && (zoneInfo.Type != AuthZoneType.SecondaryCatalog)) || zoneInfo.Disabled)
                 return new DnsDatagram(request.Identifier, true, DnsOpcode.Notify, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.Refused, request.Question) { Tag = DnsServerResponseType.Authoritative };
@@ -4290,7 +4296,13 @@ namespace DnsServerCore.Dns
                         {
                             if (newResponseAnswerRecord.Equals(answerRecord))
                             {
-                                cnameLoopDetectedDomain = (newResponseAnswerRecord.RDATA as DnsCNAMERecordData).Domain;
+                                cnameLoopDetectedDomain = newResponseAnswerRecord.RDATA switch
+                                {
+                                    DnsCNAMERecordData cnameRData => cnameRData.Domain,
+                                    DnsDNAMERecordData dnameRData => dnameRData.Domain,
+                                    _ => null
+                                };
+
                                 break;
                             }
                         }
@@ -5146,7 +5158,7 @@ namespace DnsServerCore.Dns
                         {
                             Stopwatch stopwatch = Stopwatch.StartNew();
 
-                            DnsDatagram response = await DnsClient.RecursiveResolveAsync(question, dnsCache, _proxy, _ipv6Mode, _udpPayloadSize, _randomizeName, _qnameMinimization, dnssecValidation, eDnsClientSubnet, _resolverRetries, _resolverTimeout, _resolverConcurrency, _resolverMaxStackCount, true, true, cancellationToken: cancellationToken1);
+                            DnsDatagram response = await DnsClient.RecursiveResolveAsync(question, dnsCache, _proxy, _ipv6Mode, _udpPayloadSize, _randomizeName, _qnameMinimization, dnssecValidation, eDnsClientSubnet, _resolverRetries, _resolverTimeout, _resolverConcurrency, _resolverMaxStackCount, true, true, null, context, cancellationToken1);
 
                             stopwatch.Stop();
                             response = response.CloneWithMetadata(response.Metadata?.NameServer, stopwatch.Elapsed.TotalMilliseconds);
@@ -6740,7 +6752,12 @@ namespace DnsServerCore.Dns
             //start reading query packets
             int listenerTaskCount = Environment.ProcessorCount;
 
-            foreach (Socket udpListener in _udpListeners)
+            Socket[] udpListeners;
+
+            lock (_udpListeners)
+                udpListeners = _udpListeners.ToArray();
+
+            foreach (Socket udpListener in udpListeners)
             {
                 for (int i = 0; i < listenerTaskCount; i++)
                 {
@@ -6833,7 +6850,15 @@ namespace DnsServerCore.Dns
                 }
             }
 
-            foreach (Socket udpListener in _udpListeners)
+            Socket[] udpListeners;
+
+            lock (_udpListeners)
+            {
+                udpListeners = _udpListeners.ToArray();
+                _udpListeners.Clear();
+            }
+
+            foreach (Socket udpListener in udpListeners)
             {
                 try
                 {
@@ -6905,7 +6930,6 @@ namespace DnsServerCore.Dns
                 }
             }
 
-            _udpListeners.Clear();
             _udpProxyListeners.Clear();
             _tcpListeners.Clear();
             _tcpProxyListeners.Clear();
@@ -7405,7 +7429,7 @@ namespace DnsServerCore.Dns
             get { return _quicMaxInboundStreams; }
             set
             {
-                if ((value < 0) || (value > 1000))
+                if ((value < 1) || (value > 1000))
                     throw new ArgumentOutOfRangeException(nameof(QuicMaxInboundStreams), "Valid range is from 1 to 1000.");
 
                 _quicMaxInboundStreams = value;

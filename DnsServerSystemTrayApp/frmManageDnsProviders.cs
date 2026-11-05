@@ -41,7 +41,8 @@ namespace DnsServerSystemTrayApp
         {
             InitializeComponent();
 
-            _dnsProviders.AddRange(dnsProviders);
+            foreach (DnsProvider dnsProvider in dnsProviders)
+                _dnsProviders.Add(new DnsProvider(dnsProvider.Name, new List<IPAddress>(dnsProvider.Addresses)));
         }
 
         #endregion

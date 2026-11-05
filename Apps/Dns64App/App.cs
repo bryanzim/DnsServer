@@ -324,14 +324,17 @@ namespace Dns64
                     return new Tuple<NetworkAddress, NetworkAddress>(network, dns64Prefix);
                 });
 
-                _excludedIpv6 = jsonGroup.ReadArray("excludedIpv6", delegate (string strNetworkAddress)
+                if (!jsonGroup.TryReadArray("excludedIpv6", delegate (string strNetworkAddress)
                 {
                     NetworkAddress networkAddress = NetworkAddress.Parse(strNetworkAddress);
                     if (networkAddress.Address.AddressFamily != AddressFamily.InterNetworkV6)
                         throw new InvalidOperationException("An IPv6 network address is expected for 'excludedIpv6' array.");
 
                     return networkAddress;
-                });
+                }, out NetworkAddress[] excludedIpv6) || (excludedIpv6 is null))
+                    _excludedIpv6 = [];
+                else
+                    _excludedIpv6 = excludedIpv6;
             }
 
             #endregion

@@ -187,6 +187,15 @@ namespace BlockPage
 
             readonly ConcurrentDictionary<string, SslServerAuthenticationOptions> _certCache = new ConcurrentDictionary<string, SslServerAuthenticationOptions>();
             readonly ConcurrentDictionary<string, Task<SslServerAuthenticationOptions>> _certSigningTasks = new ConcurrentDictionary<string, Task<SslServerAuthenticationOptions>>();
+            const int MAX_SIGNED_CERTIFICATE_CACHE = 1024;
+
+            private void RememberSignedCertificate(string sniDomain, SslServerAuthenticationOptions sslServerAuthenticationOptions)
+            {
+                if (_certCache.Count >= MAX_SIGNED_CERTIFICATE_CACHE)
+                    _certCache.Clear();
+
+                _certCache[sniDomain] = sslServerAuthenticationOptions;
+            }
 
             Timer? _tlsCertificateUpdateTimer;
             const int TLS_CERTIFICATE_UPDATE_TIMER_INITIAL_INTERVAL = 60000;
@@ -314,7 +323,7 @@ namespace BlockPage
                                                         else
                                                         {
                                                             //algorithm not supported; return ca cert directly
-                                                            _certCache[sniDomain] = _sslServerAuthenticationOptions;
+                                                            RememberSignedCertificate(sniDomain, _sslServerAuthenticationOptions);
 
                                                             //release any awaiting task
                                                             signingTaskCompletionSource.SetResult(_sslServerAuthenticationOptions);
@@ -354,7 +363,7 @@ namespace BlockPage
                                                         ServerCertificateContext = SslStreamCertificateContext.Create(newCert, new X509Certificate2Collection(caCert), false)
                                                     };
 
-                                                    _certCache[sniDomain] = sslServerAuthenticationOptions;
+                                                    RememberSignedCertificate(sniDomain, sslServerAuthenticationOptions);
 
                                                     //release any awaiting task
                                                     signingTaskCompletionSource.SetResult(sslServerAuthenticationOptions);
@@ -498,6 +507,9 @@ namespace BlockPage
                 {
                     ServerCertificateContext = SslStreamCertificateContext.Create(serverCertificate, webServerTlsCertificateCollection, false)
                 };
+
+                _certCache.Clear();
+                _certSigningTasks.Clear();
 
                 _webServerTlsCertificateLastModifiedOn = fileInfo.LastWriteTimeUtc;
 
@@ -753,6 +765,8 @@ namespace BlockPage
                         {
                             //disable HTTPS
                             _sslServerAuthenticationOptions = null;
+                            _certCache.Clear();
+                            _certSigningTasks.Clear();
                         }
                     }
                     else

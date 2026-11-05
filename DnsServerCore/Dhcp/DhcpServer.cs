@@ -509,7 +509,7 @@ namespace DnsServerCore.Dhcp
 
                             if (!string.IsNullOrWhiteSpace(reservedLeaseHostName))
                             {
-                                clientDomainName = GetSanitizedHostName(reservedLeaseHostName) + "." + scope.DomainName;
+                                clientDomainName = GetReservedLeaseFqdn(reservedLeaseHostName, scope.DomainName);
                             }
                             else
                             {
@@ -678,7 +678,7 @@ namespace DnsServerCore.Dhcp
                     {
                         Scope scope = entry.Value;
 
-                        if (scope.Enabled && (scope.InterfaceIndex == ipPacketInformation.Interface))
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && (scope.InterfaceIndex == ipPacketInformation.Interface))
                         {
                             if (scope.GetReservedLease(request) != null)
                                 return scope; //found reserved lease on this scope
@@ -700,7 +700,7 @@ namespace DnsServerCore.Dhcp
                     {
                         Scope scope = entry.Value;
 
-                        if (scope.Enabled && scope.IsAddressInRange(request.ClientIpAddress))
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.IsAddressInRange(request.ClientIpAddress))
                             return scope;
                     }
 
@@ -716,7 +716,7 @@ namespace DnsServerCore.Dhcp
                 {
                     Scope scope = entry.Value;
 
-                    if (scope.Enabled && scope.InterfaceAddress.Equals(IPAddress.Any) && scope.IsAddressInNetwork(request.RelayAgentIpAddress))
+                    if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.InterfaceAddress.Equals(IPAddress.Any) && scope.IsAddressInNetwork(request.RelayAgentIpAddress))
                     {
                         if (scope.GetReservedLease(request) != null)
                             return scope; //found reserved lease on this scope
@@ -758,6 +758,24 @@ namespace DnsServerCore.Dhcp
             return sb.ToString();
         }
 
+        internal static string GetReservedLeaseHostLabel(string reservedLeaseHostName, string domainName)
+        {
+            string hostName = GetSanitizedHostName(reservedLeaseHostName);
+            if (string.IsNullOrEmpty(domainName))
+                return hostName;
+
+            string suffix = "." + domainName;
+            if (hostName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                return hostName.Substring(0, hostName.Length - suffix.Length);
+
+            return hostName;
+        }
+
+        internal static string GetReservedLeaseFqdn(string reservedLeaseHostName, string domainName)
+        {
+            return GetReservedLeaseHostLabel(reservedLeaseHostName, domainName) + "." + domainName;
+        }
+
         internal void AddDnsEntries(Scope scope, Lease lease)
         {
             if (lease.Type == LeaseType.Reserved)
@@ -766,8 +784,7 @@ namespace DnsServerCore.Dhcp
 
                 if (!string.IsNullOrWhiteSpace(reservedLeaseHostName))
                 {
-                    if (!reservedLeaseHostName.EndsWith("." + scope.DomainName, StringComparison.OrdinalIgnoreCase))
-                        reservedLeaseHostName = GetSanitizedHostName(reservedLeaseHostName) + "." + scope.DomainName;
+                    reservedLeaseHostName = GetReservedLeaseFqdn(reservedLeaseHostName, scope.DomainName);
                 }
 
                 AddDnsEntries(scope, reservedLeaseHostName, lease.Address, true);
@@ -786,8 +803,7 @@ namespace DnsServerCore.Dhcp
 
                 if (!string.IsNullOrWhiteSpace(reservedLeaseHostName))
                 {
-                    if (!reservedLeaseHostName.EndsWith("." + scope.DomainName, StringComparison.OrdinalIgnoreCase))
-                        reservedLeaseHostName = GetSanitizedHostName(reservedLeaseHostName) + "." + scope.DomainName;
+                    reservedLeaseHostName = GetReservedLeaseFqdn(reservedLeaseHostName, scope.DomainName);
                 }
 
                 if (force || !scope.HasReservedLeaseHostName(lease)) //remove DNS entries only if reserved lease has no hostname or if forced

@@ -641,7 +641,9 @@ namespace DnsServerSystemTrayApp
             //try finding port number from web service config file
             try
             {
-                string webServiceConfigFile = Path.Combine(Path.GetDirectoryName(Program.APP_PATH)!, "config", "webservice.config");
+                string appFolderConfigFile = Path.Combine(Path.GetDirectoryName(Program.APP_PATH)!, "config", "webservice.config");
+                string programDataConfigFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Technitium DNS Server", "webservice.config");
+                string webServiceConfigFile = File.Exists(appFolderConfigFile) ? appFolderConfigFile : programDataConfigFile;
 
                 using (FileStream fS = new FileStream(webServiceConfigFile, FileMode.Open, FileAccess.Read))
                 {

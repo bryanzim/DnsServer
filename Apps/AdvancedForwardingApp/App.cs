@@ -397,7 +397,7 @@ namespace AdvancedForwarding
             {
                 _forwarderRecords = forwarderRecords;
 
-                _domains = new HashSet<string>(domains.Count);
+                _domains = new HashSet<string>(domains.Count, StringComparer.OrdinalIgnoreCase);
 
                 foreach (string domain in domains)
                 {
@@ -597,7 +597,12 @@ namespace AdvancedForwarding
                     }
                     finally
                     {
-                        _autoReloadTimer?.Change(AUTO_RELOAD_TIMER_INTERVAL, Timeout.Infinite);
+                        try
+                        {
+                            _autoReloadTimer?.Change(AUTO_RELOAD_TIMER_INTERVAL, Timeout.Infinite);
+                        }
+                        catch (ObjectDisposedException)
+                        { }
                     }
                 });
 

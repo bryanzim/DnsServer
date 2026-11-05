@@ -83,7 +83,14 @@ namespace DnsBlockList
                             Span<byte> buffer = stackalloc byte[4];
 
                             for (int i = 0, j = parts.Length - 1; (i < 4) && (j > -1); i++, j--)
-                                buffer[i] = byte.Parse(parts[j]);
+                            {
+                                if (!byte.TryParse(parts[j], out buffer[i]))
+                                {
+                                    address = null;
+                                    domain = null;
+                                    return false;
+                                }
+                            }
 
                             address = new IPAddress(buffer);
                             domain = null;
@@ -95,7 +102,16 @@ namespace DnsBlockList
                             Span<byte> buffer = stackalloc byte[16];
 
                             for (int i = 0, j = parts.Length - 1; (i < 16) && (j > 0); i++, j -= 2)
-                                buffer[i] = (byte)(byte.Parse(parts[j], NumberStyles.HexNumber) << 4 | byte.Parse(parts[j - 1], NumberStyles.HexNumber));
+                            {
+                                if (!byte.TryParse(parts[j], NumberStyles.HexNumber, null, out byte high) || !byte.TryParse(parts[j - 1], NumberStyles.HexNumber, null, out byte low))
+                                {
+                                    address = null;
+                                    domain = null;
+                                    return false;
+                                }
+
+                                buffer[i] = (byte)((high << 4) | low);
+                            }
 
                             address = new IPAddress(buffer);
                             domain = null;
@@ -126,13 +142,19 @@ namespace DnsBlockList
             string name = jsonBlockList.GetProperty("name").ToString();
             BlockListType type = jsonBlockList.GetPropertyEnumValue("type", BlockListType.Ip);
 
-            if ((_dnsBlockLists is not null) && _dnsBlockLists.TryGetValue(name, out BlockList? existingBlockList) && (existingBlockList.Type == type))
+            BlockList? existingBlockList = null;
+            if (_dnsBlockLists is not null)
+                _dnsBlockLists.TryGetValue(name, out existingBlockList);
+
+            if ((existingBlockList is not null) && (existingBlockList.Type == type))
             {
                 existingBlockList.ReloadConfig(jsonBlockList);
                 blockList = existingBlockList;
             }
             else
             {
+                existingBlockList?.Dispose();
+
                 switch (type)
                 {
                     case BlockListType.Ip:
@@ -340,7 +362,12 @@ namespace DnsBlockList
                     }
                     finally
                     {
-                        _autoReloadTimer?.Change(AUTO_RELOAD_TIMER_INTERVAL, Timeout.Infinite);
+                        try
+                        {
+                            _autoReloadTimer?.Change(AUTO_RELOAD_TIMER_INTERVAL, Timeout.Infinite);
+                        }
+                        catch (ObjectDisposedException)
+                        { }
                     }
                 });
 

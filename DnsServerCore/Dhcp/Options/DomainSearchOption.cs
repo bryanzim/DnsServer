@@ -54,7 +54,7 @@ namespace DnsServerCore.Dhcp.Options
 
             List<string> searchStrings = new List<string>();
 
-            while (s.Length > 0)
+            while (s.Position < s.Length)
                 searchStrings.Add(DnsDatagram.DeserializeDomainName(s));
 
             _searchStrings = searchStrings;

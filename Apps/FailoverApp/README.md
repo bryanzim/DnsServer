@@ -66,7 +66,7 @@ The configuration structure comprises four root-level arrays defining operationa
 | `healthChecks` | Array | `[]` | Defines available health check profiles with monitoring parameters |
 | `emailAlerts` | Array | `[]` | Configures SMTP-based email notification profiles |
 | `webHooks` | Array | `[]` | Defines HTTP webhook endpoints for status change notifications |
-| `underMaintenance` | Array | `[]` | Specifies network ranges considered under maintenance (always returns FAILED status) |
+| `underMaintenance` | Array | `[]` | Specifies network ranges considered under maintenance (health status `Maintenance`, taken out of rotation) |
 
 ### Health Check Configuration
 
@@ -179,18 +179,19 @@ Webhooks send HTTP POST requests with JSON payloads when health status changes.
 
 **Webhook Payload Structure:**
 
+Address checks:
+
 ```json
 {
-  "timestamp": "2026-01-26T12:34:56Z",
   "address": "192.0.2.1",
-  "domain": "app.example.com",
-  "type": "A",
   "healthCheck": "https",
-  "previousStatus": "Healthy",
-  "currentStatus": "Failed",
-  "failureReason": "Connection timeout after 10000ms"
+  "status": "Failed",
+  "failureReason": "Connection timeout after 10000ms",
+  "dateTime": "2026-01-26T12:34:56Z"
 }
 ```
+
+Domain checks use `domain` and `recordType` instead of `address`. `failureReason` is included only when `status` is `Failed` or `Error`.
 
 **Example:**
 
@@ -207,7 +208,7 @@ Webhooks send HTTP POST requests with JSON payloads when health status changes.
 
 ### Maintenance Mode Configuration
 
-Networks in maintenance mode always return `FAILED` health status, effectively removing them from rotation without deleting configurations.
+Networks in maintenance mode return health status `Maintenance` and are left out of rotation without deleting configurations. Alerts are not sent when a target moves to or from maintenance.
 
 | Property | Type | Description |
 | --- | --- | --- |
@@ -235,14 +236,12 @@ Returns IP addresses based on health status with primary/secondary failover logi
 
 ```json
 {
-  "primary": {
-    "addresses": ["192.0.2.1", "192.0.2.2"]
-  },
-  "secondary": {
-    "addresses": ["198.51.100.1", "198.51.100.2"]
-  },
+  "primary": ["192.0.2.1", "192.0.2.2"],
+  "secondary": ["198.51.100.1", "198.51.100.2"],
+  "serverDown": ["203.0.113.1"],
   "healthCheck": "https",
-  "healthCheckUrl": "https://app.example.com/health"
+  "healthCheckUrl": "https://app.example.com/health",
+  "allowTxtStatus": false
 }
 ```
 
@@ -250,8 +249,9 @@ Returns IP addresses based on health status with primary/secondary failover logi
 
 | Property | Type | Description |
 | --- | --- | --- |
-| `primary.addresses` | Array of Strings | Primary IP addresses (IPv4/IPv6) to return when healthy |
-| `secondary.addresses` | Array of Strings | Fallback IP addresses returned when all primary addresses fail |
+| `primary` | Array of Strings | Primary IP addresses (IPv4/IPv6) to return when healthy |
+| `secondary` | Array of Strings | Fallback IP addresses returned when all primary addresses fail |
+| `serverDown` | Array of Strings | Addresses returned when primary and secondary are both unhealthy |
 | `healthCheck` | String | Name of health check profile to use |
 | `healthCheckUrl` | String (optional) | Override URL for HTTP/HTTPS checks; if omitted, defaults to `https://<queried-domain>` |
 
@@ -263,14 +263,12 @@ Returns domain names based on health status.
 
 ```json
 {
-  "primary": {
-    "domain": "server1.example.com"
-  },
-  "secondary": {
-    "domain": "server2.example.com"
-  },
+  "primary": "server1.example.com",
+  "secondary": ["server2.example.com"],
+  "serverDown": "status.example.com",
   "healthCheck": "tcp443",
-  "healthCheckUrl": "https://server1.example.com/status"
+  "healthCheckUrl": "https://server1.example.com/status",
+  "allowTxtStatus": false
 }
 ```
 
@@ -278,8 +276,9 @@ Returns domain names based on health status.
 
 | Property | Type | Description |
 | -------- | ---- | ----------- |
-| `primary.domain` | String | Primary domain name to return when healthy |
-| `secondary.domain` | String | Fallback domain name when primary fails |
+| `primary` | String | Primary domain name to return when healthy |
+| `secondary` | Array of Strings | Fallback domain names, tried in order, when the primary is unhealthy |
+| `serverDown` | String | Domain name returned when primary and secondary are both unhealthy |
 | `healthCheck` | String | Name of health check profile to use |
 | `healthCheckUrl` | String (optional) | Override URL for health validation |
 

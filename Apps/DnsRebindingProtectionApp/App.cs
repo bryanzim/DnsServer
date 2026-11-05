@@ -104,6 +104,9 @@ namespace DnsRebindingProtection
                     return false;
             }
 
+            if (address.IsIPv4MappedToIPv6)
+                address = address.MapToIPv4();
+
             foreach (NetworkAddress networkAddress in _privateNetworks)
             {
                 if (networkAddress.Contains(address))

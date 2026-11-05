@@ -273,7 +273,18 @@ namespace DnsServerCore.Dns
 
             _channelWriter?.TryComplete();
 
-            DoMaintenance(); //do last maintenance
+            //drain queued samples before the last save; setting _disposed first makes the consumer drop them
+            if ((_consumerThread is not null) && (_consumerThread != Thread.CurrentThread))
+                _consumerThread.Join(5000);
+
+            try
+            {
+                DoMaintenance(true); //include the current minute, which the periodic save skips
+            }
+            catch (Exception ex)
+            {
+                _dnsServer.LogManager?.Write(ex);
+            }
 
             _disposed = true;
             GC.SuppressFinalize(this);
@@ -378,7 +389,7 @@ namespace DnsServerCore.Dns
             }
         }
 
-        private void DoMaintenance()
+        private void DoMaintenance(bool includeCurrentMinute = false)
         {
             //load new stats counter 5 min ahead of current time
             DateTime currentDateTime = DateTime.UtcNow;
@@ -392,10 +403,11 @@ namespace DnsServerCore.Dns
                     _lastHourStatCounters[minute] = new StatCounter();
             }
 
-            //save data upto last 5 mins
+            //save data upto last 5 mins; shutdown also keeps the minute still in progress
             DateTime last5MinDateTime = currentDateTime.AddMinutes(-5);
+            int minutesToSave = includeCurrentMinute ? 6 : 5;
 
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < minutesToSave; i++)
             {
                 DateTime lastDateTime = last5MinDateTime.AddMinutes(i);
 

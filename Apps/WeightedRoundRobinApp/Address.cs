@@ -111,21 +111,15 @@ namespace WeightedRoundRobin
             if (addresses.Count == 0)
                 return Task.FromResult<DnsDatagram>(null);
 
-            int randomSelection = RandomNumberGenerator.GetInt32(1, 101);
-            int rangeFrom;
+            int randomSelection = RandomNumberGenerator.GetInt32(totalWeight);
             int rangeTo = 0;
             DnsResourceRecord answer = null;
 
             for (int i = 0; i < addresses.Count; i++)
             {
-                rangeFrom = rangeTo + 1;
+                rangeTo += addresses[i].Weight;
 
-                if (i == addresses.Count - 1)
-                    rangeTo = 100;
-                else
-                    rangeTo += addresses[i].Weight * 100 / totalWeight;
-
-                if ((rangeFrom <= randomSelection) && (randomSelection <= rangeTo))
+                if (randomSelection < rangeTo)
                 {
                     switch (question.Type)
                     {

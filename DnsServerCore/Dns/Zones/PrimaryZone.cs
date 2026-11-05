@@ -434,10 +434,15 @@ namespace DnsServerCore.Dns.Zones
                 Timer dnssecTimer = _dnssecTimer;
                 if (dnssecTimer is not null)
                 {
-                    lock (dnssecTimer)
+                    try
                     {
-                        dnssecTimer.Change(DNSSEC_TIMER_PERIODIC_INTERVAL, Timeout.Infinite);
+                        lock (dnssecTimer)
+                        {
+                            dnssecTimer.Change(DNSSEC_TIMER_PERIODIC_INTERVAL, Timeout.Infinite);
+                        }
                     }
+                    catch (ObjectDisposedException)
+                    { }
                 }
             }
         }
@@ -594,12 +599,12 @@ namespace DnsServerCore.Dns.Zones
 
                 if (useNSec3)
                 {
-                    EnableNSec3(zones, iterations, salt);
+                    EnableNSec3(zones, iterations, salt, addedRecords, deletedRecords);
                     _dnssecStatus = AuthZoneDnssecStatus.SignedWithNSEC3;
                 }
                 else
                 {
-                    EnableNSec(zones);
+                    EnableNSec(zones, addedRecords, deletedRecords);
                     _dnssecStatus = AuthZoneDnssecStatus.SignedWithNSEC;
                 }
 
@@ -624,6 +629,16 @@ namespace DnsServerCore.Dns.Zones
             }
             catch
             {
+                Timer dnssecTimer = _dnssecTimer;
+                if (dnssecTimer is not null)
+                {
+                    lock (dnssecTimer)
+                    {
+                        dnssecTimer.Dispose();
+                        _dnssecTimer = null;
+                    }
+                }
+
                 _dnssecStatus = AuthZoneDnssecStatus.Unsigned;
                 _dnssecPrivateKeys = null;
 
@@ -810,10 +825,12 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
-        private void EnableNSec(IReadOnlyList<AuthZone> zones)
+        private void EnableNSec(IReadOnlyList<AuthZone> zones, List<DnsResourceRecord> addedRecords = null, List<DnsResourceRecord> deletedRecords = null)
         {
-            List<DnsResourceRecord> addedRecords = new List<DnsResourceRecord>();
-            List<DnsResourceRecord> deletedRecords = new List<DnsResourceRecord>();
+            bool commit = addedRecords is null;
+
+            addedRecords ??= new List<DnsResourceRecord>();
+            deletedRecords ??= new List<DnsResourceRecord>();
 
             uint ttl = GetZoneSoaMinimum();
 
@@ -847,7 +864,8 @@ namespace DnsServerCore.Dns.Zones
                 }
             }
 
-            CommitAndIncrementSerial(deletedRecords, addedRecords);
+            if (commit)
+                CommitAndIncrementSerial(deletedRecords, addedRecords);
         }
 
         private void DisableNSec(IReadOnlyList<AuthZone> zones)
@@ -877,10 +895,12 @@ namespace DnsServerCore.Dns.Zones
             EnableNSec3(zones, iterations, salt);
         }
 
-        private void EnableNSec3(IReadOnlyList<AuthZone> zones, ushort iterations, byte[] salt)
+        private void EnableNSec3(IReadOnlyList<AuthZone> zones, ushort iterations, byte[] salt, List<DnsResourceRecord> addedRecords = null, List<DnsResourceRecord> deletedRecords = null)
         {
-            List<DnsResourceRecord> addedRecords = new List<DnsResourceRecord>();
-            List<DnsResourceRecord> deletedRecords = new List<DnsResourceRecord>();
+            bool commit = addedRecords is null;
+
+            addedRecords ??= new List<DnsResourceRecord>();
+            deletedRecords ??= new List<DnsResourceRecord>();
 
             List<DnsResourceRecord> partialNSec3Records = new List<DnsResourceRecord>(zones.Count);
             int apexLabelCount = DnsRRSIGRecordData.GetLabelCount(_name);
@@ -1016,7 +1036,8 @@ namespace DnsServerCore.Dns.Zones
                 }
             }
 
-            CommitAndIncrementSerial(deletedRecords, addedRecords);
+            if (commit)
+                CommitAndIncrementSerial(deletedRecords, addedRecords);
         }
 
         private void DisableNSec3(IReadOnlyList<AuthZone> zones)
@@ -1964,7 +1985,7 @@ namespace DnsServerCore.Dns.Zones
 
                     int apexLabelCount = DnsRRSIGRecordData.GetLabelCount(_name);
                     int zoneLabelCount = DnsRRSIGRecordData.GetLabelCount(zone.Name);
-                    if (zone.Name.StartsWith("*.", StringComparison.Ordinal) || zone.Name.Equals('*'))
+                    if (zone.Name.StartsWith("*.", StringComparison.Ordinal) || zone.Name.Equals("*", StringComparison.Ordinal))
                         zoneLabelCount++; //need to consider wildcard label for ENT detection
 
                     if ((zoneLabelCount - apexLabelCount) > 1)

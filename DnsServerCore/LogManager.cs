@@ -389,10 +389,11 @@ namespace DnsServerCore
             if (_isRunning)
                 return;
 
-            UnboundedChannelOptions options = new UnboundedChannelOptions();
+            BoundedChannelOptions options = new BoundedChannelOptions(100000);
             options.SingleReader = true;
+            options.FullMode = BoundedChannelFullMode.DropOldest;
 
-            _channel = Channel.CreateUnbounded<LogQueueItem>(options);
+            _channel = Channel.CreateBounded<LogQueueItem>(options);
             _channelWriter = _channel.Writer;
 
             if (_loggingType.HasFlag(LoggingType.File))

@@ -239,12 +239,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 DnsResourceRecord resourceRecord = resourceRecords[0];
 
-                CacheZone zone = _root.GetOrAdd(resourceRecord.Name, delegate (string key)
-                {
-                    return new CacheZone(resourceRecord.Name, 1);
-                });
-
-                if (zone.SetRecords(resourceRecords, _dnsServer.ServeStale))
+                if (SetRecordsOnLiveZone(resourceRecord.Name, 1, resourceRecords, _dnsServer.ServeStale))
                     Interlocked.Increment(ref _totalEntries);
             }
             else
@@ -274,14 +269,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                             continue; //do not cache synthesized CNAME
                     }
 
-                    CacheZone zone = _root.GetOrAdd(groupedByTypeRecords.Key, delegate (string key)
-                    {
-                        return new CacheZone(groupedByTypeRecords.Key, groupedByTypeRecords.Value.Count);
-                    });
-
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> groupedRecords in groupedByTypeRecords.Value)
                     {
-                        if (zone.SetRecords(groupedRecords.Value, serveStale))
+                        if (SetRecordsOnLiveZone(groupedByTypeRecords.Key, groupedByTypeRecords.Value.Count, groupedRecords.Value, serveStale))
                             addedEntries++;
                     }
                 }
@@ -634,6 +624,38 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
+        private bool SetRecordsOnLiveZone(string name, int capacity, IReadOnlyList<DnsResourceRecord> records, bool serveStale)
+        {
+            while (true)
+            {
+                CacheZone zone = _root.GetOrAdd(name, delegate (string key)
+                {
+                    return new CacheZone(key, capacity);
+                });
+
+                lock (zone)
+                {
+                    //an eviction may have removed this instance after GetOrAdd returned it; write only into the live zone
+                    if (!_root.TryGet(name, out CacheZone live) || !ReferenceEquals(live, zone))
+                        continue;
+
+                    return zone.SetRecords(records, serveStale);
+                }
+            }
+        }
+
+        private void TryRemoveEmptyZone(CacheZone zone)
+        {
+            if (!zone.IsEmpty)
+                return;
+
+            lock (zone)
+            {
+                if (zone.IsEmpty)
+                    _root.TryRemove(zone.Name, out _);
+            }
+        }
+
         private int RemoveExpiredRecordsInternal(bool serveStale, long minimumEntriesToRemove)
         {
             int removedEntries = 0;
@@ -642,8 +664,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 removedEntries += zone.RemoveExpiredRecords(serveStale);
 
-                if (zone.IsEmpty)
-                    _root.TryRemove(zone.Name, out _); //remove empty zone
+                TryRemoveEmptyZone(zone);
 
                 if ((minimumEntriesToRemove > 0) && (removedEntries >= minimumEntriesToRemove))
                     break;
@@ -667,8 +688,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 removedEntries += zone.RemoveLeastUsedRecords(cutoff);
 
-                if (zone.IsEmpty)
-                    _root.TryRemove(zone.Name, out _); //remove empty zone
+                TryRemoveEmptyZone(zone);
 
                 if ((minimumEntriesToRemove > 0) && (removedEntries >= minimumEntriesToRemove))
                     break;
@@ -741,8 +761,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 removedEntries += zone.DeleteEDnsClientSubnetData();
 
-                if (zone.IsEmpty)
-                    _root.TryRemove(zone.Name, out _); //remove empty zone
+                TryRemoveEmptyZone(zone);
             }
 
             if (removedEntries > 0)

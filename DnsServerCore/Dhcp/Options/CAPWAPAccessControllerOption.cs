@@ -55,7 +55,7 @@ namespace DnsServerCore.Dhcp.Options
 
             List<IPAddress> apIpAddresses = new List<IPAddress>();
 
-            while (s.Length > 0)
+            while (s.Position < s.Length)
                 apIpAddresses.Add(new IPAddress(s.ReadExactly(4)));
 
             _apIpAddresses = apIpAddresses;

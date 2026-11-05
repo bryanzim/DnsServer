@@ -50,6 +50,20 @@ namespace DnsServerApp
                         break;
 
                     default:
+                        if (arg.StartsWith('-'))
+                        {
+                            Console.Error.WriteLine("Unknown option: " + arg);
+                            Environment.ExitCode = 1;
+                            return;
+                        }
+
+                        if (configFolder is not null)
+                        {
+                            Console.Error.WriteLine("Only one config folder argument is allowed.");
+                            Environment.ExitCode = 1;
+                            return;
+                        }
+
                         configFolder = arg;
                         break;
                 }

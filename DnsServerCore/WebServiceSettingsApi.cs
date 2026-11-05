@@ -48,6 +48,8 @@ namespace DnsServerCore
         {
             #region variables
 
+            const string PROXY_PASSWORD_HIDDEN = "********";
+
             readonly DnsWebService _dnsWebService;
 
             #endregion
@@ -407,7 +409,7 @@ namespace DnsServerCore
                     if (credential != null)
                     {
                         jsonWriter.WriteString("username", credential.UserName);
-                        jsonWriter.WriteString("password", credential.Password);
+                        jsonWriter.WriteString("password", string.IsNullOrEmpty(credential.Password) ? "" : PROXY_PASSWORD_HIDDEN);
                     }
 
                     jsonWriter.WritePropertyName("bypass");
@@ -1566,8 +1568,12 @@ namespace DnsServerCore
                         #region proxy & forwarders
 
                         //proxy & forwarders
+                        NetProxyType effectiveProxyType = _dnsWebService._dnsServer.Proxy?.Type ?? NetProxyType.None;
+
                         if (request.TryGetQueryOrFormEnum("proxyType", out NetProxyType proxyType))
                         {
+                            effectiveProxyType = proxyType;
+
                             if (proxyType == NetProxyType.None)
                             {
                                 _dnsWebService._dnsServer.Proxy = null;
@@ -1582,6 +1588,9 @@ namespace DnsServerCore
                                         throw new ArgumentException("Proxy username length cannot exceed 255 characters.", nameof(proxyUsername));
 
                                     string proxyPassword = request.QueryOrForm("proxyPassword");
+                                    if ((proxyPassword == PROXY_PASSWORD_HIDDEN) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
+                                        proxyPassword = _dnsWebService._dnsServer.Proxy.Credential.Password;
+
                                     if (proxyPassword?.Length > 255)
                                         throw new ArgumentException("Proxy password length cannot exceed 255 characters.", nameof(proxyPassword));
 
@@ -1623,7 +1632,7 @@ namespace DnsServerCore
                                 switch (forwarderProtocol)
                                 {
                                     case DnsTransportProtocol.Udp:
-                                        if (proxyType == NetProxyType.Http)
+                                        if (effectiveProxyType == NetProxyType.Http)
                                             throw new DnsWebServiceException("HTTP proxy server can transport only DNS-over-TCP, DNS-over-TLS, or DNS-over-HTTPS forwarder protocols. Use SOCKS5 proxy server for DNS-over-UDP or DNS-over-QUIC forwarder protocols.");
 
                                         break;
@@ -1635,7 +1644,7 @@ namespace DnsServerCore
                                     case DnsTransportProtocol.Quic:
                                         DnsServer.ValidateQuicSupport();
 
-                                        if (proxyType == NetProxyType.Http)
+                                        if (effectiveProxyType == NetProxyType.Http)
                                             throw new DnsWebServiceException("HTTP proxy server can transport only DNS-over-TCP, DNS-over-TLS, or DNS-over-HTTPS forwarder protocols. Use SOCKS5 proxy server for DNS-over-UDP or DNS-over-QUIC forwarder protocols.");
 
                                         break;
