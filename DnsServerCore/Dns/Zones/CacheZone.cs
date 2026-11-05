@@ -316,7 +316,7 @@ namespace DnsServerCore.Dns.Zones
                     {
                         if (DnsResourceRecord.IsRRSetExpired(entry.Value, serveStale))
                         {
-                            if (ecsEntry.Value.TryRemove(entry.Key, out _)) //RR Set is expired; remove entry
+                            if (TryRemoveRecordSet(ecsEntry.Value, entry)) //RR Set is expired; remove entry
                                 removedEntries++;
                         }
                     }
@@ -330,7 +330,7 @@ namespace DnsServerCore.Dns.Zones
             {
                 if (DnsResourceRecord.IsRRSetExpired(entry.Value, serveStale))
                 {
-                    if (_entries.TryRemove(entry.Key, out _)) //RR Set is expired; remove entry
+                    if (TryRemoveRecordSet(_entries, entry)) //RR Set is expired; remove entry
                         removedEntries++;
                 }
             }
@@ -350,7 +350,7 @@ namespace DnsServerCore.Dns.Zones
                     {
                         if ((entry.Value.Count == 0) || (entry.Value[0].GetCacheRecordInfo().LastUsedOn < cutoff))
                         {
-                            if (ecsEntry.Value.TryRemove(entry.Key, out _)) //RR Set was last used before cutoff; remove entry
+                            if (TryRemoveRecordSet(ecsEntry.Value, entry)) //RR Set was last used before cutoff; remove entry
                                 removedEntries++;
                         }
                     }
@@ -364,12 +364,18 @@ namespace DnsServerCore.Dns.Zones
             {
                 if ((entry.Value.Count == 0) || (entry.Value[0].GetCacheRecordInfo().LastUsedOn < cutoff))
                 {
-                    if (_entries.TryRemove(entry.Key, out _)) //RR Set was last used before cutoff; remove entry
+                    if (TryRemoveRecordSet(_entries, entry)) //RR Set was last used before cutoff; remove entry
                         removedEntries++;
                 }
             }
 
             return removedEntries;
+        }
+
+        private static bool TryRemoveRecordSet(ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entries, KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entry)
+        {
+            //remove only the set that was checked; a refresh may have stored a new one under this type
+            return entries.TryRemove(new KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>(entry.Key, entry.Value));
         }
 
         public int DeleteEDnsClientSubnetData()
