@@ -654,6 +654,14 @@ namespace AdvancedForwarding
                             if (line.StartsWith('#'))
                                 continue; //skip comment line
 
+                            int commentIndex = line.IndexOf('#');
+                            if ((commentIndex > 0) && char.IsWhiteSpace(line[commentIndex - 1]))
+                            {
+                                line = line.Substring(0, commentIndex).TrimEnd();
+                                if (line.Length == 0)
+                                    continue;
+                            }
+
                             if (line.StartsWith('['))
                             {
                                 int i = line.LastIndexOf(']');
