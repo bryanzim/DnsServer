@@ -54,6 +54,7 @@ namespace DnsServerCore.Dns.ZoneManagers
         readonly DnsServer _dnsServer;
 
         string _serverDomain;
+        readonly List<string> _knownServerDomains = new List<string>(2); //names already written into SOA/NS; guarded by _updateServerDomainLock
         uint _defaultRecordTtl = 3600;
         uint _defaultNsRecordTtl = 14400;
         uint _defaultSoaRecordTtl = 900;
@@ -84,6 +85,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             _dnsServer = dnsServer;
 
             _serverDomain = _dnsServer.ServerDomain;
+
+            if (!string.IsNullOrEmpty(_serverDomain))
+                _knownServerDomains.Add(_serverDomain);
 
             _saveTimer = new Timer(delegate (object state)
             {
@@ -617,18 +621,16 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 lock (_updateServerDomainLock)
                 {
-                    //domains this server has already written into SOA/NS; a superseded run must still match them
-                    List<string> previousDomains = new List<string>(2);
-
-                    if (!string.IsNullOrEmpty(_serverDomain))
-                        previousDomains.Add(_serverDomain);
-
                     while (true)
                     {
                         int runId = _updateServerDomainId;
                         string serverDomain = _dnsServer.ServerDomain;
                         bool superseded = false;
                         bool failed = false;
+
+                        //record the name before writing so a throw still leaves it matchable
+                        if (!MatchesServerDomain(serverDomain, _knownServerDomains))
+                            _knownServerDomains.Add(serverDomain);
 
                         try
                         {
@@ -645,42 +647,51 @@ namespace DnsServerCore.Dns.ZoneManagers
                                 if (zone.Type != AuthZoneType.Primary)
                                     continue;
 
-                                DnsResourceRecord record = zone.ApexZone.GetRecords(DnsResourceRecordType.SOA)[0];
-                                DnsSOARecordData soa = record.RDATA as DnsSOARecordData;
-
-                                if (!MatchesServerDomain(soa.PrimaryNameServer, previousDomains))
-                                    continue;
-
-                                uint ttl;
-                                uint minimum;
-
-                                if (useBlockingAnswerTtl)
+                                try
                                 {
-                                    ttl = _dnsServer.BlockingAnswerTtl;
-                                    minimum = ttl;
-                                }
-                                else
-                                {
-                                    ttl = record.TTL;
-                                    minimum = soa.Minimum;
-                                }
+                                    DnsResourceRecord record = zone.ApexZone.GetRecords(DnsResourceRecordType.SOA)[0];
+                                    DnsSOARecordData soa = record.RDATA as DnsSOARecordData;
 
-                                SetRecord(zone.Name, new DnsResourceRecord(record.Name, record.Type, DnsClass.IN, ttl, new DnsSOARecordData(serverDomain, soa.ResponsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, minimum)) { Tag = record.Tag }); //preserve record info (serial date scheme, comments)
+                                    if (!MatchesServerDomain(soa.PrimaryNameServer, _knownServerDomains))
+                                        continue;
 
-                                //update NS records
-                                IReadOnlyList<DnsResourceRecord> nsResourceRecords = zone.ApexZone.GetRecords(DnsResourceRecordType.NS);
+                                    uint ttl;
+                                    uint minimum;
 
-                                foreach (DnsResourceRecord nsResourceRecord in nsResourceRecords)
-                                {
-                                    if (MatchesServerDomain((nsResourceRecord.RDATA as DnsNSRecordData).NameServer, previousDomains))
+                                    if (useBlockingAnswerTtl)
                                     {
-                                        UpdateRecord(zone.Name, nsResourceRecord, new DnsResourceRecord(nsResourceRecord.Name, nsResourceRecord.Type, nsResourceRecord.Class, nsResourceRecord.TTL, new DnsNSRecordData(serverDomain)) { Tag = nsResourceRecord.Tag });
-                                        break;
+                                        ttl = _dnsServer.BlockingAnswerTtl;
+                                        minimum = ttl;
                                     }
-                                }
+                                    else
+                                    {
+                                        ttl = record.TTL;
+                                        minimum = soa.Minimum;
+                                    }
 
-                                //save zone file
-                                SaveZoneFile(zone.Name);
+                                    SetRecord(zone.Name, new DnsResourceRecord(record.Name, record.Type, DnsClass.IN, ttl, new DnsSOARecordData(serverDomain, soa.ResponsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, minimum)) { Tag = record.Tag }); //preserve record info (serial date scheme, comments)
+
+                                    //update NS records
+                                    IReadOnlyList<DnsResourceRecord> nsResourceRecords = zone.ApexZone.GetRecords(DnsResourceRecordType.NS);
+
+                                    foreach (DnsResourceRecord nsResourceRecord in nsResourceRecords)
+                                    {
+                                        if (MatchesServerDomain((nsResourceRecord.RDATA as DnsNSRecordData).NameServer, _knownServerDomains))
+                                        {
+                                            UpdateRecord(zone.Name, nsResourceRecord, new DnsResourceRecord(nsResourceRecord.Name, nsResourceRecord.Type, nsResourceRecord.Class, nsResourceRecord.TTL, new DnsNSRecordData(serverDomain)) { Tag = nsResourceRecord.Tag });
+                                            break;
+                                        }
+                                    }
+
+                                    //save zone file
+                                    SaveZoneFile(zone.Name);
+                                }
+                                catch (Exception ex)
+                                {
+                                    //one zone must not abandon the rest, or leave its new name unmatched on the next rename
+                                    _dnsServer.LogManager.Write(ex);
+                                    failed = true;
+                                }
                             }
                         }
                         catch (Exception ex)
@@ -689,14 +700,17 @@ namespace DnsServerCore.Dns.ZoneManagers
                             failed = true;
                         }
 
-                        if (!previousDomains.Exists(delegate (string previousDomain) { return previousDomain.Equals(serverDomain, StringComparison.OrdinalIgnoreCase); }))
-                            previousDomains.Add(serverDomain);
-
                         if (superseded || (_updateServerDomainId != runId))
                             continue; //a newer domain was saved while this pass was writing; rewrite again so every zone converges
 
                         if (!failed)
+                        {
                             _serverDomain = serverDomain;
+                            _knownServerDomains.Clear();
+
+                            if (!string.IsNullOrEmpty(serverDomain))
+                                _knownServerDomains.Add(serverDomain);
+                        }
 
                         return;
                     }
