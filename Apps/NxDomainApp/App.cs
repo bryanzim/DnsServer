@@ -106,7 +106,30 @@ namespace NxDomain
 
             _enableBlocking = jsonConfig.GetProperty("enableBlocking").GetBoolean();
             _allowTxtBlockingReport = jsonConfig.GetProperty("allowTxtBlockingReport").GetBoolean();
-            _blockListZone = jsonConfig.ReadArrayAsMap("blocked", delegate (JsonElement jsonDomainName) { return new Tuple<string, object>(jsonDomainName.GetString(), null); });
+            JsonElement jsonBlocked = jsonConfig.GetProperty("blocked");
+
+            switch (jsonBlocked.ValueKind)
+            {
+                case JsonValueKind.Array:
+                    Dictionary<string, object> blockListZone = new Dictionary<string, object>(jsonBlocked.GetArrayLength(), StringComparer.OrdinalIgnoreCase);
+
+                    foreach (JsonElement jsonDomainName in jsonBlocked.EnumerateArray())
+                    {
+                        string domain = jsonDomainName.GetString();
+                        if (!string.IsNullOrEmpty(domain))
+                            blockListZone.TryAdd(domain, null);
+                    }
+
+                    _blockListZone = blockListZone;
+                    break;
+
+                case JsonValueKind.Null:
+                    _blockListZone = null;
+                    break;
+
+                default:
+                    throw new InvalidOperationException();
+            }
 
             return Task.CompletedTask;
         }
