@@ -1014,9 +1014,14 @@ namespace DnsServerCore.Dhcp
             Lease reservedLease = GetReservedLease(request);
             if (reservedLease != null)
             {
-                Lease reservedOffer = new Lease(LeaseType.Reserved, clientIdentifier, null, request.ClientHardwareAddress, reservedLease.Address, null, GetLeaseTime());
-                _offers[clientIdentifier] = reservedOffer;
-                return reservedOffer;
+                if (IsAddressInRange(reservedLease.Address))
+                {
+                    Lease reservedOffer = new Lease(LeaseType.Reserved, clientIdentifier, null, request.ClientHardwareAddress, reservedLease.Address, null, GetLeaseTime());
+                    _offers[clientIdentifier] = reservedOffer;
+                    return reservedOffer;
+                }
+
+                _log.Write("DHCP Server failed to offer reserved IP address [" + reservedLease.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the address is outside the scope range.");
             }
 
             if (_allowOnlyReservedLeases)
@@ -1579,9 +1584,29 @@ namespace DnsServerCore.Dhcp
                     ReleaseLease(lease);
             }
 
+            List<Lease> reservedLeasesOutsideRange = null;
+
+            foreach (KeyValuePair<ClientIdentifierOption, Lease> reservedLease in _reservedLeases)
+            {
+                if (!IsAddressInRange(reservedLease.Value.Address))
+                {
+                    reservedLeasesOutsideRange ??= new List<Lease>();
+                    reservedLeasesOutsideRange.Add(reservedLease.Value);
+                }
+            }
+
+            if (reservedLeasesOutsideRange is not null)
+            {
+                foreach (Lease reservedLease in reservedLeasesOutsideRange)
+                {
+                    if (_reservedLeases.TryRemove(reservedLease.ClientIdentifier, out _))
+                        _dhcpServer?.RemoveDnsEntries(this, reservedLease, true);
+                }
+            }
+
             foreach (KeyValuePair<ClientIdentifierOption, Lease> offer in _offers)
             {
-                if ((offer.Value.Address is not null) && (offer.Value.Type != LeaseType.Reserved) && !IsAddressInRange(offer.Value.Address))
+                if ((offer.Value.Address is not null) && !IsAddressInRange(offer.Value.Address))
                     _offers.TryRemove(offer.Key, out _);
             }
         }
