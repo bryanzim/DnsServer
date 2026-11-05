@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using DnsServerCore.ApplicationCommon;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -158,7 +159,7 @@ namespace DnsRebindingProtection
 
             _enableProtection = jsonConfig.GetPropertyValue("enableProtection", true);
             _privateNetworks = new HashSet<NetworkAddress>(jsonConfig.ReadArray("privateNetworks", NetworkAddress.Parse));
-            _privateDomains = new HashSet<string>(jsonConfig.ReadArray("privateDomains"));
+            _privateDomains = new HashSet<string>(jsonConfig.ReadArray("privateDomains"), StringComparer.OrdinalIgnoreCase);
 
             if (jsonConfig.TryReadArray("bypassNetworks", NetworkAddress.Parse, out NetworkAddress[] bypassNetworks))
             {
