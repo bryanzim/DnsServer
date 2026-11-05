@@ -1467,6 +1467,19 @@ namespace DnsServerCore.Dns.ZoneManagers
             return false;
         }
 
+        private static string RenameToClonedZone(string name, string sourceZoneName, string zoneName)
+        {
+            if (sourceZoneName.Length == 0)
+            {
+                if (name.Length == 0)
+                    return zoneName;
+
+                return name + "." + zoneName;
+            }
+
+            return string.Concat(name.AsSpan(0, name.Length - sourceZoneName.Length), zoneName);
+        }
+
         public AuthZoneInfo CloneZone(string zoneName, string sourceZoneName)
         {
             AuthZoneInfo sourceZoneInfo = GetAuthZoneInfo(sourceZoneName);
@@ -1519,7 +1532,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         Dictionary<string, IReadOnlyList<DnsResourceRecordType>> policyMap = new Dictionary<string, IReadOnlyList<DnsResourceRecordType>>();
 
                         foreach (KeyValuePair<string, IReadOnlyList<DnsResourceRecordType>> sourcePolicyMap in sourceSecurityPolicy.Value)
-                            policyMap.Add(string.Concat(sourcePolicyMap.Key.AsSpan(0, sourcePolicyMap.Key.Length - sourceZoneName.Length), zoneName), sourcePolicyMap.Value);
+                            policyMap.Add(RenameToClonedZone(sourcePolicyMap.Key, sourceZoneName, zoneName), sourcePolicyMap.Value);
 
                         updateSecurityPolicies.Add(sourceSecurityPolicy.Key, policyMap);
                     }
@@ -1547,7 +1560,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         continue; //skip DNSSEC records
 
                     default:
-                        DnsResourceRecord newRecord = new DnsResourceRecord(string.Concat(sourceRecord.Name.AsSpan(0, sourceRecord.Name.Length - sourceZoneName.Length), zoneName), sourceRecord.Type, sourceRecord.Class, sourceRecord.TTL, sourceRecord.RDATA);
+                        DnsResourceRecord newRecord = new DnsResourceRecord(RenameToClonedZone(sourceRecord.Name, sourceZoneName, zoneName), sourceRecord.Type, sourceRecord.Class, sourceRecord.TTL, sourceRecord.RDATA);
 
                         if (sourceRecord.Tag is NSRecordInfo nsInfo)
                         {
