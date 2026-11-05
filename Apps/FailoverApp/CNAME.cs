@@ -170,7 +170,16 @@ namespace Failover
                 if (jsonAppRecordData.TryGetProperty("secondary", out JsonElement jsonSecondary) && (jsonSecondary.ValueKind == JsonValueKind.Array))
                 {
                     foreach (JsonElement jsonDomain in jsonSecondary.EnumerateArray())
-                        GetStatusAnswers(jsonDomain.ToString(), FailoverType.Secondary, question, 30, healthCheck, healthCheckUrl, txtAnswers);
+                    {
+                        if (jsonDomain.ValueKind != JsonValueKind.String)
+                            continue;
+
+                        string? domain = jsonDomain.GetString();
+                        if (string.IsNullOrEmpty(domain))
+                            continue;
+
+                        GetStatusAnswers(domain, FailoverType.Secondary, question, 30, healthCheck, healthCheckUrl, txtAnswers);
+                    }
                 }
 
                 answers = txtAnswers;
@@ -186,7 +195,14 @@ namespace Failover
                     {
                         foreach (JsonElement jsonDomain in jsonSecondary.EnumerateArray())
                         {
-                            answers = GetAnswers(jsonDomain.ToString(), question, zoneName, appRecordTtl, healthCheck, healthCheckUrl);
+                            if (jsonDomain.ValueKind != JsonValueKind.String)
+                                continue;
+
+                            string? domain = jsonDomain.GetString();
+                            if (string.IsNullOrEmpty(domain))
+                                continue;
+
+                            answers = GetAnswers(domain, question, zoneName, appRecordTtl, healthCheck, healthCheckUrl);
                             if (answers is not null)
                                 break;
                         }
