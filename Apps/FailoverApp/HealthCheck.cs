@@ -294,16 +294,20 @@ namespace Failover
 
         public async Task<HealthCheckResponse> IsHealthyAsync(IPAddress address, Uri? healthCheckUrl)
         {
+            NetworkAddress? maintenanceNetwork = null;
+            bool inMaintenance = false;
+
             foreach (KeyValuePair<NetworkAddress, bool> network in _service.UnderMaintenance)
             {
-                if (network.Key.Contains(address))
+                if (network.Key.Contains(address) && ((maintenanceNetwork is null) || (network.Key.PrefixLength > maintenanceNetwork.PrefixLength)))
                 {
-                    if (network.Value)
-                        return new HealthCheckResponse(HealthStatus.Maintenance);
-
-                    break;
+                    maintenanceNetwork = network.Key;
+                    inMaintenance = network.Value;
                 }
             }
+
+            if (inMaintenance)
+                return new HealthCheckResponse(HealthStatus.Maintenance);
 
             switch (_type)
             {
