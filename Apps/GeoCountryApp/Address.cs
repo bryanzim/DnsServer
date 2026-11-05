@@ -175,6 +175,7 @@ namespace GeoCountry
                         JsonElement jsonCountry = default;
 
                         byte scopePrefixLength = 0;
+                        bool ecsClientLocated = false;
                         EDnsClientSubnetOptionData requestECS = request.GetEDnsClientSubnetOption();
                         if (requestECS is not null)
                         {
@@ -199,12 +200,16 @@ namespace GeoCountry
                             {
                                 if (_maxMind.CountryReader.TryCountry(requestECS.Address, out CountryResponse? csResponse) && (csResponse.Country.IsoCode is not null))
                                 {
+                                    ecsClientLocated = true;
+
                                     if (!jsonAppRecordData.TryGetProperty(csResponse.Country.IsoCode, out jsonCountry))
                                         if (!TryMatchGroup(jsonAppRecordData, asn, csResponse.Country.IsoCode, out jsonCountry))
                                             jsonAppRecordData.TryGetProperty("default", out jsonCountry);
                                 }
                                 else if (asn is not null)
                                 {
+                                    ecsClientLocated = true;
+
                                     if (!TryMatchGroup(jsonAppRecordData, asn, null, out jsonCountry))
                                         jsonAppRecordData.TryGetProperty("default", out jsonCountry);
                                 }
@@ -213,6 +218,9 @@ namespace GeoCountry
 
                         if (jsonCountry.ValueKind == JsonValueKind.Undefined)
                         {
+                            if ((requestECS is not null) && ecsClientLocated)
+                                return Task.FromResult<DnsDatagram?>(null);
+
                             long? asn = null;
 
                             if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(remoteEP.Address, out IspResponse? csIsp) && (csIsp.Network is not null))

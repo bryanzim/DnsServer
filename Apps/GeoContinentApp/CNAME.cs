@@ -87,6 +87,7 @@ namespace GeoContinent
             string? continentCode = null;
 
             byte scopePrefixLength = 0;
+            bool ecsClientLocated = false;
             EDnsClientSubnetOptionData requestECS = request.GetEDnsClientSubnetOption();
             if (requestECS is not null)
             {
@@ -111,6 +112,8 @@ namespace GeoContinent
                 {
                     if (_maxMind.CountryReader.TryCountry(requestECS.Address, out CountryResponse? csResponse) && (csResponse.Continent.Code is not null))
                     {
+                        ecsClientLocated = true;
+
                         if (!jsonAppRecordData.TryGetProperty(csResponse.Continent.Code, out jsonContinent))
                             if (!Address.TryMatchGroup(jsonAppRecordData, asn, csResponse.Continent.Code, out jsonContinent))
                                 if (jsonAppRecordData.TryGetProperty("default", out jsonContinent))
@@ -118,6 +121,8 @@ namespace GeoContinent
                     }
                     else if (asn is not null)
                     {
+                        ecsClientLocated = true;
+
                         if (!Address.TryMatchGroup(jsonAppRecordData, asn, null, out jsonContinent))
                             if (jsonAppRecordData.TryGetProperty("default", out jsonContinent))
                                 continentCode = "default";
@@ -127,6 +132,9 @@ namespace GeoContinent
 
             if (jsonContinent.ValueKind == JsonValueKind.Undefined)
             {
+                if ((requestECS is not null) && ecsClientLocated)
+                    return Task.FromResult<DnsDatagram?>(null);
+
                 long? asn = null;
 
                 if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(remoteEP.Address, out IspResponse? csIsp) && (csIsp.Network is not null))
