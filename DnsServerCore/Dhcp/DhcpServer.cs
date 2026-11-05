@@ -369,7 +369,8 @@ namespace DnsServerCore.Dhcp
                 case DhcpMessageType.Request:
                     {
                         //request ip address lease or extend existing lease
-                        Scope scope = FindScope(request, remoteEP.Address, ipPacketInformation);
+                        //a selecting client is answering one scope's offer; another scope on the same interface must not NAK that offer
+                        Scope scope = (request.ServerIdentifier is null) ? FindScope(request, remoteEP.Address, ipPacketInformation) : FindScopeForSelection(request, remoteEP.Address, ipPacketInformation);
                         if (scope == null)
                             return null; //no scope available; do nothing
 
@@ -742,6 +743,78 @@ namespace DnsServerCore.Dhcp
 
                 return scopes;
             }
+        }
+
+        private Scope FindScopeForSelection(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            if ((request.ServerIdentifier is null) || (request.RequestedIpAddress is null))
+                return null;
+
+            Scope identifierMatch = null;
+
+            foreach (Scope scope in FindMatchingScopes(request, remoteAddress, ipPacketInformation))
+            {
+                IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
+
+                if (!request.ServerIdentifier.Address.Equals(serverIdentifierAddress))
+                    continue;
+
+                Lease offer = scope.GetExistingLeaseOrOffer(request);
+                if ((offer is not null) && (offer.Address is not null) && offer.Address.Equals(request.RequestedIpAddress.Address))
+                    return scope; //this scope made the offer the client selected
+
+                identifierMatch ??= scope;
+            }
+
+            //the client selected this server, but no scope has that offer; caller sends NAK
+            return identifierMatch;
+        }
+
+        private List<Scope> FindMatchingScopes(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            List<Scope> scopes = new List<Scope>();
+
+            if (request.RelayAgentIpAddress.Equals(IPAddress.Any))
+            {
+                if (request.ClientIpAddress.Equals(IPAddress.Any) || remoteAddress.Equals(IPAddress.Any))
+                {
+                    if (!ipPacketInformation.Address.Equals(IPAddress.Broadcast))
+                        return scopes;
+
+                    foreach (KeyValuePair<string, Scope> entry in _scopes)
+                    {
+                        Scope scope = entry.Value;
+
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && (scope.InterfaceIndex == ipPacketInformation.Interface))
+                            scopes.Add(scope);
+                    }
+                }
+                else
+                {
+                    if ((request.DhcpMessageType?.Type != DhcpMessageType.Decline) && !remoteAddress.Equals(request.ClientIpAddress))
+                        return scopes;
+
+                    foreach (KeyValuePair<string, Scope> entry in _scopes)
+                    {
+                        Scope scope = entry.Value;
+
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.IsAddressInRange(request.ClientIpAddress))
+                            scopes.Add(scope);
+                    }
+                }
+            }
+            else
+            {
+                foreach (KeyValuePair<string, Scope> entry in _scopes)
+                {
+                    Scope scope = entry.Value;
+
+                    if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.InterfaceAddress.Equals(IPAddress.Any) && scope.IsAddressInNetwork(request.RelayAgentIpAddress))
+                        scopes.Add(scope);
+                }
+            }
+
+            return scopes;
         }
 
         private Scope FindScope(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
