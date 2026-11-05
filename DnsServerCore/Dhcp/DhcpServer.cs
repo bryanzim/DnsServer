@@ -369,8 +369,15 @@ namespace DnsServerCore.Dhcp
                 case DhcpMessageType.Request:
                     {
                         //request ip address lease or extend existing lease
-                        //a selecting client is answering one scope's offer; another scope on the same interface must not NAK that offer
-                        Scope scope = (request.ServerIdentifier is null) ? FindScope(request, remoteEP.Address, ipPacketInformation) : FindScopeForSelection(request, remoteEP.Address, ipPacketInformation);
+                        //selecting and init-reboot must use the scope that holds the lease, not the first scope on the interface
+                        Scope scope;
+
+                        if (request.ServerIdentifier is not null)
+                            scope = FindScopeForSelection(request, remoteEP.Address, ipPacketInformation);
+                        else if ((request.RequestedIpAddress is not null) && request.ClientIpAddress.Equals(IPAddress.Any))
+                            scope = FindScopeForInitReboot(request, remoteEP.Address, ipPacketInformation);
+                        else
+                            scope = FindScope(request, remoteEP.Address, ipPacketInformation);
                         if (scope == null)
                             return null; //no scope available; do nothing
 
@@ -743,6 +750,43 @@ namespace DnsServerCore.Dhcp
 
                 return scopes;
             }
+        }
+
+        private Scope FindScopeForInitReboot(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            if (request.RequestedIpAddress is null)
+                return null;
+
+            List<Scope> scopes = FindMatchingScopes(request, remoteAddress, ipPacketInformation);
+            Scope differentAddress = null;
+            Scope networkMatch = null;
+
+            foreach (Scope scope in scopes)
+            {
+                Lease lease = scope.GetExistingLeaseOrOffer(request);
+                if ((lease is not null) && (lease.Address is not null))
+                {
+                    if (lease.Address.Equals(request.RequestedIpAddress.Address))
+                        return scope;
+
+                    differentAddress ??= scope;
+                    continue;
+                }
+
+                if ((networkMatch is null) && scope.IsAddressInNetwork(request.RequestedIpAddress.Address))
+                    networkMatch = scope;
+            }
+
+            if (differentAddress is not null)
+                return differentAddress; //this client has a lease for another address; caller sends NAK
+
+            if (networkMatch is not null)
+                return networkMatch; //address is on one of our subnets, but this server has no lease; caller stays silent
+
+            if (scopes.Count == 0)
+                return null;
+
+            return scopes[0]; //address is on none of our subnets; caller sends NAK
         }
 
         private Scope FindScopeForDecline(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
