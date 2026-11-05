@@ -973,7 +973,12 @@ namespace DnsServerCore.Dhcp
                 else
                 {
                     //is dynamic lease
-                    if (IsAddressExcluded(existingLease.Address))
+                    if (!IsAddressInNetwork(existingLease.Address))
+                    {
+                        //address is outside the scope subnet; proceed to offer a new lease
+                        ReleaseLease(existingLease);
+                    }
+                    else if (IsAddressExcluded(existingLease.Address))
                     {
                         //remove existing dynamic lease; proceed to offer new lease
                         ReleaseLease(existingLease);
@@ -1085,6 +1090,9 @@ namespace DnsServerCore.Dhcp
                         }
 
                         offerAddress = IPAddressExtensions.ConvertNumberToIp(nextOfferAddressNumber);
+
+                        if (!IsAddressInNetwork(offerAddress))
+                            continue;
 
                         AddressStatus addressStatus = await IsAddressAvailableAsync(offerAddress);
                         if (addressStatus.IsAddressAvailable)
@@ -1485,8 +1493,14 @@ namespace DnsServerCore.Dhcp
             if (networkAddressNumber == startingAddressNumber)
                 throw new ArgumentException("Starting address cannot be same as the network address.");
 
+            if (startingAddressNumber >= broadcastAddressNumber)
+                throw new ArgumentException("Starting address must be inside the subnet.");
+
             if (broadcastAddressNumber == endingAddressNumber)
                 throw new ArgumentException("Ending address cannot be same as the broadcast address.");
+
+            if (endingAddressNumber > broadcastAddressNumber)
+                throw new ArgumentException("Ending address must be inside the subnet.");
 
             _startingAddress = startingAddress;
             _endingAddress = endingAddress;
