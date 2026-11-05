@@ -973,9 +973,9 @@ namespace DnsServerCore.Dhcp
                 else
                 {
                     //is dynamic lease
-                    if (!IsAddressInNetwork(existingLease.Address))
+                    if (!IsAddressInRange(existingLease.Address) || !IsAddressInNetwork(existingLease.Address))
                     {
-                        //address is outside the scope subnet; proceed to offer a new lease
+                        //address is outside the scope; proceed to offer a new lease
                         ReleaseLease(existingLease);
                     }
                     else if (IsAddressExcluded(existingLease.Address))
@@ -1516,6 +1516,30 @@ namespace DnsServerCore.Dhcp
             finally
             {
                 _lastAddressOfferedLock.Release();
+            }
+
+            //a shrunken pool must not keep handing out addresses that now belong to another scope
+            List<Lease> leasesOutsideRange = null;
+
+            foreach (KeyValuePair<ClientIdentifierOption, Lease> lease in _leases)
+            {
+                if ((lease.Value.Type != LeaseType.Reserved) && !IsAddressInRange(lease.Value.Address))
+                {
+                    leasesOutsideRange ??= new List<Lease>();
+                    leasesOutsideRange.Add(lease.Value);
+                }
+            }
+
+            if (leasesOutsideRange is not null)
+            {
+                foreach (Lease lease in leasesOutsideRange)
+                    ReleaseLease(lease);
+            }
+
+            foreach (KeyValuePair<ClientIdentifierOption, Lease> offer in _offers)
+            {
+                if ((offer.Value.Address is not null) && (offer.Value.Type != LeaseType.Reserved) && !IsAddressInRange(offer.Value.Address))
+                    _offers.TryRemove(offer.Key, out _);
             }
         }
 
