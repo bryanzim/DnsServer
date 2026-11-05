@@ -555,7 +555,7 @@ namespace DnsServerCore.Dhcp
                         if ((request.ServerIdentifier == null) || (request.RequestedIpAddress == null))
                             return null; //client MUST include these option; do nothing
 
-                        Scope scope = FindScope(request, remoteEP.Address, ipPacketInformation);
+                        Scope scope = FindScopeForDecline(request, remoteEP.Address, ipPacketInformation);
                         if (scope == null)
                             return null; //no scope available; do nothing
 
@@ -571,8 +571,8 @@ namespace DnsServerCore.Dhcp
                         if (!lease.Address.Equals(request.RequestedIpAddress.Address))
                             return null; //the client's notion of its IP address is not correct; do nothing
 
-                        //remove lease since the IP address is used by someone else
-                        scope.ReleaseLease(lease);
+                        //remove the offer and the lease; the address is already in use
+                        scope.DeclineLease(lease);
 
                         //log issue
                         _log.Write(remoteEP, "DHCP Server received DECLINE message for scope '" + scope.Name + "': " + lease.GetClientInfo() + " detected that IP address [" + lease.Address + "] is already in use.");
@@ -743,6 +743,26 @@ namespace DnsServerCore.Dhcp
 
                 return scopes;
             }
+        }
+
+        private Scope FindScopeForDecline(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            if ((request.ServerIdentifier is null) || (request.RequestedIpAddress is null))
+                return null;
+
+            foreach (Scope scope in FindMatchingScopes(request, remoteAddress, ipPacketInformation))
+            {
+                IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
+
+                if (!request.ServerIdentifier.Address.Equals(serverIdentifierAddress))
+                    continue;
+
+                Lease lease = scope.GetExistingLeaseOrOffer(request);
+                if ((lease is not null) && (lease.Address is not null) && lease.Address.Equals(request.RequestedIpAddress.Address))
+                    return scope;
+            }
+
+            return null;
         }
 
         private Scope FindScopeForSelection(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)

@@ -98,6 +98,7 @@ namespace DnsServerCore.Dhcp
         //internal parameters
         const int OFFER_EXPIRY_SECONDS = 60; //1 mins offer expiry
         readonly ConcurrentDictionary<ClientIdentifierOption, Lease> _offers = new ConcurrentDictionary<ClientIdentifierOption, Lease>();
+        readonly ConcurrentDictionary<IPAddress, DateTime> _declinedAddresses = new ConcurrentDictionary<IPAddress, DateTime>();
         IPAddress _lastAddressOffered;
         readonly SemaphoreSlim _lastAddressOfferedLock = new SemaphoreSlim(1, 1);
         IPAddress _interfaceAddress;
@@ -507,6 +508,14 @@ namespace DnsServerCore.Dhcp
             {
                 if (address.Equals(offer.Value.Address))
                     return AddressStatus.FALSE;
+            }
+
+            if (_declinedAddresses.TryGetValue(address, out DateTime declinedUntil))
+            {
+                if (DateTime.UtcNow < declinedUntil)
+                    return AddressStatus.FALSE; //client declined this address; it is already in use
+
+                _declinedAddresses.TryRemove(address, out _);
             }
 
             if (_pingCheckEnabled)
@@ -1424,6 +1433,26 @@ namespace DnsServerCore.Dhcp
             _lastModified = DateTime.UtcNow;
         }
 
+        internal void DeclineLease(Lease lease)
+        {
+            //an offer is not a committed lease; ReleaseLease leaves it for the client to be given again
+            _offers.TryRemove(lease.ClientIdentifier, out _);
+
+            if (_leases.TryRemove(lease.ClientIdentifier, out _))
+                _dhcpServer.RemoveDnsEntries(this, lease);
+
+            if (lease.Address is not null)
+            {
+                uint blockSeconds = GetLeaseTime();
+                if (blockSeconds < OFFER_EXPIRY_SECONDS)
+                    blockSeconds = OFFER_EXPIRY_SECONDS;
+
+                _declinedAddresses[lease.Address] = DateTime.UtcNow.AddSeconds(blockSeconds);
+            }
+
+            _lastModified = DateTime.UtcNow;
+        }
+
         internal void SetEnabled(bool enabled)
         {
             _enabled = enabled;
@@ -1446,6 +1475,12 @@ namespace DnsServerCore.Dhcp
                     //offer expired
                     _offers.TryRemove(offer.Key, out _);
                 }
+            }
+
+            foreach (KeyValuePair<IPAddress, DateTime> declinedAddress in _declinedAddresses)
+            {
+                if (utcNow >= declinedAddress.Value)
+                    _declinedAddresses.TryRemove(declinedAddress.Key, out _);
             }
         }
 
