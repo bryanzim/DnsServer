@@ -211,7 +211,8 @@ namespace DnsServerCore.Dns.Zones
                 DnsResourceRecord historyRecord = historyRecords[i];
                 if (historyRecord.Type == DnsResourceRecordType.SOA)
                 {
-                    isAddHistoryRecord = true; //removed records completed
+                    //the first deleted SOA is skipped, so each following SOA switches between the add and delete sections
+                    isAddHistoryRecord = !isAddHistoryRecord;
                     continue;
                 }
 
