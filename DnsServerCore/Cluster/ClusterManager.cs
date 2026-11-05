@@ -1532,11 +1532,34 @@ namespace DnsServerCore.Cluster
             if (primaryNode.State == ClusterNodeState.Self)
                 throw new DnsServerException("Failed to update Primary node: the specified node is the self node and cannot be updated this way.");
 
+            ClusterNode formerPrimaryNode = null;
+
             if (primaryNode.Type == ClusterNodeType.Secondary)
+                formerPrimaryNode = GetPrimaryNode();
+
+            //validate before removing the current primary so a rejected update leaves the cluster unchanged
+            foreach (KeyValuePair<int, ClusterNode> clusterNode in _clusterNodes)
+            {
+                if (clusterNode.Key == primaryNode.Id)
+                    continue; //skip self
+
+                if ((formerPrimaryNode is not null) && (clusterNode.Key == formerPrimaryNode.Id))
+                    continue; //this node is removed by the promotion
+
+                if (clusterNode.Value.Name.Equals(primaryNodeUrl.Host, StringComparison.OrdinalIgnoreCase))
+                    throw new DnsServerException("Failed to update Primary node: the Primary node's domain name already exists in the Cluster. Please try again after changing the Primary DNS Server's domain name.");
+            }
+
+            //get cluster secondary catalog zone
+            string clusterCatalogDomain = "cluster-catalog." + _clusterDomain;
+
+            AuthZoneInfo clusterSecondaryCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(clusterCatalogDomain);
+            if (clusterSecondaryCatalogZoneInfo is null)
+                throw new DnsServerException($"Failed to update Primary node: the Cluster Secondary Catalog zone '{clusterCatalogDomain}' does not exists.");
+
+            if (formerPrimaryNode is not null)
             {
                 //secondary node was promoted to primary node
-                ClusterNode formerPrimaryNode = GetPrimaryNode();
-
                 //dispose former primary node immediately to stop heartbeat
                 formerPrimaryNode.Dispose();
 
@@ -1561,23 +1584,6 @@ namespace DnsServerCore.Cluster
                 //ensure to save changes
                 SaveConfigFile();
             }
-
-            //validate for duplicate names
-            foreach (KeyValuePair<int, ClusterNode> clusterNode in _clusterNodes)
-            {
-                if (clusterNode.Key == primaryNode.Id)
-                    continue; //skip self
-
-                if (clusterNode.Value.Name.Equals(primaryNodeUrl.Host, StringComparison.OrdinalIgnoreCase))
-                    throw new DnsServerException("Failed to update Primary node: the Primary node's domain name already exists in the Cluster. Please try again after changing the Primary DNS Server's domain name.");
-            }
-
-            //get cluster secondary catalog zone
-            string clusterCatalogDomain = "cluster-catalog." + _clusterDomain;
-
-            AuthZoneInfo clusterSecondaryCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(clusterCatalogDomain);
-            if (clusterSecondaryCatalogZoneInfo is null)
-                throw new DnsServerException($"Failed to update Primary node: the Cluster Secondary Catalog zone '{clusterCatalogDomain}' does not exists.");
 
             //update primary node
             primaryNode.UpdateNode(primaryNodeUrl, primaryNodeIpAddresses);
