@@ -3206,13 +3206,13 @@ namespace DnsServerCore.Dns
                                     if (prRecord.Type == DnsResourceRecordType.ANY)
                                     {
                                         //check if name is in use
-                                        if (!_authZoneManager.NameExists(zoneInfo.Name, prRecord.Name))
+                                        if (!_authZoneManager.EnabledNameExists(zoneInfo.Name, prRecord.Name))
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NxDomain, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
                                     else
                                     {
                                         //check if RRSet exists (value independent)
-                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
+                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetEnabledRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
                                         if (rrset.Count == 0)
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
@@ -3225,13 +3225,13 @@ namespace DnsServerCore.Dns
                                     if (prRecord.Type == DnsResourceRecordType.ANY)
                                     {
                                         //check if name is not in use
-                                        if (_authZoneManager.NameExists(zoneInfo.Name, prRecord.Name))
+                                        if (_authZoneManager.EnabledNameExists(zoneInfo.Name, prRecord.Name))
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXDomain, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
                                     else
                                     {
                                         //check if RRSet does not exists
-                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
+                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetEnabledRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
                                         if (rrset.Count > 0)
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
@@ -3269,7 +3269,7 @@ namespace DnsServerCore.Dns
                                 foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
                                 {
                                     List<DnsResourceRecord> prRRSet = rrsetEntry.Value;
-                                    IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetRecords(zoneInfo.Name, zoneEntry.Key, rrsetEntry.Key);
+                                    IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetEnabledRecords(zoneInfo.Name, zoneEntry.Key, rrsetEntry.Key);
 
                                     //check if RRSet exists (value dependent)
                                     //compare RRSets
@@ -3389,7 +3389,7 @@ namespace DnsServerCore.Dns
                                         //Add to an RRset
                                         if (uRecord.Type == DnsResourceRecordType.CNAME)
                                         {
-                                            if (_authZoneManager.NameExists(zoneInfo.Name, uRecord.Name) && (_authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count == 0))
+                                            if (_authZoneManager.EnabledNameExists(zoneInfo.Name, uRecord.Name) && (_authZoneManager.GetEnabledRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count == 0))
                                                 continue; //current name exists and has non-CNAME records so cannot add CNAME record
 
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
@@ -3428,7 +3428,7 @@ namespace DnsServerCore.Dns
                                         }
                                         else
                                         {
-                                            if (_authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count > 0)
+                                            if (_authZoneManager.GetEnabledRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count > 0)
                                                 continue; //current name contains CNAME so cannot add non-CNAME record
 
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);

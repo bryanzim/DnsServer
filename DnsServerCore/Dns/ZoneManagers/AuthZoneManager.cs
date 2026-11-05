@@ -954,6 +954,54 @@ namespace DnsServerCore.Dns.ZoneManagers
             return TryGetAuthZone(zoneName, domain, out _);
         }
 
+        public bool EnabledNameExists(string zoneName, string domain)
+        {
+            ValidateIfDomainBelongsToZone(zoneName, domain);
+
+            if (!TryGetAuthZone(zoneName, domain, out AuthZone authZone))
+                return false;
+
+            foreach (KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entry in authZone.Entries)
+            {
+                foreach (DnsResourceRecord record in entry.Value)
+                {
+                    if (!record.GetAuthGenericRecordInfo().Disabled)
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        public IReadOnlyList<DnsResourceRecord> GetEnabledRecords(string zoneName, string domain, DnsResourceRecordType type)
+        {
+            IReadOnlyList<DnsResourceRecord> records = GetRecords(zoneName, domain, type);
+
+            bool recordDisabled = false;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (record.GetAuthGenericRecordInfo().Disabled)
+                {
+                    recordDisabled = true;
+                    break;
+                }
+            }
+
+            if (!recordDisabled)
+                return records;
+
+            List<DnsResourceRecord> enabledRecords = new List<DnsResourceRecord>(records.Count);
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (!record.GetAuthGenericRecordInfo().Disabled)
+                    enabledRecords.Add(record);
+            }
+
+            return enabledRecords;
+        }
+
         internal AuthZone FindPreviousSubDomainZone(string zoneName, string domain)
         {
             return _root.FindPreviousSubDomainZone(zoneName, domain);
