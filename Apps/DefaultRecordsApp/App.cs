@@ -217,6 +217,30 @@ namespace DefaultRecords
                 if (!record.Name.Equals(qname, StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                bool nameHasCname = false;
+                bool nameHasOtherData = false;
+
+                foreach (DnsResourceRecord existing in newAnswer)
+                {
+                    if (!existing.Name.Equals(record.Name, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (existing.Type == DnsResourceRecordType.CNAME)
+                        nameHasCname = true;
+                    else
+                        nameHasOtherData = true;
+                }
+
+                if (record.Type == DnsResourceRecordType.CNAME)
+                {
+                    if (nameHasOtherData)
+                        continue;
+                }
+                else if (nameHasCname)
+                {
+                    continue;
+                }
+
                 newAnswer.Add(record);
 
                 if (record.Type == DnsResourceRecordType.CNAME)
