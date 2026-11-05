@@ -62,6 +62,8 @@ namespace QueryLogsMySql
 
         bool _isStartupInit = true;
         int _configGeneration;
+        bool _pendingEnableLogging;
+        int _pendingMaxQueueSize;
         readonly object _configSync = new object();
 
         #endregion
@@ -376,13 +378,26 @@ namespace QueryLogsMySql
                 if (!_connectionString.TrimEnd().EndsWith(';'))
                     _connectionString += ";";
 
-                int configGeneration;
-
                 lock (_configSync)
-                    configGeneration = ++_configGeneration;
+                {
+                    _configGeneration++;
+                    _pendingEnableLogging = enableLogging;
+                    _pendingMaxQueueSize = maxQueueSize;
+                }
 
                 async Task ApplyConfig()
                 {
+                    int configGeneration;
+                    bool currentEnableLogging;
+                    int currentMaxQueueSize;
+
+                    lock (_configSync)
+                    {
+                        configGeneration = _configGeneration;
+                        currentEnableLogging = _pendingEnableLogging;
+                        currentMaxQueueSize = _pendingMaxQueueSize;
+                    }
+
                     void CommitConfig(bool startChannel)
                     {
                         lock (_configSync)
@@ -392,16 +407,16 @@ namespace QueryLogsMySql
 
                             if (startChannel)
                             {
-                                if (!_enableLogging || (_maxQueueSize != maxQueueSize))
-                                    StartNewChannel(maxQueueSize);
+                                if (!_enableLogging || (_maxQueueSize != currentMaxQueueSize))
+                                    StartNewChannel(currentMaxQueueSize);
                             }
                             else
                             {
                                 StopChannel();
                             }
 
-                            _enableLogging = enableLogging;
-                            _maxQueueSize = maxQueueSize;
+                            _enableLogging = currentEnableLogging;
+                            _maxQueueSize = currentMaxQueueSize;
 
                             if ((_maxLogDays > 0) || (_maxLogRecords > 0))
                                 _cleanupTimer.Change(CLEAN_UP_TIMER_INITIAL_INTERVAL, Timeout.Infinite);
@@ -410,7 +425,7 @@ namespace QueryLogsMySql
                         }
                     }
 
-                    if (enableLogging)
+                    if (currentEnableLogging)
                     {
                         await using (MySqlConnection connection = new MySqlConnection(_connectionString))
                         {
@@ -669,19 +684,34 @@ CREATE TABLE IF NOT EXISTS dns_logs
 
                             while (true)
                             {
+                                int generation;
+
                                 lock (_configSync)
-                                {
-                                    if (configGeneration != _configGeneration)
-                                        return;
-                                }
+                                    generation = _configGeneration;
 
                                 try
                                 {
                                     await ApplyConfig();
-                                    return;
+
+                                    lock (_configSync)
+                                    {
+                                        if (generation == _configGeneration)
+                                            return;
+                                    }
+
+                                    retryCount = 0;
                                 }
                                 catch (MySqlException ex)
                                 {
+                                    lock (_configSync)
+                                    {
+                                        if (generation != _configGeneration)
+                                        {
+                                            retryCount = 0;
+                                            continue;
+                                        }
+                                    }
+
                                     switch (ex.ErrorCode)
                                     {
                                         case MySqlErrorCode.UnableToConnectToHost:
@@ -712,6 +742,15 @@ CREATE TABLE IF NOT EXISTS dns_logs
                                 }
                                 catch (Exception ex)
                                 {
+                                    lock (_configSync)
+                                    {
+                                        if (generation != _configGeneration)
+                                        {
+                                            retryCount = 0;
+                                            continue;
+                                        }
+                                    }
+
                                     _dnsServer?.WriteLog(ex);
                                     return;
                                 }
