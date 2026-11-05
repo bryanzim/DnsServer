@@ -321,8 +321,7 @@ namespace DnsServerCore.Dns.Zones
                         }
                     }
 
-                    if (ecsEntry.Value.IsEmpty)
-                        _ecsEntries.TryRemove(ecsEntry.Key, out _);
+                    RemoveEmptyEcsBucket(ecsEntry.Key, ecsEntry.Value);
                 }
             }
 
@@ -355,8 +354,7 @@ namespace DnsServerCore.Dns.Zones
                         }
                     }
 
-                    if (ecsEntry.Value.IsEmpty)
-                        _ecsEntries.TryRemove(ecsEntry.Key, out _);
+                    RemoveEmptyEcsBucket(ecsEntry.Key, ecsEntry.Value);
                 }
             }
 
@@ -370,6 +368,19 @@ namespace DnsServerCore.Dns.Zones
             }
 
             return removedEntries;
+        }
+
+        private void RemoveEmptyEcsBucket(NetworkAddress network, ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entries)
+        {
+            if ((entries is null) || !entries.IsEmpty || (_ecsEntries is null))
+                return;
+
+            //recheck under the zone lock so a refresh that just filled this bucket is kept
+            lock (this)
+            {
+                if (entries.IsEmpty)
+                    _ecsEntries.TryRemove(new KeyValuePair<NetworkAddress, ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>>(network, entries));
+            }
         }
 
         private static bool TryRemoveRecordSet(ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entries, KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entry)
