@@ -73,7 +73,7 @@ namespace DnsServerCore.Dns.Zones
 
         readonly static NetworkAccessControl _allowZoneNameServersAndUseSpecifiedNetworkACL = new NetworkAccessControl(IPAddress.Parse("224.0.0.0"), 32);
 
-        Dictionary<string, string> _membersIndex = new Dictionary<string, string>();
+        Dictionary<string, string> _membersIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         #endregion
 
@@ -108,7 +108,7 @@ namespace DnsServerCore.Dns.Zones
 
         internal void BuildMembersIndex()
         {
-            Dictionary<string, string> membersIndex = new Dictionary<string, string>();
+            Dictionary<string, string> membersIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (KeyValuePair<string, string> memberEntry in EnumerateCatalogMemberZones(_dnsServer))
                 membersIndex.TryAdd(memberEntry.Key.ToLowerInvariant(), memberEntry.Value);
@@ -135,10 +135,10 @@ namespace DnsServerCore.Dns.Zones
                 return;
             }
 
-            Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>();
+            Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (KeyValuePair<string, string> memberEntry in EnumerateCatalogMemberZones(_dnsServer))
-                updatedMembersIndex.TryAdd(memberEntry.Key, memberEntry.Value);
+                updatedMembersIndex.TryAdd(memberEntry.Key.ToLowerInvariant(), memberEntry.Value);
 
             Dictionary<string, object> membersToRemove = new Dictionary<string, object>();
             Dictionary<string, string> membersToAdd = new Dictionary<string, string>();
@@ -301,7 +301,7 @@ namespace DnsServerCore.Dns.Zones
             if ((membersToRemove.Count > 0) || (membersToAdd.Count > 0))
             {
                 //update members index
-                Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>(_membersIndex);
+                Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>(_membersIndex, StringComparer.OrdinalIgnoreCase);
 
                 foreach (KeyValuePair<string, object> removedMember in membersToRemove)
                     updatedMembersIndex.Remove(removedMember.Key);
