@@ -877,6 +877,9 @@ namespace DnsServerCore
 
                 Lease reservedLease = new Lease(LeaseType.Reserved, hostName, DhcpMessageHardwareAddressType.Ethernet, hardwareAddress, IPAddress.Parse(strIpAddress), comments);
 
+                if (!scope.IsAddressInRange(reservedLease.Address))
+                    throw new DnsWebServiceException("Reserved address must be in scope range: " + scopeName);
+
                 if (!scope.TryAddReservedLease(reservedLease))
                     throw new DnsWebServiceException("A reserved lease with same hardware address already exists in scope: " + scopeName);
 

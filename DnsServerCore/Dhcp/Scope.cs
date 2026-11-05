@@ -1613,6 +1613,9 @@ namespace DnsServerCore.Dhcp
 
         public bool TryAddReservedLease(Lease reservedLease)
         {
+            if ((reservedLease.Address is null) || !IsAddressInRange(reservedLease.Address))
+                throw new ArgumentOutOfRangeException(nameof(reservedLease), "Reserved address must be in scope range.");
+
             if (_reservedLeases.TryAdd(reservedLease.ClientIdentifier, reservedLease))
             {
                 _dhcpServer.AddDnsEntries(this, reservedLease);
