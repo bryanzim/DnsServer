@@ -611,8 +611,8 @@ CREATE TABLE IF NOT EXISTS dns_logs
             {
                 if (qname.Contains('*'))
                 {
-                    whereClause += "qname like @qname AND ";
-                    qname = qname.Replace("*", "%");
+                    whereClause += "qname like @qname escape '!' AND ";
+                    qname = qname.Replace("!", "!!", StringComparison.Ordinal).Replace("%", "!%", StringComparison.Ordinal).Replace("_", "!_", StringComparison.Ordinal).Replace("*", "%", StringComparison.Ordinal);
                 }
                 else
                 {
