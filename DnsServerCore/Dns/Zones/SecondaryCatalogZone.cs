@@ -163,8 +163,8 @@ namespace DnsServerCore.Dns.Zones
                 if (_membersIndex.TryGetValue(updatedMemberEntry.Key, out _))
                 {
                     ApexZone apexZone = _dnsServer.AuthZoneManager.GetApexZone(updatedMemberEntry.Key);
-                    if (apexZone is not null)
-                        continue; //zone already exists; do nothing
+                    if ((apexZone is not null) && _name.Equals(apexZone.CatalogZoneName, StringComparison.OrdinalIgnoreCase))
+                        continue; //this catalog already provisioned the member
                 }
 
                 //member was added to catalog zone; provision zone
@@ -332,8 +332,9 @@ namespace DnsServerCore.Dns.Zones
 
                 foreach (KeyValuePair<string, string> addedMember in membersToAdd)
                 {
-                    if (_dnsServer.AuthZoneManager.GetApexZone(addedMember.Key) is null)
-                        continue; //create failed; the retry will provision it
+                    ApexZone apexZone = _dnsServer.AuthZoneManager.GetApexZone(addedMember.Key);
+                    if ((apexZone is null) || !_name.Equals(apexZone.CatalogZoneName, StringComparison.OrdinalIgnoreCase))
+                        continue; //create failed or the name belongs to another zone; the retry will provision it
 
                     updatedMembersIndex[addedMember.Key] = addedMember.Value; //replace a label kept from before this transfer
                 }
