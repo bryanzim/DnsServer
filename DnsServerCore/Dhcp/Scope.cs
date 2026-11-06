@@ -576,18 +576,23 @@ namespace DnsServerCore.Dhcp
             if (request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.EncodeUsingCanonicalWireFormat))
                 responseFlags |= ClientFullyQualifiedDomainNameFlags.EncodeUsingCanonicalWireFormat;
 
-            if (request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.NoDnsUpdate))
+            bool clientNoUpdate = string.IsNullOrWhiteSpace(reservedLeaseHostName) && request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.NoDnsUpdate);
+            bool clientWantsServerUpdate = request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.ShouldUpdateDns);
+            bool serverUpdates = _dnsUpdates && !clientNoUpdate;
+
+            if (clientNoUpdate)
+                responseFlags |= ClientFullyQualifiedDomainNameFlags.NoDnsUpdate;
+
+            if (serverUpdates)
             {
                 responseFlags |= ClientFullyQualifiedDomainNameFlags.ShouldUpdateDns;
-                responseFlags |= ClientFullyQualifiedDomainNameFlags.OverrideByServer;
+
+                if (!clientWantsServerUpdate)
+                    responseFlags |= ClientFullyQualifiedDomainNameFlags.OverrideByServer;
             }
-            else if (request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.ShouldUpdateDns))
+            else if (clientWantsServerUpdate)
             {
-                responseFlags |= ClientFullyQualifiedDomainNameFlags.ShouldUpdateDns;
-            }
-            else
-            {
-                responseFlags |= ClientFullyQualifiedDomainNameFlags.ShouldUpdateDns;
+                // the client asked this server to publish and it will not
                 responseFlags |= ClientFullyQualifiedDomainNameFlags.OverrideByServer;
             }
 

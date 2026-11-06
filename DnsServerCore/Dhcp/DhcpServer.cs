@@ -520,7 +520,16 @@ namespace DnsServerCore.Dhcp
                             return null;
 
                         //update lease hostname
-                        if (string.IsNullOrWhiteSpace(scope.DomainName))
+                        bool clientNoDnsUpdate = (request.ClientFullyQualifiedDomainName is not null) && request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.NoDnsUpdate);
+
+                        if (clientNoDnsUpdate && string.IsNullOrWhiteSpace(reservedLeaseHostName))
+                        {
+                            if (!string.IsNullOrWhiteSpace(leaseOffer.HostName))
+                                RemoveDnsEntries(scope, leaseOffer);
+
+                            leaseOffer.SetHostName(null);
+                        }
+                        else if (string.IsNullOrWhiteSpace(scope.DomainName))
                         {
                             leaseOffer.SetHostName(request.HostName?.HostName);
                         }
@@ -670,7 +679,9 @@ namespace DnsServerCore.Dhcp
                                     clientDomainName = GetSanitizedHostName(request.HostName.HostName) + "." + scope.DomainName;
                             }
 
-                            if (!string.IsNullOrWhiteSpace(clientDomainName) && scope.IsAddressInRange(request.ClientIpAddress))
+                            bool clientNoDnsUpdate = (request.ClientFullyQualifiedDomainName is not null) && request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.NoDnsUpdate);
+
+                            if (!string.IsNullOrWhiteSpace(clientDomainName) && !clientNoDnsUpdate && scope.IsAddressInRange(request.ClientIpAddress))
                                 AddDnsEntries(scope, clientDomainName, request.ClientIpAddress, false);
                         }
 
