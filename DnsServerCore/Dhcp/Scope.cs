@@ -1189,7 +1189,8 @@ namespace DnsServerCore.Dhcp
             ClientIdentifierOption clientIdentifier = request.GetClientIdentifier(_ignoreClientIdentifierOption);
 
             //check for lease offer first since it may have a different IP address to offer
-            if (_offers.TryGetValue(clientIdentifier, out Lease existingOffer))
+            //a placeholder has no address yet, so a renew must still see the committed lease
+            if (_offers.TryGetValue(clientIdentifier, out Lease existingOffer) && (existingOffer.Type != LeaseType.None))
                 return existingOffer;
 
             if (_leases.TryGetValue(clientIdentifier, out Lease existingLease))
