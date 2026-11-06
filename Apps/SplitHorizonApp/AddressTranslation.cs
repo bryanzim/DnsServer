@@ -302,6 +302,16 @@ namespace SplitHorizon
             return Task.FromResult(response.Clone(newAnswer));
         }
 
+        private bool TryReverseTranslation(string groupName, IPAddress internalIp, out IPAddress externalIp)
+        {
+            externalIp = null;
+
+            if (string.IsNullOrEmpty(groupName) || !_groups.TryGetValue(groupName, out Group group) || !group.Enabled || !group.TranslateReverseLookups)
+                return false;
+
+            return group.TryInternalToExternalTranslation(internalIp, out externalIp);
+        }
+
         public Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed)
         {
             if (!_enableAddressTranslation)
@@ -309,6 +319,9 @@ namespace SplitHorizon
 
             DnsQuestionRecord question = request.Question[0];
             if (question.Type != DnsResourceRecordType.PTR)
+                return Task.FromResult<DnsDatagram>(null);
+
+            if (!IPAddressExtensions.TryParseReverseDomain(question.Name, out IPAddress ptrIpAddress))
                 return Task.FromResult<DnsDatagram>(null);
 
             IPAddress remoteIP = remoteEP.Address;
@@ -324,10 +337,18 @@ namespace SplitHorizon
                 }
             }
 
-            if ((groupName is null) || !_groups.TryGetValue(groupName, out Group group) || !group.Enabled || !group.TranslateReverseLookups)
-                return Task.FromResult<DnsDatagram>(null);
+            if (!TryReverseTranslation(groupName, ptrIpAddress, out IPAddress externalIp))
+            {
+                externalIp = null;
 
-            if (!IPAddressExtensions.TryParseReverseDomain(question.Name, out IPAddress ptrIpAddress) || !group.TryInternalToExternalTranslation(ptrIpAddress, out IPAddress externalIp))
+                foreach (string domainGroupName in _domainGroupMap.Values)
+                {
+                    if (TryReverseTranslation(domainGroupName, ptrIpAddress, out externalIp))
+                        break;
+                }
+            }
+
+            if (externalIp is null)
                 return Task.FromResult<DnsDatagram>(null);
 
             IReadOnlyList<DnsResourceRecord> answer = new DnsResourceRecord[] { new DnsResourceRecord(question.Name, DnsResourceRecordType.CNAME, question.Class, 600, new DnsCNAMERecordData(externalIp.GetReverseDomain())) };
