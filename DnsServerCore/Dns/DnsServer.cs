@@ -3899,6 +3899,8 @@ namespace DnsServerCore.Dns
                     {
                         DnsResourceRecordType questionType = request.Question[0].Type;
                         DnsResourceRecord lastRR = response.GetLastAnswerRecord();
+                        if (lastRR is null)
+                            lastRR = FindAliasAnswerRecord(response); //GetLastAnswerRecord returns only the question type or a CNAME
 
                         if ((lastRR is not null) && (lastRR.Type != questionType) && (questionType != DnsResourceRecordType.ANY))
                         {
@@ -4254,7 +4256,7 @@ namespace DnsServerCore.Dns
                         break;
                     }
                 }
-                else if ((newResponse.Answer.Count > 0) && (newResponse.GetLastAnswerRecord() is DnsResourceRecord lastAnswer) && ((lastAnswer.Type == DnsResourceRecordType.ANAME) || (lastAnswer.Type == DnsResourceRecordType.ALIAS)))
+                else if ((newResponse.Answer.Count > 0) && IsAliasAnswer(newResponse))
                 {
                     newResponse = await ProcessANAMEAsync(request, newResponse, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, clientTimeout, context);
                     if (newResponse is null)
@@ -4449,6 +4451,42 @@ namespace DnsServerCore.Dns
             return finalResponse;
         }
 
+        private static DnsResourceRecord FindAliasAnswerRecord(DnsDatagram response)
+        {
+            if ((response.Question.Count == 0) || (response.Answer.Count == 0))
+                return null;
+
+            string name = response.Question[0].Name;
+            DnsResourceRecord alias = null;
+
+            foreach (DnsResourceRecord record in response.Answer)
+            {
+                if (!record.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (record.Type == DnsResourceRecordType.CNAME)
+                {
+                    name = (record.RDATA as DnsCNAMERecordData).Domain;
+                    alias = null;
+                }
+                else if ((record.Type == DnsResourceRecordType.ANAME) || (record.Type == DnsResourceRecordType.ALIAS))
+                {
+                    alias = record;
+                }
+            }
+
+            return alias;
+        }
+
+        private static bool IsAliasAnswer(DnsDatagram response)
+        {
+            DnsResourceRecord lastAnswer = response.GetLastAnswerRecord();
+            if (lastAnswer is null)
+                lastAnswer = FindAliasAnswerRecord(response);
+
+            return (lastAnswer is not null) && ((lastAnswer.Type == DnsResourceRecordType.ANAME) || (lastAnswer.Type == DnsResourceRecordType.ALIAS));
+        }
+
         private async Task<DnsDatagram> ProcessANAMEAsync(DnsDatagram request, DnsDatagram response, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed, bool skipDnsAppAuthoritativeRequestHandlers, int clientTimeout, DnsClient.ResolverContext context)
         {
             EDnsOption[] eDnsClientSubnetOption = null;
@@ -4546,6 +4584,9 @@ namespace DnsServerCore.Dns
 
                     DnsResourceRecordType questionType = request.Question[0].Type;
                     DnsResourceRecord lastRR = newResponse.GetLastAnswerRecord();
+                    if (lastRR is null)
+                        lastRR = FindAliasAnswerRecord(newResponse); //an alias is not a CNAME, so the library helper does not return it
+
                     if (lastRR is null)
                         return Array.Empty<DnsResourceRecord>(); //answer does not continue this name
 
