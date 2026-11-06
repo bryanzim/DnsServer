@@ -4653,13 +4653,15 @@ namespace DnsServerCore.Dns
 
         private async Task<DnsDatagram> ProcessBlockedQueryAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol)
         {
+            bool recursionAvailable = IsRecursionAllowed(remoteEP.Address);
+
             if (_enableBlocking)
             {
                 DnsDatagram response = _blockedZoneManager.Query(request);
                 if (response is null)
                 {
                     //domain not blocked in blocked zone
-                    response = _blockListZoneManager.Query(request); //check in block list zone
+                    response = _blockListZoneManager.Query(request, recursionAvailable); //check in block list zone
                     if (response is not null)
                     {
                         //domain is blocked in block list zone
@@ -4690,7 +4692,7 @@ namespace DnsServerCore.Dns
 
                         IReadOnlyList<DnsResourceRecord> answer = [new DnsResourceRecord(question.Name, DnsResourceRecordType.TXT, question.Class, _blockingAnswerTtl, new DnsTXTRecordData("source=blocked-zone; domain=" + blockedDomain))];
 
-                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NoError, request.Question, answer) { Tag = DnsServerResponseType.Blocked };
+                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, recursionAvailable, false, false, DnsResponseCode.NoError, request.Question, answer) { Tag = DnsServerResponseType.Blocked };
                     }
                     else
                     {
@@ -4726,7 +4728,7 @@ namespace DnsServerCore.Dns
                                 if (parentDomain is null)
                                     parentDomain = string.Empty;
 
-                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, !_allowTxtBlockingReport, false, false, DnsResponseCode.NxDomain, request.Question, null, [new DnsResourceRecord(parentDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _blockedZoneManager.DnsSOARecord)], null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
+                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, recursionAvailable, false, false, DnsResponseCode.NxDomain, request.Question, null, [new DnsResourceRecord(parentDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _blockedZoneManager.DnsSOARecord)], null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
 
                             default:
                                 throw new InvalidOperationException();
@@ -4783,7 +4785,7 @@ namespace DnsServerCore.Dns
                                 break;
                         }
 
-                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, !_allowTxtBlockingReport, false, false, DnsResponseCode.NoError, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
+                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, recursionAvailable, false, false, DnsResponseCode.NoError, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
                     }
                 }
             }
