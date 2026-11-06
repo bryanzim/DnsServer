@@ -1380,7 +1380,7 @@ namespace AdvancedBlocking
                 return word;
             }
 
-            private Queue<string> ReadListFile()
+            private Queue<string>? ReadListFile()
             {
                 Queue<string> domains = new Queue<string>();
 
@@ -1484,6 +1484,7 @@ namespace AdvancedBlocking
                 catch (Exception ex)
                 {
                     _dnsServer.WriteLog("Advanced Blocking app failed to read " + (_isAllowList ? "allow" : "block") + " list from: " + _listUrl.AbsoluteUri, ex);
+                    return null;
                 }
 
                 return domains;
@@ -1495,7 +1496,10 @@ namespace AdvancedBlocking
 
             protected override void LoadListZone()
             {
-                Queue<string> listQueue = ReadListFile();
+                Queue<string>? listQueue = ReadListFile();
+                if (listQueue is null)
+                    return;
+
                 HashSet<string> listZone = new HashSet<string>(listQueue.Count);
 
                 while (listQueue.Count > 0)
@@ -1534,7 +1538,7 @@ namespace AdvancedBlocking
 
             #region private
 
-            private Queue<string> ReadRegexListFile()
+            private Queue<string>? ReadRegexListFile()
             {
                 Queue<string> regices = new Queue<string>();
 
@@ -1572,6 +1576,7 @@ namespace AdvancedBlocking
                 catch (Exception ex)
                 {
                     _dnsServer.WriteLog("Advanced Blocking app failed to read regex " + (_isAllowList ? "allow" : "block") + " list from: " + _listUrl.AbsoluteUri, ex);
+                    return null;
                 }
 
                 return regices;
@@ -1583,7 +1588,10 @@ namespace AdvancedBlocking
 
             protected override void LoadListZone()
             {
-                Queue<string> regexPatterns = ReadRegexListFile();
+                Queue<string>? regexPatterns = ReadRegexListFile();
+                if (regexPatterns is null)
+                    return;
+
                 List<Regex> regexListZone = new List<Regex>(regexPatterns.Count);
 
                 while (regexPatterns.Count > 0)
@@ -1697,7 +1705,7 @@ namespace AdvancedBlocking
                 return appliesToDns || !hasContentType;
             }
 
-            private void ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains)
+            private bool ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains)
             {
                 allowedDomains = new Queue<string>();
                 blockedDomains = new Queue<string>();
@@ -1777,10 +1785,12 @@ namespace AdvancedBlocking
                     }
 
                     _dnsServer.WriteLog("Advanced Blocking app read adblock list file (" + (allowedDomains.Count + blockedDomains.Count) + " domains) from: " + _listUrl.AbsoluteUri);
+                    return true;
                 }
                 catch (Exception ex)
                 {
                     _dnsServer.WriteLog("Advanced Blocking app failed to read adblock list from: " + _listUrl.AbsoluteUri, ex);
+                    return false;
                 }
             }
 
@@ -1790,7 +1800,8 @@ namespace AdvancedBlocking
 
             protected override void LoadListZone()
             {
-                ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains);
+                if (!ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains))
+                    return;
 
                 HashSet<string> allowedListZone = new HashSet<string>(allowedDomains.Count);
                 HashSet<string> blockedListZone = new HashSet<string>(blockedDomains.Count);
