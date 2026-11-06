@@ -160,6 +160,16 @@ namespace DnsServerCore.Cluster
 
         bool _disposed;
 
+        internal void StopHeartbeat()
+        {
+            try
+            {
+                _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            { }
+        }
+
         public void Dispose()
         {
             HttpApiClient apiClient;

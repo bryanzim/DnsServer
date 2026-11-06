@@ -2022,7 +2022,7 @@ namespace DnsServerCore.Cluster
 
             try
             {
-                //resync config and delete current primary node from the cluster immediately
+                //resync config from the current primary, then promote locally before deleting it
                 ClusterNode existingPrimaryNode = GetPrimaryNode();
 
                 if (!forceDeletePrimary)
@@ -2030,13 +2030,10 @@ namespace DnsServerCore.Cluster
                     //resync complete config from current primary node to ensure all data is synced
                     _configLastSynced = DateTime.UnixEpoch; //to ensure complete config resync
                     await existingPrimaryNode.SyncConfigAsync();
-
-                    //delete current cluster primary node
-                    await existingPrimaryNode.DeleteClusterAsync(true);
                 }
 
-                //dispose primary node immediately to stop heartbeat
-                existingPrimaryNode.Dispose();
+                //stop heartbeats before local promotion; keep the client until the new primary state is saved
+                existingPrimaryNode.StopHeartbeat();
 
                 //remove primary node from cluster nodes
                 IReadOnlyDictionary<int, ClusterNode> existingClusterNodes = _clusterNodes;
@@ -2088,8 +2085,13 @@ namespace DnsServerCore.Cluster
                 //update cluster catalog zone ACLs, TSIG key name and save zone file
                 UpdateClusterCatalogZoneOptions(clusterCatalogZoneInfo);
 
-                //save all changes immediately before sending notify
+                //save all changes before removing the old primary, so a later failure does not leave the cluster without one
                 SaveConfigFile(true);
+
+                if (!forceDeletePrimary)
+                    await existingPrimaryNode.DeleteClusterAsync(true);
+
+                existingPrimaryNode.Dispose();
 
                 //notify all secondary nodes as a primary node immediately
                 TriggerNotifyAllSecondaryNodes(0);
