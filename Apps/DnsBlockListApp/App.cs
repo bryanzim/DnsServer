@@ -82,59 +82,60 @@ namespace DnsBlockList
                     case 4:
                         {
                             Span<byte> buffer = stackalloc byte[4];
+                            bool parsed = true;
 
                             for (int i = 0, j = parts.Length - 1; (i < 4) && (j > -1); i++, j--)
                             {
                                 if (!byte.TryParse(parts[j], out buffer[i]))
                                 {
-                                    address = null;
-                                    domain = null;
-                                    return false;
+                                    parsed = false;
+                                    break;
                                 }
                             }
 
-                            address = new IPAddress(buffer);
-                            domain = null;
-                            return true;
+                            if (parsed)
+                            {
+                                address = new IPAddress(buffer);
+                                domain = null;
+                                return true;
+                            }
                         }
+                        break;
 
                     case 32:
                         {
                             Span<byte> buffer = stackalloc byte[16];
+                            bool parsed = true;
 
                             for (int i = 0, j = parts.Length - 1; (i < 16) && (j > 0); i++, j -= 2)
                             {
                                 if (!byte.TryParse(parts[j], NumberStyles.HexNumber, null, out byte high) || !byte.TryParse(parts[j - 1], NumberStyles.HexNumber, null, out byte low))
                                 {
-                                    address = null;
-                                    domain = null;
-                                    return false;
+                                    parsed = false;
+                                    break;
                                 }
 
                                 buffer[i] = (byte)((high << 4) | low);
                             }
 
-                            address = new IPAddress(buffer);
-                            domain = null;
-                            return true;
+                            if (parsed)
+                            {
+                                address = new IPAddress(buffer);
+                                domain = null;
+                                return true;
+                            }
                         }
-
-                    default:
-                        address = null;
-                        domain = null;
-                        return false;
+                        break;
                 }
             }
-            else
-            {
-                address = null;
-                domain = lastPart;
 
-                for (int i = parts.Length - 2; i > -1; i--)
-                    domain = parts[i] + "." + domain;
+            address = null;
+            domain = lastPart;
 
-                return true;
-            }
+            for (int i = parts.Length - 2; i > -1; i--)
+                domain = parts[i] + "." + domain;
+
+            return true;
         }
 
         private Tuple<string, BlockList> ReadBlockList(JsonElement jsonBlockList)
