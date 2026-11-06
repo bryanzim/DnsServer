@@ -994,19 +994,24 @@ namespace DnsServerCore.Dhcp
                     }
                     else
                     {
-                        if (_blockLocallyAdministeredMacAddresses)
+                        Lease clientReservedLease = GetReservedLease(request);
+                        if (IsAddressReserved(existingLease.Address) || ((clientReservedLease is not null) && !clientReservedLease.Address.Equals(existingLease.Address)))
                         {
-                            if ((request.HardwareAddressType == DhcpMessageHardwareAddressType.Ethernet) && ((request.ClientHardwareAddress[0] & 0x02) > 0))
-                            {
-                                _log.Write("DHCP Server failed to offer IP address to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the scope does not allow locally administered MAC addresses.");
-
-                                //prevent renewing existing dynamic lease
-                                return null;
-                            }
+                            //the address is reserved, or this client has a reservation for a different address
+                            ReleaseLease(existingLease);
                         }
+                        else if (_blockLocallyAdministeredMacAddresses && (request.HardwareAddressType == DhcpMessageHardwareAddressType.Ethernet) && ((request.ClientHardwareAddress[0] & 0x02) > 0))
+                        {
+                            _log.Write("DHCP Server failed to offer IP address to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the scope does not allow locally administered MAC addresses.");
 
-                        //return existing dynamic lease
-                        return existingLease;
+                            //prevent renewing existing dynamic lease
+                            return null;
+                        }
+                        else
+                        {
+                            //return existing dynamic lease
+                            return existingLease;
+                        }
                     }
                 }
             }
