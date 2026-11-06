@@ -309,7 +309,7 @@ namespace SplitHorizon
             if (string.IsNullOrEmpty(groupName) || !_groups.TryGetValue(groupName, out Group group) || !group.Enabled || !group.TranslateReverseLookups)
                 return false;
 
-            return group.TryInternalToExternalTranslation(internalIp, out externalIp);
+            return group.TryInternalToExternalTranslation(internalIp, out externalIp, out _);
         }
 
         public Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed)
@@ -340,11 +340,21 @@ namespace SplitHorizon
             if (!TryReverseTranslation(groupName, ptrIpAddress, out IPAddress externalIp))
             {
                 externalIp = null;
+                int bestPrefixLength = -1;
 
                 foreach (string domainGroupName in _domainGroupMap.Values)
                 {
-                    if (TryReverseTranslation(domainGroupName, ptrIpAddress, out externalIp))
-                        break;
+                    if (string.IsNullOrEmpty(domainGroupName) || !_groups.TryGetValue(domainGroupName, out Group domainGroup) || !domainGroup.Enabled || !domainGroup.TranslateReverseLookups)
+                        continue;
+
+                    if (!domainGroup.TryInternalToExternalTranslation(ptrIpAddress, out IPAddress translatedIp, out int prefixLength))
+                        continue;
+
+                    if (prefixLength > bestPrefixLength)
+                    {
+                        bestPrefixLength = prefixLength;
+                        externalIp = translatedIp;
+                    }
                 }
             }
 
@@ -508,10 +518,15 @@ namespace SplitHorizon
                 return false;
             }
 
-            public bool TryInternalToExternalTranslation(IPAddress internalIp, out IPAddress externalIp)
+            public bool TryInternalToExternalTranslation(IPAddress internalIp, out IPAddress externalIp, out int prefixLength)
             {
                 if (_internalToExternalTranslation.TryGetValue(internalIp, out externalIp))
+                {
+                    prefixLength = internalIp.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32;
                     return true;
+                }
+
+                prefixLength = -1;
 
                 NetworkAddress selectedInternal = null;
                 NetworkAddress selectedExternal = null;
@@ -532,6 +547,8 @@ namespace SplitHorizon
 
                 if (selectedInternal is not null)
                 {
+                    prefixLength = selectedInternal.PrefixLength;
+
                     switch (selectedInternal.AddressFamily)
                     {
                         case AddressFamily.InterNetwork:
