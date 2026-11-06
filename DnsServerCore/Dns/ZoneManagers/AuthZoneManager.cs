@@ -1896,6 +1896,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                                         break;
                                     }
 
+                                    // the old zone resolves the catalog by name; that name is now this replacement, so clearing it first keeps the member pointer
+                                    memberZoneInfo.ApexZone.CatalogZoneName = null;
+
                                     AuthZoneInfo newMemberZoneInfo = ConvertZoneTypeTo(memberZoneInfo, AuthZoneType.Primary);
                                     newMemberZoneInfo.ApexZone.CatalogZoneName = newZoneInfo.Name;
 
@@ -1947,6 +1950,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                             case AuthZoneType.SecondaryForwarder:
                                 try
                                 {
+                                    // the old zone resolves the catalog by name; that name is now this replacement, so clearing it first keeps the member pointer
+                                    memberZoneInfo.ApexZone.CatalogZoneName = null;
+
                                     AuthZoneInfo newMemberZoneInfo = ConvertZoneTypeTo(memberZoneInfo, AuthZoneType.Forwarder);
                                     newMemberZoneInfo.ApexZone.CatalogZoneName = newZoneInfo.Name;
 
