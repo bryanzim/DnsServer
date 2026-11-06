@@ -2019,11 +2019,16 @@ namespace DnsServerCore.Cluster
             StopConfigRefreshTimer();
 
             bool promoted = false;
+            bool primaryStateSaved = false;
+            bool heartbeatStopped = false;
+            bool promotedSelf = false;
+            ClusterNode existingPrimaryNode = null;
+            IReadOnlyDictionary<int, ClusterNode> previousClusterNodes = null;
 
             try
             {
                 //resync config from the current primary, then promote locally before deleting it
-                ClusterNode existingPrimaryNode = GetPrimaryNode();
+                existingPrimaryNode = GetPrimaryNode();
 
                 if (!forceDeletePrimary)
                 {
@@ -2034,6 +2039,7 @@ namespace DnsServerCore.Cluster
 
                 //stop heartbeats before local promotion; keep the client until the new primary state is saved
                 existingPrimaryNode.StopHeartbeat();
+                heartbeatStopped = true;
 
                 //remove primary node from cluster nodes
                 IReadOnlyDictionary<int, ClusterNode> existingClusterNodes = _clusterNodes;
@@ -2048,10 +2054,12 @@ namespace DnsServerCore.Cluster
                 }
 
                 //update cluster nodes
+                previousClusterNodes = existingClusterNodes;
                 _clusterNodes = updatedClusterNodes;
 
                 //promote self node to primary immediately
                 selfNewPrimaryNode.PromoteToPrimaryNode();
+                promotedSelf = true;
 
                 //convert cluster secondary catalog zone to catalog zone along with all its member zones
                 if (clusterCatalogZoneInfo.Type == AuthZoneType.SecondaryCatalog)
@@ -2087,6 +2095,7 @@ namespace DnsServerCore.Cluster
 
                 //save all changes before removing the old primary, so a later failure does not leave the cluster without one
                 SaveConfigFile(true);
+                primaryStateSaved = true;
 
                 if (!forceDeletePrimary)
                     await existingPrimaryNode.DeleteClusterAsync(true);
@@ -2103,8 +2112,21 @@ namespace DnsServerCore.Cluster
             }
             finally
             {
-                if (!promoted && ClusterInitialized)
+                if (!promoted && !primaryStateSaved && ClusterInitialized)
+                {
+                    if (promotedSelf)
+                    {
+                        selfNewPrimaryNode.RevertToSecondaryNode();
+
+                        if (previousClusterNodes is not null)
+                            _clusterNodes = previousClusterNodes;
+                    }
+
+                    if (heartbeatStopped)
+                        existingPrimaryNode.UpdateHeartbeatTimer();
+
                     UpdateConfigRefreshTimer(_configRefreshIntervalSeconds * 1000);
+                }
             }
         }
 

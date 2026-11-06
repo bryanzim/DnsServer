@@ -297,6 +297,11 @@ namespace DnsServerCore.Cluster
             _type = ClusterNodeType.Primary;
         }
 
+        internal void RevertToSecondaryNode()
+        {
+            _type = ClusterNodeType.Secondary;
+        }
+
         public void UpdateSelfNodeIPAddresses(IReadOnlyList<IPAddress> ipAddresses)
         {
             if (_state != ClusterNodeState.Self)
