@@ -439,6 +439,9 @@ namespace DnsServerCore.Dns.Zones
                     {
                         _dnsServer.LogManager.Write("DNS Server successfully checked for '" + ToString() + "' " + GetZoneTypeName() + " zone update from: " + soaResponse.Metadata.NameServer.ToString());
 
+                        if (validateZone && _validationFailed)
+                            await ValidateZoneAsync(); //the transferred zone is already current, so a failed check has to be retried here
+
                         if (soaResponse.EDNS is not null)
                         {
                             //RFC 7314 EDNS EXPIRE option support
@@ -625,22 +628,28 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
-        private async Task ValidateZoneAsync(CancellationToken cancellationToken = default)
+        private Task ValidateZoneAsync(CancellationToken cancellationToken = default)
         {
+            if (cancellationToken.IsCancellationRequested)
+                return Task.FromCanceled(cancellationToken);
+
             try
             {
-                DirectDnsClient dnsClient = new DirectDnsClient(_dnsServer);
-                dnsClient.DnssecValidation = true;
-                dnsClient.Timeout = 10000;
+                //read the transferred zone directly; a query would miss it while the secondary is still inactive
+                List<DnsZONEMDRecordData> zoneMdList = new List<DnsZONEMDRecordData>();
 
-                DnsDatagram zoneMdResponse = await dnsClient.ResolveAsync(_name, DnsResourceRecordType.ZONEMD, cancellationToken);
-                IReadOnlyList<DnsZONEMDRecordData> zoneMdList = DnsClient.ParseResponseZONEMD(zoneMdResponse);
+                foreach (DnsResourceRecord record in GetRecords(DnsResourceRecordType.ZONEMD))
+                {
+                    if (record.RDATA is DnsZONEMDRecordData zoneMd)
+                        zoneMdList.Add(zoneMd);
+                }
+
                 if (zoneMdList.Count == 0)
                 {
                     //ZONEMD RRSet does not exists; digest verification cannot occur
                     _validationFailed = false;
                     _dnsServer.LogManager.Write("ZONEMD validation cannot occur for the " + GetZoneTypeName() + " zone '" + ToString() + "': ZONEMD RRset does not exists in the zone.");
-                    return;
+                    return Task.CompletedTask;
                 }
 
                 for (int i = 0; i < zoneMdList.Count; i++)
@@ -657,18 +666,22 @@ namespace DnsServerCore.Dns.Zones
                         {
                             _validationFailed = true;
                             _dnsServer.LogManager.Write("ZONEMD validation failed for the " + GetZoneTypeName() + " zone '" + ToString() + "': ZONEMD RRset contains more than one RR with the same Scheme and Hash Algorithm.");
-                            return;
+                            return Task.CompletedTask;
                         }
                     }
                 }
 
-                DnsDatagram soaResponse = await dnsClient.ResolveAsync(_name, DnsResourceRecordType.SOA, cancellationToken);
-                DnsSOARecordData soa = DnsClient.ParseResponseSOA(soaResponse);
+                DnsSOARecordData soa = null;
+
+                IReadOnlyList<DnsResourceRecord> soaRecords = GetRecords(DnsResourceRecordType.SOA);
+                if (soaRecords.Count == 1)
+                    soa = soaRecords[0].RDATA as DnsSOARecordData;
+
                 if (soa is null)
                 {
                     _validationFailed = true;
                     _dnsServer.LogManager.Write("ZONEMD validation failed for the " + GetZoneTypeName() + " zone '" + ToString() + "': failed to find SOA record.");
-                    return;
+                    return Task.CompletedTask;
                 }
 
                 using MemoryStream hashStream = new MemoryStream(4096);
@@ -735,7 +748,7 @@ namespace DnsServerCore.Dns.Zones
                         //validation successfull
                         _validationFailed = false;
                         _dnsServer.LogManager.Write("ZONEMD validation was completed successfully for the " + GetZoneTypeName() + " zone: " + ToString());
-                        return;
+                        return Task.CompletedTask;
                     }
                 }
 
@@ -749,6 +762,8 @@ namespace DnsServerCore.Dns.Zones
                 _validationFailed = true;
                 _dnsServer.LogManager.Write("ZONEMD validation failed for the " + GetZoneTypeName() + " zone '" + ToString() + "'.", ex);
             }
+
+            return Task.CompletedTask;
         }
 
         private void SerializeZoneTo(MemoryStream hashStream)
