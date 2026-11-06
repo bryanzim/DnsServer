@@ -363,7 +363,7 @@ namespace DnsServerCore.Cluster
                 ReplaceApiClient();
         }
 
-        public void UpdateNode(ClusterInfo.ClusterNodeInfo nodeInfo)
+        public bool UpdateNode(ClusterInfo.ClusterNodeInfo nodeInfo)
         {
             if (nodeInfo.Id != _id)
                 throw new InvalidOperationException();
@@ -383,10 +383,17 @@ namespace DnsServerCore.Cluster
                 changed = true;
             }
 
-            _type = Enum.Parse<ClusterNodeType>(nodeInfo.Type, true);
-
             if (changed)
                 ReplaceApiClient();
+
+            ClusterNodeType nodeType = Enum.Parse<ClusterNodeType>(nodeInfo.Type, true);
+            if (_type != nodeType)
+            {
+                _type = nodeType;
+                changed = true;
+            }
+
+            return changed;
         }
 
         private void ReplaceApiClient()

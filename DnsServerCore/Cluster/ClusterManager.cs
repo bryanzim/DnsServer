@@ -1894,6 +1894,7 @@ namespace DnsServerCore.Cluster
 
             List<ClusterNode> clusterNodesToAdd = new List<ClusterNode>();
             List<ClusterNode> clusterNodesToRemove = new List<ClusterNode>();
+            bool saveConfig = false;
 
             foreach (ClusterInfo.ClusterNodeInfo clusterNodeInfo in primaryNodeClusterInfo.ClusterNodes)
             {
@@ -1903,7 +1904,8 @@ namespace DnsServerCore.Cluster
                         continue; //skip self node
 
                     //update existing cluster node
-                    existingClusterNode.UpdateNode(clusterNodeInfo);
+                    if (existingClusterNode.UpdateNode(clusterNodeInfo))
+                        saveConfig = true;
                 }
                 else
                 {
@@ -1928,8 +1930,6 @@ namespace DnsServerCore.Cluster
                 if (!found)
                     clusterNodesToRemove.Add(existingClusterNode.Value);
             }
-
-            bool saveConfig = false;
 
             if ((clusterNodesToAdd.Count > 0) || (clusterNodesToRemove.Count > 0))
             {
