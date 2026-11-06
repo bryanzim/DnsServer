@@ -164,10 +164,10 @@ namespace LogExporter
 
         private async Task ExportLogsAsync()
         {
+            List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
+
             try
             {
-                List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
-
                 while (true)
                 {
                     while (logs.Count < BULK_INSERT_COUNT && _queuedLogs.TryDequeue(out LogEntry? log))
@@ -186,6 +186,9 @@ namespace LogExporter
             catch (Exception ex)
             {
                 _dnsServer?.WriteLog(ex);
+
+                foreach (LogEntry log in logs)
+                    _queuedLogs.Enqueue(log);
             }
         }
 
