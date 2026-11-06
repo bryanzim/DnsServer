@@ -448,9 +448,11 @@ namespace DnsServerCore.Dns.Zones
                                 {
                                     if (option.Data is EDnsExpireOptionData expireOptionData && (expireOptionData.Expire is not null))
                                     {
+                                        //RFC 7314: a refresh that does not change the serial keeps the longer remaining expiry
                                         uint ednsExpire = Math.Min(expireOptionData.Expire.Value, receivedSoa.Expire);
+                                        uint expire = Math.Max(ednsExpire, CurrentExpireValue);
 
-                                        return (true, ednsExpire);
+                                        return (true, expire);
                                     }
 
                                     break;
@@ -599,9 +601,11 @@ namespace DnsServerCore.Dns.Zones
                                 {
                                     if (option.Data is EDnsExpireOptionData expireOptionData && (expireOptionData.Expire is not null))
                                     {
+                                        //RFC 7314: an up-to-date IXFR keeps the longer remaining expiry
                                         uint ednsExpire = Math.Min(expireOptionData.Expire.Value, xfrSoa.Expire);
+                                        uint expire = Math.Max(ednsExpire, CurrentExpireValue);
 
-                                        return (true, ednsExpire);
+                                        return (true, expire);
                                     }
 
                                     break;
