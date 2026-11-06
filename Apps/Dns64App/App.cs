@@ -250,11 +250,8 @@ namespace Dns64
 
             foreach (KeyValuePair<NetworkAddress, NetworkAddress> dns64PrefixEntry in group.Dns64PrefixMap)
             {
-                if ((dns64PrefixEntry.Value is not null) && dns64PrefixEntry.Value.Contains(ipv6Address))
-                {
+                if ((dns64PrefixEntry.Value is not null) && dns64PrefixEntry.Value.Contains(ipv6Address) && ((dns64Prefix is null) || (dns64PrefixEntry.Value.PrefixLength > dns64Prefix.PrefixLength)))
                     dns64Prefix = dns64PrefixEntry.Value;
-                    break;
-                }
             }
 
             if (dns64Prefix is null)
