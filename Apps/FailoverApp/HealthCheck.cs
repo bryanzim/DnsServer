@@ -247,13 +247,20 @@ namespace Failover
                         if (addresses.Count > 0)
                         {
                             HealthCheckResponse? lastResponse = null;
+                            bool sawFailure = false;
 
                             foreach (IPAddress address in addresses)
                             {
                                 lastResponse = await IsHealthyAsync(address, healthCheckUrl);
                                 if (lastResponse.Status == HealthStatus.Healthy)
                                     return lastResponse;
+
+                                if (lastResponse.Status == HealthStatus.Failed)
+                                    sawFailure = true;
                             }
+
+                            if (sawFailure)
+                                return new HealthCheckResponse(HealthStatus.Failed, "Failed health check.");
 
                             if (lastResponse is not null)
                                 return lastResponse;
@@ -272,13 +279,20 @@ namespace Failover
                         if (addresses.Count > 0)
                         {
                             HealthCheckResponse? lastResponse = null;
+                            bool sawFailure = false;
 
                             foreach (IPAddress address in addresses)
                             {
                                 lastResponse = await IsHealthyAsync(address, healthCheckUrl);
                                 if (lastResponse.Status == HealthStatus.Healthy)
                                     return lastResponse;
+
+                                if (lastResponse.Status == HealthStatus.Failed)
+                                    sawFailure = true;
                             }
+
+                            if (sawFailure)
+                                return new HealthCheckResponse(HealthStatus.Failed, "Failed health check.");
 
                             if (lastResponse is not null)
                                 return lastResponse;
