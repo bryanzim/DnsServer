@@ -782,12 +782,7 @@ namespace DnsServerCore.Dns.Zones
                     switch (record.Type)
                     {
                         case DnsResourceRecordType.NS:
-                            records.Add(record);
-
-                            IReadOnlyList<DnsResourceRecord> glueRecords = record.GetAuthNSRecordInfo().GlueRecords;
-                            if (glueRecords is not null)
-                                records.AddRange(glueRecords);
-
+                            records.Add(record); //out-of-zone glue is not zone data and must not be hashed
                             break;
 
                         case DnsResourceRecordType.RRSIG:
