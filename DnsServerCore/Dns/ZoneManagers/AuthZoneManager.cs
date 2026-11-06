@@ -847,6 +847,28 @@ namespace DnsServerCore.Dns.ZoneManagers
                 removedApexZone.Dispose();
         }
 
+        private bool IsNameInChildZone(string zoneName, string domain)
+        {
+            _ = _root.FindZone(domain, out _, out _, out ApexZone apexZone, out _);
+
+            if ((apexZone is null) || zoneName.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (!_root.TryGet(zoneName, out _))
+                return false;
+
+            string subdomain;
+
+            if (zoneName.Length == 0)
+                subdomain = domain;
+            else if (domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
+                subdomain = domain.Substring(0, domain.Length - zoneName.Length - 1);
+            else
+                return false;
+
+            return subdomain.Contains('.', StringComparison.Ordinal);
+        }
+
         internal AuthZone GetOrAddSubDomainZone(string zoneName, string domain)
         {
             AuthZone authZone = _root.GetOrAddSubDomainZone(zoneName, domain, delegate ()
@@ -2939,6 +2961,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             //sync new records
             foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> latestEntries in latestRecordsGroupedByDomain)
             {
+                if (IsNameInChildZone(zoneName, latestEntries.Key))
+                    continue; //this server already hosts that child zone
+
                 AuthZone zone = GetOrAddSubDomainZone(zoneName, latestEntries.Key);
 
                 if (zone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
@@ -3066,6 +3091,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                 {
                     foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> deletedEntry in DnsResourceRecord.GroupRecords(deletedRecords))
                     {
+                        if (IsNameInChildZone(zoneName, deletedEntry.Key))
+                            continue; //this server already hosts that child zone
+
                         AuthZone zone = GetOrAddSubDomainZone(zoneName, deletedEntry.Key);
 
                         if (zone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
@@ -3086,6 +3114,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                 {
                     foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> addedEntry in DnsResourceRecord.GroupRecords(addedRecords))
                     {
+                        if (IsNameInChildZone(zoneName, addedEntry.Key))
+                            continue; //this server already hosts that child zone
+
                         AuthZone zone = GetOrAddSubDomainZone(zoneName, addedEntry.Key);
 
                         if (zone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
