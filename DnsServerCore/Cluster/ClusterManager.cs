@@ -1,4 +1,4 @@
-﻿/*
+/*
 Technitium DNS Server
 Copyright (C) 2026  Shreyas Zare (shreyas@technitium.com)
 
@@ -2007,83 +2007,95 @@ namespace DnsServerCore.Cluster
             if (clusterZoneInfo is null)
                 throw new DnsServerException("Failed to promote to Primary node: the Cluster Secondary zone does not exist.");
 
-            //stop cluster config refresh timer
+            //stop cluster config refresh timer; restart it if promotion does not complete
             StopConfigRefreshTimer();
 
-            //resync config and delete current primary node from the cluster immediately
-            ClusterNode existingPrimaryNode = GetPrimaryNode();
+            bool promoted = false;
 
-            if (!forceDeletePrimary)
+            try
             {
-                //resync complete config from current primary node to ensure all data is synced
-                _configLastSynced = DateTime.UnixEpoch; //to ensure complete config resync
-                await existingPrimaryNode.SyncConfigAsync();
+                //resync config and delete current primary node from the cluster immediately
+                ClusterNode existingPrimaryNode = GetPrimaryNode();
 
-                //delete current cluster primary node
-                await existingPrimaryNode.DeleteClusterAsync(true);
+                if (!forceDeletePrimary)
+                {
+                    //resync complete config from current primary node to ensure all data is synced
+                    _configLastSynced = DateTime.UnixEpoch; //to ensure complete config resync
+                    await existingPrimaryNode.SyncConfigAsync();
+
+                    //delete current cluster primary node
+                    await existingPrimaryNode.DeleteClusterAsync(true);
+                }
+
+                //dispose primary node immediately to stop heartbeat
+                existingPrimaryNode.Dispose();
+
+                //remove primary node from cluster nodes
+                IReadOnlyDictionary<int, ClusterNode> existingClusterNodes = _clusterNodes;
+                Dictionary<int, ClusterNode> updatedClusterNodes = new Dictionary<int, ClusterNode>(existingClusterNodes.Count - 1);
+
+                foreach (KeyValuePair<int, ClusterNode> existingClusterNode in existingClusterNodes)
+                {
+                    if (existingClusterNode.Key == existingPrimaryNode.Id)
+                        continue;
+
+                    updatedClusterNodes[existingClusterNode.Key] = existingClusterNode.Value;
+                }
+
+                //update cluster nodes
+                _clusterNodes = updatedClusterNodes;
+
+                //promote self node to primary immediately
+                selfNewPrimaryNode.PromoteToPrimaryNode();
+
+                //convert cluster secondary catalog zone to catalog zone along with all its member zones
+                if (clusterCatalogZoneInfo.Type == AuthZoneType.SecondaryCatalog)
+                    clusterCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.ConvertZoneTypeTo(clusterCatalogZoneInfo.Name, AuthZoneType.Catalog);
+
+                //get converted primary cluster zone info
+                clusterZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(_clusterDomain);
+                if (clusterZoneInfo is null)
+                    throw new DnsServerException("Failed to promote to Primary node: the Cluster Primary zone does not exist.");
+
+                //sign cluster zone in case when DNSSEC private keys were not available during ConvertZoneTypeTo() operation
+                if (clusterZoneInfo.ApexZone.DnssecStatus == AuthZoneDnssecStatus.Unsigned)
+                {
+                    DnssecPrivateKey kskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.KeySigningKey);
+                    DnssecPrivateKey zskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.ZoneSigningKey);
+                    zskPrivateKey.RolloverDays = 90;
+
+                    _dnsWebService.DnsServer.AuthZoneManager.SignPrimaryZone(clusterZoneInfo.Name, kskPrivateKey, zskPrivateKey, 3600, false);
+                }
+
+                //find existing record TTL values
+                FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
+
+                //remove old primary node records from cluster primary zone and save zone file
+                if (existingPrimaryNode is not null)
+                    RemoveClusterPrimaryZoneRecordsFor(existingPrimaryNode);
+
+                //update cluster primary zone for new primary node
+                AddClusterPrimaryZoneRecordsFor(selfNewPrimaryNode, nsTtl, aTtl, _dnsWebService.WebServiceTlsCertificate);
+
+                //update cluster catalog zone ACLs, TSIG key name and save zone file
+                UpdateClusterCatalogZoneOptions(clusterCatalogZoneInfo);
+
+                //save all changes immediately before sending notify
+                SaveConfigFile(true);
+
+                //notify all secondary nodes as a primary node immediately
+                TriggerNotifyAllSecondaryNodes(0);
+
+                //trigger NS and SOA update for member zones
+                TriggerRecordUpdateForClusterCatalogMemberZones();
+
+                promoted = true;
             }
-
-            //dispose primary node immediately to stop heartbeat
-            existingPrimaryNode.Dispose();
-
-            //remove primary node from cluster nodes
-            IReadOnlyDictionary<int, ClusterNode> existingClusterNodes = _clusterNodes;
-            Dictionary<int, ClusterNode> updatedClusterNodes = new Dictionary<int, ClusterNode>(existingClusterNodes.Count - 1);
-
-            foreach (KeyValuePair<int, ClusterNode> existingClusterNode in existingClusterNodes)
+            finally
             {
-                if (existingClusterNode.Key == existingPrimaryNode.Id)
-                    continue;
-
-                updatedClusterNodes[existingClusterNode.Key] = existingClusterNode.Value;
+                if (!promoted && ClusterInitialized)
+                    UpdateConfigRefreshTimer(_configRefreshIntervalSeconds * 1000);
             }
-
-            //update cluster nodes
-            _clusterNodes = updatedClusterNodes;
-
-            //promote self node to primary immediately
-            selfNewPrimaryNode.PromoteToPrimaryNode();
-
-            //convert cluster secondary catalog zone to catalog zone along with all its member zones
-            if (clusterCatalogZoneInfo.Type == AuthZoneType.SecondaryCatalog)
-                clusterCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.ConvertZoneTypeTo(clusterCatalogZoneInfo.Name, AuthZoneType.Catalog);
-
-            //get converted primary cluster zone info
-            clusterZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(_clusterDomain);
-            if (clusterZoneInfo is null)
-                throw new DnsServerException("Failed to promote to Primary node: the Cluster Primary zone does not exist.");
-
-            //sign cluster zone in case when DNSSEC private keys were not available during ConvertZoneTypeTo() operation
-            if (clusterZoneInfo.ApexZone.DnssecStatus == AuthZoneDnssecStatus.Unsigned)
-            {
-                DnssecPrivateKey kskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.KeySigningKey);
-                DnssecPrivateKey zskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.ZoneSigningKey);
-                zskPrivateKey.RolloverDays = 90;
-
-                _dnsWebService.DnsServer.AuthZoneManager.SignPrimaryZone(clusterZoneInfo.Name, kskPrivateKey, zskPrivateKey, 3600, false);
-            }
-
-            //find existing record TTL values
-            FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
-
-            //remove old primary node records from cluster primary zone and save zone file
-            if (existingPrimaryNode is not null)
-                RemoveClusterPrimaryZoneRecordsFor(existingPrimaryNode);
-
-            //update cluster primary zone for new primary node
-            AddClusterPrimaryZoneRecordsFor(selfNewPrimaryNode, nsTtl, aTtl, _dnsWebService.WebServiceTlsCertificate);
-
-            //update cluster catalog zone ACLs, TSIG key name and save zone file
-            UpdateClusterCatalogZoneOptions(clusterCatalogZoneInfo);
-
-            //save all changes immediately before sending notify
-            SaveConfigFile(true);
-
-            //notify all secondary nodes as a primary node immediately
-            TriggerNotifyAllSecondaryNodes(0);
-
-            //trigger NS and SOA update for member zones
-            TriggerRecordUpdateForClusterCatalogMemberZones();
         }
 
         #endregion
