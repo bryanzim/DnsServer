@@ -4572,6 +4572,19 @@ namespace DnsServerCore.Dns
                     DnsDatagram blockedResponse = await GetBlockedAliasResponseAsync(lastDomain);
                     if (blockedResponse is not null)
                     {
+                        if ((blockedResponse.Answer is not null) && (blockedResponse.Answer.Count > 0))
+                        {
+                            DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedResponse.Answer.Count];
+
+                            for (int i = 0; i < blockedResponse.Answer.Count; i++)
+                            {
+                                DnsResourceRecord blockedRecord = blockedResponse.Answer[i];
+                                rewrittenAnswer[i] = new DnsResourceRecord(anameRR.Name, blockedRecord.Type, blockedRecord.Class, blockedRecord.TTL, blockedRecord.RDATA);
+                            }
+
+                            return rewrittenAnswer;
+                        }
+
                         blockedAliasResponse = blockedResponse;
                         return Array.Empty<DnsResourceRecord>();
                     }
@@ -4717,9 +4730,8 @@ namespace DnsServerCore.Dns
                     responseAnswer.AddRange(records);
             }
 
-            if (blockedAliasResponse is not null)
+            if ((blockedAliasResponse is not null) && (responseAnswer.Count == 0) && !foundErrors)
             {
-                IReadOnlyList<DnsResourceRecord> blockedAnswer = blockedAliasResponse.Answer;
                 string queryName = (request.Question.Count > 0) ? request.Question[0].Name : null;
 
                 foreach (DnsResourceRecord aliasRecord in response.Answer)
@@ -4731,30 +4743,9 @@ namespace DnsServerCore.Dns
                     }
                 }
 
-                DnsResponseCode blockedRcode = blockedAliasResponse.RCODE;
-                IReadOnlyList<DnsResourceRecord> blockedAuthority = blockedAliasResponse.Authority;
-
-                if ((blockedAnswer is not null) && (blockedAnswer.Count > 0) && (queryName is not null))
-                {
-                    // a direct query uses the question name; a CNAME chase owns the address by the alias name
-                    DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedAnswer.Count];
-
-                    for (int i = 0; i < blockedAnswer.Count; i++)
-                    {
-                        DnsResourceRecord answer = blockedAnswer[i];
-                        rewrittenAnswer[i] = new DnsResourceRecord(queryName, answer.Type, answer.Class, answer.TTL, answer.RDATA);
-                    }
-
-                    blockedAnswer = rewrittenAnswer;
-                }
-                else if ((blockedAnswer is null) || (blockedAnswer.Count == 0))
-                {
-                    // the alias name exists, so an empty block must not negative-cache it
-                    blockedRcode = DnsResponseCode.NoError;
-                    blockedAuthority = (queryName is null) ? null : GetAliasNodataAuthority(queryName, response.Authority);
-                }
-
-                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, blockedRcode, request.Question, blockedAnswer, blockedAuthority, blockedAliasResponse.Additional) { Tag = blockedAliasResponse.Tag };
+                // the alias name exists, so an empty block must not negative-cache it
+                IReadOnlyList<DnsResourceRecord> blockedAuthority = (queryName is null) ? null : GetAliasNodataAuthority(queryName, response.Authority);
+                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.NoError, request.Question, null, blockedAuthority, blockedAliasResponse.Additional) { Tag = blockedAliasResponse.Tag };
             }
 
             DnsResponseCode rcode = DnsResponseCode.NoError;
@@ -5043,8 +5034,8 @@ namespace DnsServerCore.Dns
 
                     case DnsResourceRecordType.ANAME:
                     case DnsResourceRecordType.ALIAS:
-                        aliasDomain = (record.RDATA as DnsANAMERecordData).Domain;
-                        break;
+                        // address synthesis owns blocking so one blocked target does not drop the others
+                        continue;
 
                     default:
                         return response;
@@ -5069,49 +5060,6 @@ namespace DnsServerCore.Dns
 
                 //found cname cloaking
                 IReadOnlyList<DnsResourceRecord> blockedAnswer = blockedResponse.Answer;
-
-                if ((record.Type == DnsResourceRecordType.ANAME) || (record.Type == DnsResourceRecordType.ALIAS))
-                {
-                    // clients do not follow ANAME or ALIAS; a direct query owns the sinkhole by this record, and a CNAME chain must stay in front of it
-                    string ownerName = record.Name;
-                    bool directAlias = (request.Question.Count == 0) || ownerName.Equals(request.Question[0].Name, StringComparison.OrdinalIgnoreCase);
-
-                    bool hasAddresses = (blockedAnswer is not null) && (blockedAnswer.Count > 0);
-                    DnsResponseCode aliasRcode = blockedResponse.RCODE;
-                    IReadOnlyList<DnsResourceRecord> aliasAuthority = blockedResponse.Authority;
-
-                    if (hasAddresses)
-                    {
-                        DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedAnswer.Count];
-
-                        for (int j = 0; j < blockedAnswer.Count; j++)
-                        {
-                            DnsResourceRecord blockedRecord = blockedAnswer[j];
-                            rewrittenAnswer[j] = new DnsResourceRecord(ownerName, blockedRecord.Type, blockedRecord.Class, blockedRecord.TTL, blockedRecord.RDATA);
-                        }
-
-                        blockedAnswer = rewrittenAnswer;
-                    }
-                    else
-                    {
-                        // the alias name exists, so an empty block must not negative-cache it
-                        aliasRcode = DnsResponseCode.NoError;
-                        aliasAuthority = GetAliasNodataAuthority(ownerName, response.Authority);
-                    }
-
-                    if (directAlias)
-                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, aliasRcode, request.Question, blockedAnswer, aliasAuthority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
-
-                    List<DnsResourceRecord> aliasAnswer = new List<DnsResourceRecord>(i + (blockedAnswer is null ? 0 : blockedAnswer.Count));
-
-                    for (int j = 0; j < i; j++)
-                        aliasAnswer.Add(response.Answer[j]);
-
-                    if (blockedAnswer is not null)
-                        aliasAnswer.AddRange(blockedAnswer);
-
-                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, aliasRcode, request.Question, aliasAnswer, aliasAuthority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
-                }
 
                 int blockedCount = blockedAnswer is null ? 0 : blockedAnswer.Count;
                 List<DnsResourceRecord> answer = new List<DnsResourceRecord>(i + 1 + blockedCount);
