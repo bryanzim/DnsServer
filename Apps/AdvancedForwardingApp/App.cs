@@ -678,9 +678,10 @@ namespace AdvancedForwarding
                                     continue;
                             }
 
-                            if (line.StartsWith('['))
+                            if ((line.Length > 1) && (line[0] == '[') && (line[1] == '/'))
                             {
-                                int i = line.LastIndexOf(']');
+                                //domain list ends at the first bracket so an IPv6 upstream can follow it
+                                int i = line.IndexOf(']');
                                 if (i < 0)
                                     throw new FormatException("Invalid AdGuard Upstreams config file format: missing ']' bracket.");
 
