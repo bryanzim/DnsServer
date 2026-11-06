@@ -88,34 +88,36 @@ namespace QueryLogsPostgreSql
 
                             await using (NpgsqlCommand command = connection.CreateCommand())
                             {
-                                command.CommandText = "SELECT Count(*) FROM dns_logs;";
+                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE server = @server;";
+                                command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain ?? (object)DBNull.Value);
 
                                 totalRecords = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             int recordsToRemove = totalRecords - _maxLogRecords;
                             if (recordsToRemove > 0)
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, null);
                         }
 
                         if (_maxLogDays > 0)
                         {
                             int recordsToRemove;
+                            DateTime cutoff = DateTime.UtcNow.AddDays(_maxLogDays * -1);
 
                             await using (NpgsqlCommand command = connection.CreateCommand())
                             {
-                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE timestamp < @timestamp;";
-
-                                command.Parameters.AddWithValue("@timestamp", DateTime.UtcNow.AddDays(_maxLogDays * -1));
+                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE server = @server AND timestamp < @timestamp;";
+                                command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain ?? (object)DBNull.Value);
+                                command.Parameters.AddWithValue("@timestamp", cutoff);
 
                                 recordsToRemove = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             if (recordsToRemove > 0)
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, cutoff);
                         }
 
-                        async Task BatchRemove(int recordsToRemove)
+                        async Task BatchRemove(int recordsToRemove, DateTime? cutoff)
                         {
                             int batchToRemove;
 
@@ -125,7 +127,15 @@ namespace QueryLogsPostgreSql
 
                                 await using (NpgsqlCommand command = connection.CreateCommand())
                                 {
-                                    command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs ORDER BY dlid LIMIT {batchToRemove});";
+                                    if (cutoff is null)
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs WHERE server = @server ORDER BY timestamp, dlid LIMIT {batchToRemove});";
+                                    else
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs WHERE server = @server AND timestamp < @timestamp ORDER BY timestamp, dlid LIMIT {batchToRemove});";
+
+                                    command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain ?? (object)DBNull.Value);
+
+                                    if (cutoff is not null)
+                                        command.Parameters.AddWithValue("@timestamp", cutoff.Value);
 
                                     await command.ExecuteNonQueryAsync();
                                 }

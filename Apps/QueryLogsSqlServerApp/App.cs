@@ -86,34 +86,36 @@ namespace QueryLogsSqlServer
 
                             await using (SqlCommand command = connection.CreateCommand())
                             {
-                                command.CommandText = "SELECT Count(*) FROM dns_logs;";
+                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE server = @server;";
+                                command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain);
 
                                 totalRecords = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             int recordsToRemove = totalRecords - _maxLogRecords;
                             if (recordsToRemove > 0)
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, null);
                         }
 
                         if (_maxLogDays > 0)
                         {
                             int recordsToRemove;
+                            DateTime cutoff = DateTime.UtcNow.AddDays(_maxLogDays * -1);
 
                             await using (SqlCommand command = connection.CreateCommand())
                             {
-                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE timestamp < @timestamp;";
-
-                                command.Parameters.AddWithValue("@timestamp", DateTime.UtcNow.AddDays(_maxLogDays * -1));
+                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE server = @server AND timestamp < @timestamp;";
+                                command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain);
+                                command.Parameters.AddWithValue("@timestamp", cutoff);
 
                                 recordsToRemove = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             if (recordsToRemove > 0)
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, cutoff);
                         }
 
-                        async Task BatchRemove(int recordsToRemove)
+                        async Task BatchRemove(int recordsToRemove, DateTime? cutoff)
                         {
                             int batchToRemove;
 
@@ -123,7 +125,15 @@ namespace QueryLogsSqlServer
 
                                 await using (SqlCommand command = connection.CreateCommand())
                                 {
-                                    command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT TOP {batchToRemove} dlid FROM dns_logs ORDER BY dlid);";
+                                    if (cutoff is null)
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT TOP {batchToRemove} dlid FROM dns_logs WHERE server = @server ORDER BY timestamp, dlid);";
+                                    else
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT TOP {batchToRemove} dlid FROM dns_logs WHERE server = @server AND timestamp < @timestamp ORDER BY timestamp, dlid);";
+
+                                    command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain);
+
+                                    if (cutoff is not null)
+                                        command.Parameters.AddWithValue("@timestamp", cutoff.Value);
 
                                     await command.ExecuteNonQueryAsync();
                                 }

@@ -94,7 +94,7 @@ namespace QueryLogsSqlite
                             int recordsToRemove = totalRecords - _maxLogRecords;
                             if (recordsToRemove > 0)
                             {
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, null);
                                 doVacuum = true;
                             }
                         }
@@ -102,24 +102,25 @@ namespace QueryLogsSqlite
                         if (_maxLogDays > 0)
                         {
                             int recordsToRemove;
+                            DateTime cutoff = DateTime.UtcNow.AddDays(_maxLogDays * -1);
 
                             await using (SqliteCommand command = connection.CreateCommand())
                             {
                                 command.CommandText = "SELECT Count(*) FROM dns_logs WHERE timestamp < @timestamp;";
 
-                                command.Parameters.AddWithValue("@timestamp", DateTime.UtcNow.AddDays(_maxLogDays * -1));
+                                command.Parameters.AddWithValue("@timestamp", cutoff);
 
                                 recordsToRemove = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             if (recordsToRemove > 0)
                             {
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, cutoff);
                                 doVacuum = true;
                             }
                         }
 
-                        async Task BatchRemove(int recordsToRemove)
+                        async Task BatchRemove(int recordsToRemove, DateTime? cutoff)
                         {
                             int batchToRemove;
 
@@ -129,7 +130,13 @@ namespace QueryLogsSqlite
 
                                 await using (SqliteCommand command = connection.CreateCommand())
                                 {
-                                    command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs ORDER BY dlid LIMIT {batchToRemove});";
+                                    if (cutoff is null)
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs ORDER BY timestamp, dlid LIMIT {batchToRemove});";
+                                    else
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs WHERE timestamp < @timestamp ORDER BY timestamp, dlid LIMIT {batchToRemove});";
+
+                                    if (cutoff is not null)
+                                        command.Parameters.AddWithValue("@timestamp", cutoff.Value);
 
                                     await command.ExecuteNonQueryAsync();
                                 }
