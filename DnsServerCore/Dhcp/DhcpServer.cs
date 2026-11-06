@@ -1029,8 +1029,21 @@ namespace DnsServerCore.Dhcp
                     reservedLeaseHostName = GetReservedLeaseFqdn(reservedLeaseHostName, scope.DomainName);
                 }
 
-                if (force || !scope.HasReservedLeaseHostName(lease)) //remove DNS entries only if reserved lease has no hostname or if forced
+                string reservedHostName = scope.GetReservedLeaseHostName(lease);
+                string reservedFqdn = null;
+
+                if (!string.IsNullOrWhiteSpace(reservedHostName))
+                    reservedFqdn = GetReservedLeaseFqdn(reservedHostName, scope.DomainName);
+
+                if (force || (reservedFqdn is null))
+                {
                     RemoveDnsEntries(scope, reservedLeaseHostName, lease.Address);
+                }
+                else if (!string.IsNullOrWhiteSpace(reservedLeaseHostName) && !reservedLeaseHostName.Equals(reservedFqdn, StringComparison.OrdinalIgnoreCase))
+                {
+                    //the reservation keeps its own name; drop a different name this client published
+                    RemoveDnsEntries(scope, reservedLeaseHostName, lease.Address);
+                }
             }
             else
             {

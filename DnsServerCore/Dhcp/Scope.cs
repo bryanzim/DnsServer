@@ -978,14 +978,19 @@ namespace DnsServerCore.Dhcp
             return null;
         }
 
-        internal bool HasReservedLeaseHostName(Lease lease)
+        internal string GetReservedLeaseHostName(Lease lease)
         {
             ClientIdentifierOption reservedLeasesClientIdentifier = new ClientIdentifierOption((byte)DhcpMessageHardwareAddressType.Ethernet, lease.HardwareAddress);
 
             if (_reservedLeases.TryGetValue(reservedLeasesClientIdentifier, out Lease reservedLease) && reservedLease.Address.Equals(lease.Address))
-                return !string.IsNullOrWhiteSpace(reservedLease.HostName);
+                return reservedLease.HostName;
 
-            return false;
+            return null;
+        }
+
+        internal bool HasReservedLeaseHostName(Lease lease)
+        {
+            return !string.IsNullOrWhiteSpace(GetReservedLeaseHostName(lease));
         }
 
         internal async Task<Lease> GetOfferAsync(DhcpMessage request)
