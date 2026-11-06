@@ -3403,6 +3403,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                 {
                     ValidateIfDomainBelongsToZone(zoneName, zoneEntry.Key);
 
+                    if (IsNameInChildZone(zoneName, zoneEntry.Key))
+                        continue;
+
                     AuthZone authZone = GetOrAddSubDomainZone(zoneName, zoneEntry.Key);
 
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
