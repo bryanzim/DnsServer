@@ -630,11 +630,18 @@ namespace DnsServerCore.Dhcp
 
         private void ConvertToReservedLease(Lease lease)
         {
+            //add reserved lease
+            Lease reservedLease = new Lease(LeaseType.Reserved, null, DhcpMessageHardwareAddressType.Ethernet, lease.HardwareAddress, lease.Address, null);
+
+            foreach (KeyValuePair<ClientIdentifierOption, Lease> existingReservedLease in _reservedLeases)
+            {
+                if (existingReservedLease.Value.Address.Equals(reservedLease.Address) && !existingReservedLease.Key.Equals(reservedLease.ClientIdentifier))
+                    throw new DhcpServerException("Reserved address is already reserved for another client: " + reservedLease.Address.ToString());
+            }
+
             //convert dynamic to reserved lease
             lease.ConvertToReserved();
 
-            //add reserved lease
-            Lease reservedLease = new Lease(LeaseType.Reserved, null, DhcpMessageHardwareAddressType.Ethernet, lease.HardwareAddress, lease.Address, null);
             _reservedLeases[reservedLease.ClientIdentifier] = reservedLease;
 
             //update DNS
