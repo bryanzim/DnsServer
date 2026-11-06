@@ -3380,6 +3380,20 @@ namespace DnsServerCore.Dns
                                 originalRRSetEntries.TryAdd(type, existingRRSet);
                             }
 
+                            void RevertOriginalRRSets()
+                            {
+                                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSetEntries in originalRRSets)
+                                {
+                                    foreach (KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> originalRRSet in originalRRSetEntries.Value)
+                                    {
+                                        if (originalRRSet.Value.Count == 0)
+                                            _authZoneManager.DeleteRecords(zoneInfo.Name, originalRRSetEntries.Key, originalRRSet.Key);
+                                        else
+                                            _authZoneManager.SetRecords(zoneInfo.Name, originalRRSet.Value);
+                                    }
+                                }
+                            }
+
                             try
                             {
                                 foreach (DnsResourceRecord uRecord in request.Authority)
@@ -3390,7 +3404,11 @@ namespace DnsServerCore.Dns
                                         if (uRecord.Type == DnsResourceRecordType.CNAME)
                                         {
                                             if (_authZoneManager.EnabledNameExists(zoneInfo.Name, uRecord.Name) && (_authZoneManager.GetEnabledRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count == 0))
-                                                continue; //current name exists and has non-CNAME records so cannot add CNAME record
+                                            {
+                                                //current name exists and has non-CNAME records so cannot add CNAME record
+                                                RevertOriginalRRSets();
+                                                return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
+                                            }
 
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
                                             AddToOriginalRRSets(uRecord.Name, uRecord.Type, existingRRSet);
@@ -3432,7 +3450,11 @@ namespace DnsServerCore.Dns
                                         else
                                         {
                                             if (_authZoneManager.GetEnabledRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count > 0)
-                                                continue; //current name contains CNAME so cannot add non-CNAME record
+                                            {
+                                                //current name contains CNAME so cannot add non-CNAME record
+                                                RevertOriginalRRSets();
+                                                return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
+                                            }
 
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
                                             AddToOriginalRRSets(uRecord.Name, uRecord.Type, existingRRSet);
@@ -3548,16 +3570,7 @@ namespace DnsServerCore.Dns
                             catch
                             {
                                 //revert
-                                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSetEntries in originalRRSets)
-                                {
-                                    foreach (KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> originalRRSet in originalRRSetEntries.Value)
-                                    {
-                                        if (originalRRSet.Value.Count == 0)
-                                            _authZoneManager.DeleteRecords(zoneInfo.Name, originalRRSetEntries.Key, originalRRSet.Key);
-                                        else
-                                            _authZoneManager.SetRecords(zoneInfo.Name, originalRRSet.Value);
-                                    }
-                                }
+                                RevertOriginalRRSets();
 
                                 throw;
                             }
