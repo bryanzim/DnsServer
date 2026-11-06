@@ -233,7 +233,8 @@ namespace DefaultRecords
 
                 if (record.Type == DnsResourceRecordType.CNAME)
                 {
-                    if (nameHasOtherData)
+                    //NODATA still means the name exists, so a CNAME here would replace its other records
+                    if (nameHasOtherData || (response.RCODE != DnsResponseCode.NxDomain))
                         continue;
                 }
                 else if (nameHasCname)
