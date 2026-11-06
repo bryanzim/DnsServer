@@ -1093,18 +1093,32 @@ namespace DnsServerCore.Dhcp
             DnsResourceRecord addedAddress = null;
             bool replacedAddressRecord = false;
             IReadOnlyList<DnsResourceRecord> previousAddressRecords = null;
+            string reverseZoneName = null;
+            bool addedPtrRecord = false;
+            DnsResourceRecord addedPtr = null;
+            bool replacedPtrRecord = false;
+            IReadOnlyList<DnsResourceRecord> previousPtrRecords = null;
 
             void RollbackAddedAddress()
             {
-                if (zoneName is null)
-                    return;
+                try
+                {
+                    if ((zoneName is not null) && addedAddressRecord && (addedAddress is not null))
+                        _dnsServer.AuthZoneManager.DeleteRecord(zoneName, addedAddress.Name, addedAddress.Type, addedAddress.RDATA);
+                    else if ((zoneName is not null) && replacedAddressRecord && (previousAddressRecords is not null) && (previousAddressRecords.Count > 0))
+                        _dnsServer.AuthZoneManager.SetRecords(zoneName, previousAddressRecords);
+                }
+                catch (Exception ex)
+                {
+                    _log.Write(ex);
+                }
 
                 try
                 {
-                    if (addedAddressRecord && (addedAddress is not null))
-                        _dnsServer.AuthZoneManager.DeleteRecord(zoneName, addedAddress.Name, addedAddress.Type, addedAddress.RDATA);
-                    else if (replacedAddressRecord && (previousAddressRecords is not null) && (previousAddressRecords.Count > 0))
-                        _dnsServer.AuthZoneManager.SetRecords(zoneName, previousAddressRecords);
+                    if ((reverseZoneName is not null) && addedPtrRecord && (addedPtr is not null))
+                        _dnsServer.AuthZoneManager.DeleteRecord(reverseZoneName, addedPtr.Name, addedPtr.Type, addedPtr.RDATA);
+                    else if ((reverseZoneName is not null) && replacedPtrRecord && (previousPtrRecords is not null) && (previousPtrRecords.Count > 0))
+                        _dnsServer.AuthZoneManager.SetRecords(reverseZoneName, previousPtrRecords);
                 }
                 catch (Exception ex)
                 {
@@ -1113,12 +1127,13 @@ namespace DnsServerCore.Dhcp
 
                 addedAddressRecord = false;
                 replacedAddressRecord = false;
+                addedPtrRecord = false;
+                replacedPtrRecord = false;
             }
 
             try
             {
                 string reverseDomain = Zone.GetReverseZone(address, 32);
-                string reverseZoneName = null;
 
                 //update forward zone
                 AuthZoneInfo zoneInfo = _dnsServer.AuthZoneManager.FindAuthZoneInfo(scope.DomainName);
@@ -1281,6 +1296,18 @@ namespace DnsServerCore.Dhcp
                     ptrRecordInfo.Comments = $"Via '{scope.Name}' DHCP scope";
 
                     _dnsServer.AuthZoneManager.SetRecord(reverseZoneName, ptrRecord);
+
+                    if (existingPtrRecords.Count == 0)
+                    {
+                        addedPtrRecord = true;
+                        addedPtr = ptrRecord;
+                    }
+                    else
+                    {
+                        replacedPtrRecord = true;
+                        previousPtrRecords = existingPtrRecords;
+                    }
+
                     _log.Write("DHCP Server updated DNS PTR record '" + reverseDomain + "' with domain name '" + domain + "'.");
                 }
                 else
