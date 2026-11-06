@@ -2079,8 +2079,24 @@ namespace DnsServerCore.Dns
                     {
                         if (response.IsSigned)
                         {
-                            //rfc8945 section 5.3
-                            response = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, true, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, null, null, new DnsResourceRecord[] { response.Additional[response.Additional.Count - 1] }, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative };
+                            //rfc8945 section 5.3: sign the truncated message; omit the TSIG when it does not fit
+                            DnsDatagram truncatedResponse = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, true, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, response.RCODE, response.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative };
+
+                            try
+                            {
+                                DnsDatagram signedTruncatedResponse = truncatedResponse.SignResponse(request, _tsigKeys);
+                                sendBufferStream.Position = 0;
+                                signedTruncatedResponse.WriteTo(sendBufferStream);
+                                response = signedTruncatedResponse;
+                            }
+                            catch (NotSupportedException)
+                            {
+                                response = truncatedResponse;
+                            }
+                            catch (InvalidOperationException)
+                            {
+                                response = truncatedResponse;
+                            }
                         }
                         else
                         {
