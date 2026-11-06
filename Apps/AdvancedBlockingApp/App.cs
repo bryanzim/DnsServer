@@ -695,7 +695,11 @@ namespace AdvancedBlocking
                             if (blockedDomain is null)
                                 blockedDomain = question.Name;
 
-                            answer = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _soaRecord)];
+                            if (question.Name.Equals(blockedDomain, StringComparison.OrdinalIgnoreCase))
+                                answer = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _soaRecord)];
+                            else
+                                authority = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _soaRecord)];
+
                             break;
 
                         default:
