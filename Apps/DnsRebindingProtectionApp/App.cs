@@ -189,8 +189,12 @@ namespace DnsRebindingProtection
                     return Task.FromResult(response);
             }
 
-            if (TryDetectRebinding(response.Answer, out List<DnsResourceRecord> protectedAnswer))
-                return Task.FromResult(response.Clone(protectedAnswer));
+            bool answerChanged = TryDetectRebinding(response.Answer, out List<DnsResourceRecord> protectedAnswer);
+            List<DnsResourceRecord> protectedAdditional = null;
+            bool additionalChanged = (response.Additional is not null) && TryDetectRebinding(response.Additional, out protectedAdditional);
+
+            if (answerChanged || additionalChanged)
+                return Task.FromResult(response.Clone(answerChanged ? protectedAnswer : response.Answer, response.Authority, additionalChanged ? protectedAdditional : response.Additional));
 
             return Task.FromResult(response);
         }
