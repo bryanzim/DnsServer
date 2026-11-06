@@ -1781,9 +1781,14 @@ namespace DnsServerCore
                     switch (section)
                     {
                         case PermissionSection.Zones:
-                            //ensure DNS administrators group always has all permissions
+                            //ensure DNS administrators group always has all permissions; cluster zones stay view-only
                             Group dnsAdmins = _dnsWebService._authManager.GetGroup(Group.DNS_ADMINISTRATORS);
-                            groupPermissions[dnsAdmins] = PermissionFlag.ViewModifyDelete;
+                            PermissionFlag dnsAdminPermission = PermissionFlag.ViewModifyDelete;
+
+                            if ((strSubItem is not null) && _dnsWebService._clusterManager.ClusterInitialized && (_dnsWebService._clusterManager.IsClusterPrimaryZone(strSubItem) || _dnsWebService._clusterManager.IsClusterCatalogZone(strSubItem)))
+                                dnsAdminPermission = PermissionFlag.View;
+
+                            groupPermissions[dnsAdmins] = dnsAdminPermission;
                             break;
 
                         case PermissionSection.DhcpServer:
