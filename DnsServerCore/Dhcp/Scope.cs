@@ -558,6 +558,22 @@ namespace DnsServerCore.Dhcp
             return false;
         }
 
+        private void AddClientFullyQualifiedDomainNameOption(List<DhcpOption> options, DhcpMessage request, string reservedLeaseHostName)
+        {
+            if (string.IsNullOrEmpty(_domainName) || (request.ClientFullyQualifiedDomainName is null))
+                return;
+
+            foreach (DhcpOption option in options)
+            {
+                if (option.Code == DhcpOptionCode.ClientFullyQualifiedDomainName)
+                    return;
+            }
+
+            ClientFullyQualifiedDomainNameOption clientFqdnOption = GetClientFullyQualifiedDomainNameOption(request, reservedLeaseHostName);
+            if (clientFqdnOption is not null)
+                options.Add(clientFqdnOption);
+        }
+
         private ClientFullyQualifiedDomainNameOption GetClientFullyQualifiedDomainNameOption(DhcpMessage request, string reservedLeaseHostName)
         {
             ClientFullyQualifiedDomainNameFlags responseFlags = ClientFullyQualifiedDomainNameFlags.None;
@@ -1257,17 +1273,12 @@ namespace DnsServerCore.Dhcp
 
                         case DhcpOptionCode.DomainName:
                             if (!string.IsNullOrEmpty(_domainName))
-                            {
                                 options.Add(new DomainNameOption(_domainName));
 
-                                if (request.ClientFullyQualifiedDomainName != null)
-                                {
-                                    ClientFullyQualifiedDomainNameOption clientFqdnOption = GetClientFullyQualifiedDomainNameOption(request, reservedLeaseHostName);
-                                    if (clientFqdnOption is not null)
-                                        options.Add(clientFqdnOption);
-                                }
-                            }
+                            break;
 
+                        case DhcpOptionCode.ClientFullyQualifiedDomainName:
+                            AddClientFullyQualifiedDomainNameOption(options, request, reservedLeaseHostName);
                             break;
 
                         case DhcpOptionCode.DomainSearch:
@@ -1334,6 +1345,9 @@ namespace DnsServerCore.Dhcp
                             break;
                     }
                 }
+
+                //echo option 81 when the client sent it, even if the parameter list did not ask for the domain name
+                AddClientFullyQualifiedDomainNameOption(options, request, reservedLeaseHostName);
             }
 
             if ((_vendorInfo is not null) && (request.VendorClassIdentifier is not null))
