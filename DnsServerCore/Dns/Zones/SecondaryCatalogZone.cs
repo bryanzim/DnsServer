@@ -285,7 +285,7 @@ namespace DnsServerCore.Dns.Zones
                                     string memberZoneDomain = labels[1] + "." + labels[0] + "." + _name;
                                     DnsResourceRecord prevHistoryRecord = historyRecords[i - 1];
 
-                                    if (prevHistoryRecord.Name.EndsWith(memberZoneDomain, StringComparison.OrdinalIgnoreCase))
+                                    if (prevHistoryRecord.Name.Equals(memberZoneDomain, StringComparison.OrdinalIgnoreCase) || prevHistoryRecord.Name.EndsWith("." + memberZoneDomain, StringComparison.OrdinalIgnoreCase))
                                         break; //skip since its same member zone's custom property
 
                                     IReadOnlyList<DnsResourceRecord> ptrRecords = _dnsServer.AuthZoneManager.GetRecords(_name, memberZoneDomain, DnsResourceRecordType.PTR);
