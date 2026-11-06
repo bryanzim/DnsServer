@@ -918,6 +918,15 @@ namespace DnsServerCore.Dns.Zones
                                 //skip records
                                 continue;
 
+                            case DnsResourceRecordType.RRSIG:
+                            case DnsResourceRecordType.NSEC:
+                            case DnsResourceRecordType.NSEC3:
+                                if (!dnssecOk)
+                                    continue;
+
+                                records.AddRange(entry.Value);
+                                break;
+
                             default:
                                 records.AddRange(entry.Value);
                                 break;
