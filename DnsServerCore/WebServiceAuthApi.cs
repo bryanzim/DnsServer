@@ -1939,7 +1939,7 @@ namespace DnsServerCore
                 if (session.Type != UserSessionType.ClusterApiToken)
                     throw new DnsWebServiceException("Access was denied.");
 
-                User sessionUser = session.User;
+                User sessionUser = _dnsWebService.GetSessionUser(context);
 
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Modify))
                     throw new DnsWebServiceException("Access was denied.");
@@ -1995,7 +1995,7 @@ namespace DnsServerCore
                 if (session.Type != UserSessionType.ClusterApiToken)
                     throw new DnsWebServiceException("Access was denied.");
 
-                User sessionUser = session.User;
+                User sessionUser = _dnsWebService.GetSessionUser(context);
 
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Modify))
                     throw new DnsWebServiceException("Access was denied.");
