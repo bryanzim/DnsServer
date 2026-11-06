@@ -67,25 +67,49 @@ namespace DnsServerCore.Dns.Zones
 
         public static string GetReverseZone(IPAddress address, int subnetMaskWidth)
         {
-            int addressByteCount = Convert.ToInt32(Math.Ceiling(Convert.ToDecimal(subnetMaskWidth) / 8));
             byte[] addressBytes = address.GetAddressBytes();
             string reverseZone = "";
 
             switch (address.AddressFamily)
             {
                 case AddressFamily.InterNetwork:
-                    for (int i = 0; i < addressByteCount; i++)
+                {
+                    int octetCount = subnetMaskWidth / 8;
+
+                    if (((subnetMaskWidth % 8) != 0) && (octetCount < 4))
+                        octetCount++;
+
+                    //a partial last octet is host bits (/25 through /31); use the enclosing octet zone
+                    if (((subnetMaskWidth % 8) != 0) && (octetCount == 4) && (subnetMaskWidth < 32))
+                        octetCount = 3;
+
+                    for (int i = 0; i < octetCount; i++)
                         reverseZone = addressBytes[i] + "." + reverseZone;
 
                     reverseZone += "in-addr.arpa";
                     break;
+                }
 
                 case AddressFamily.InterNetworkV6:
-                    for (int i = 0; i < addressByteCount; i++)
-                        reverseZone = (addressBytes[i] & 0x0F).ToString("x") + "." + (addressBytes[i] >> 4).ToString("x") + "." + reverseZone;
+                {
+                    int nibbleCount = subnetMaskWidth / 4;
+
+                    if (((subnetMaskWidth % 4) != 0) && (nibbleCount < 32))
+                        nibbleCount++;
+
+                    //a partial final nibble is host bits; use the enclosing nibble zone
+                    if (((subnetMaskWidth % 4) != 0) && (nibbleCount == 32) && (subnetMaskWidth < 128))
+                        nibbleCount = 31;
+
+                    for (int n = 0; n < nibbleCount; n++)
+                    {
+                        int nibble = ((n % 2) == 0) ? (addressBytes[n / 2] >> 4) : (addressBytes[n / 2] & 0x0F);
+                        reverseZone = nibble.ToString("x") + "." + reverseZone;
+                    }
 
                     reverseZone += "ip6.arpa";
                     break;
+                }
 
                 default:
                     throw new NotSupportedException("AddressFamily not supported.");
