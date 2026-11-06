@@ -434,10 +434,106 @@ namespace DnsServerCore.Dns.Trees
                 return new AuthZoneNode(null, zone);
             });
 
-            if (ReferenceEquals(zoneNode.ApexZone, zone))
-                return true; //added successfully
+            bool added;
 
-            return zoneNode.TryAdd(zone);
+            if (ReferenceEquals(zoneNode.ApexZone, zone))
+                added = true; //added successfully
+            else
+                added = zoneNode.TryAdd(zone);
+
+            if (added)
+                AdoptRecordsBelow(zone);
+
+            return added;
+        }
+
+        private void AdoptRecordsBelow(ApexZone apexZone)
+        {
+            //names that already exist strictly below this apex were stored for the parent; they are in this zone now
+            if (!TryGet(apexZone.Name, out AuthZoneNode _, out Node currentNode))
+                return;
+
+            Node current = currentNode;
+            byte[] currentKey = ConvertToByteKey(apexZone.Name);
+
+            do
+            {
+                current = GetNextSubDomainZoneNode(currentKey, current, currentNode.Depth);
+                if (current is null)
+                    break;
+
+                NodeValue value = current.Value;
+                if (value is null)
+                    break;
+
+                currentKey = value.Key;
+
+                AuthZoneNode authZoneNode = value.Value;
+                if (authZoneNode is null)
+                    continue;
+
+                SubDomainZone existing = authZoneNode.ParentSideZone;
+                if (existing is null)
+                    continue;
+
+                if ((existing.AuthoritativeZone is not null) && existing.AuthoritativeZone.Name.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if ((apexZone.Name.Length > 0) && !existing.Name.EndsWith("." + apexZone.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                SubDomainZone adopted = CreateSubDomainZone(apexZone, existing.Name);
+                if (adopted is null)
+                    continue;
+
+                List<DnsResourceRecord> records = new List<DnsResourceRecord>();
+                existing.ListAllRecords(records);
+
+                Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> recordsByType = new Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>();
+
+                foreach (DnsResourceRecord record in records)
+                {
+                    if (!recordsByType.TryGetValue(record.Type, out List<DnsResourceRecord> rrset))
+                    {
+                        rrset = new List<DnsResourceRecord>();
+                        recordsByType.Add(record.Type, rrset);
+                    }
+
+                    rrset.Add(record);
+                }
+
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrset in recordsByType)
+                    adopted.LoadRecords(rrset.Key, rrset.Value);
+
+                adopted.AutoUpdateState();
+
+                if (!authZoneNode.TryRemove(out SubDomainZone removed))
+                    continue;
+
+                if (!authZoneNode.TryAdd(adopted))
+                    authZoneNode.TryAdd(removed);
+            }
+            while (true);
+        }
+
+        private static SubDomainZone CreateSubDomainZone(ApexZone apexZone, string domain)
+        {
+            if (apexZone is PrimaryZone primaryZone)
+                return new PrimarySubDomainZone(primaryZone, domain);
+
+            if (apexZone is SecondaryCatalogZone secondaryCatalogZone)
+                return new SecondaryCatalogSubDomainZone(secondaryCatalogZone, domain);
+
+            if (apexZone is SecondaryZone secondaryZone)
+                return new SecondarySubDomainZone(secondaryZone, domain);
+
+            if (apexZone is CatalogZone catalogZone)
+                return new CatalogSubDomainZone(catalogZone, domain);
+
+            if (apexZone is ForwarderZone forwarderZone)
+                return new ForwarderSubDomainZone(forwarderZone, domain);
+
+            return null;
         }
 
         public bool TryGet(string zoneName, string domain, out AuthZone authZone)
