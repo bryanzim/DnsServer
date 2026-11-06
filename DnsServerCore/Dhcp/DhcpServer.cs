@@ -1088,9 +1088,29 @@ namespace DnsServerCore.Dhcp
             if (!domain.EndsWith("." + scope.DomainName, StringComparison.OrdinalIgnoreCase))
                 return; //domain does not end with scope domain name
 
+            string zoneName = null;
+            bool addedAddressRecord = false;
+            DnsResourceRecord addedAddress = null;
+
+            void RollbackAddedAddress()
+            {
+                if (!addedAddressRecord || (addedAddress is null) || (zoneName is null))
+                    return;
+
+                try
+                {
+                    _dnsServer.AuthZoneManager.DeleteRecord(zoneName, addedAddress.Name, addedAddress.Type, addedAddress.RDATA);
+                }
+                catch (Exception ex)
+                {
+                    _log.Write(ex);
+                }
+
+                addedAddressRecord = false;
+            }
+
             try
             {
-                string zoneName = null;
                 string reverseDomain = Zone.GetReverseZone(address, 32);
                 string reverseZoneName = null;
 
@@ -1168,6 +1188,8 @@ namespace DnsServerCore.Dhcp
                     aRecordInfo.Comments = $"Via '{scope.Name}' DHCP scope";
 
                     _dnsServer.AuthZoneManager.SetRecord(zoneName, aRecord);
+                    addedAddressRecord = true;
+                    addedAddress = aRecord;
                     _log.Write("DHCP Server updated DNS A record '" + domain + "' with IP address [" + address.ToString() + "].");
                 }
                 else
@@ -1194,6 +1216,7 @@ namespace DnsServerCore.Dhcp
                     if (reverseZoneInfo is null)
                     {
                         _log.Write("DHCP Server failed to create DNS primary zone '" + reverseZone + "'.");
+                        RollbackAddedAddress();
                         return;
                     }
 
@@ -1217,6 +1240,7 @@ namespace DnsServerCore.Dhcp
                     if (reverseZoneInfo is null)
                     {
                         _log.Write("DHCP Server failed to create DNS primary zone '" + reverseZone + "'.");
+                        RollbackAddedAddress();
                         return;
                     }
 
@@ -1266,6 +1290,7 @@ namespace DnsServerCore.Dhcp
             }
             catch (Exception ex)
             {
+                RollbackAddedAddress();
                 _log.Write(ex);
             }
         }
