@@ -331,7 +331,12 @@ namespace DnsServerCore.Dns.Zones
                     updatedMembersIndex.Remove(removedMember.Key);
 
                 foreach (KeyValuePair<string, string> addedMember in membersToAdd)
+                {
+                    if (_dnsServer.AuthZoneManager.GetApexZone(addedMember.Key) is null)
+                        continue; //create failed; the retry will provision it
+
                     updatedMembersIndex[addedMember.Key] = addedMember.Value; //replace a label kept from before this transfer
+                }
 
                 _membersIndex = updatedMembersIndex;
             }
@@ -542,6 +547,12 @@ namespace DnsServerCore.Dns.Zones
             //wait for all zones to be added
             foreach (Task task in tasks)
                 await task;
+
+            foreach (KeyValuePair<string, string> addMember in membersToAdd)
+            {
+                if (_dnsServer.AuthZoneManager.GetApexZone(addMember.Key) is null)
+                    RequestMemberProvisionRetry();
+            }
         }
 
         private void UpdateGlobalAllowQueryProperty()

@@ -67,6 +67,7 @@ namespace DnsServerCore.Dns.Zones
         bool _validationFailed;
 
         bool _resync;
+        bool _memberProvisionPending;
 
         #endregion
 
@@ -303,13 +304,24 @@ namespace DnsServerCore.Dns.Zones
                             _syncFailed = false;
                             _expiry = DateTime.UtcNow.AddSeconds(result.Item2);
                             _isExpired = false;
-                            _resync = false;
                             _dnsServer.AuthZoneManager.SaveZoneFile(_name);
 
-                            if (_validationFailed)
-                                ResetRefreshTimer(Math.Max(latestSoa.Retry, _dnsServer.AuthZoneManager.MinSoaRetry) * 1000); //zone validation failed, set timer for retry
+                            if (_memberProvisionPending)
+                            {
+                                //a catalog member was not created; transfer again so it can be provisioned
+                                _memberProvisionPending = false;
+                                _resync = true;
+                                ResetRefreshTimer(Math.Max(latestSoa.Retry, _dnsServer.AuthZoneManager.MinSoaRetry) * 1000);
+                            }
                             else
-                                ResetRefreshTimer(Math.Max(latestSoa.Refresh, _dnsServer.AuthZoneManager.MinSoaRefresh) * 1000); //zone refreshed; set timer for refresh
+                            {
+                                _resync = false;
+
+                                if (_validationFailed)
+                                    ResetRefreshTimer(Math.Max(latestSoa.Retry, _dnsServer.AuthZoneManager.MinSoaRetry) * 1000); //zone validation failed, set timer for retry
+                                else
+                                    ResetRefreshTimer(Math.Max(latestSoa.Refresh, _dnsServer.AuthZoneManager.MinSoaRefresh) * 1000); //zone refreshed; set timer for refresh
+                            }
 
                             return;
                         }
@@ -885,6 +897,11 @@ namespace DnsServerCore.Dns.Zones
                 _refreshTimerTriggered = true;
                 _refreshTimer?.Change(refreshInterval, Timeout.Infinite);
             }
+        }
+
+        protected void RequestMemberProvisionRetry()
+        {
+            _memberProvisionPending = true;
         }
 
         public void TriggerResync()
