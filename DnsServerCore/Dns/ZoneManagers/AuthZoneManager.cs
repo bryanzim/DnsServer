@@ -3256,6 +3256,9 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             foreach (DnsResourceRecord glueRecord in unchangedGlueRecords)
             {
+                if (deletedGlueRecords.Contains(glueRecord))
+                    continue; //a later difference removed this address
+
                 if (NameServerRecordWasReplaced(glueRecord.Name, deletedRecords, addedRecords) && !addedGlueRecords.Contains(glueRecord))
                     addedGlueRecords.Add(glueRecord);
             }
