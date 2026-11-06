@@ -218,6 +218,9 @@ namespace QueryLogsMySql
                         if (await BulkInsertLogsAsync(logs, sb))
                             logs.Clear();
                     }
+
+                    if (!_disposed && (logs.Count > 0))
+                        await BulkInsertLogsAsync(logs, sb);
                 }
                 catch (Exception ex)
                 {

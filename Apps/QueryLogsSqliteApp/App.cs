@@ -238,6 +238,9 @@ namespace QueryLogsSqlite
                         if (await BulkInsertLogsAsync(logs))
                             logs.Clear();
                     }
+
+                    if (!_disposed && (logs.Count > 0))
+                        await BulkInsertLogsAsync(logs);
                 }
                 catch (Exception ex)
                 {
