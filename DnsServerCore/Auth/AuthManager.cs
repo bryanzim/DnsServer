@@ -783,6 +783,7 @@ namespace DnsServerCore.Auth
                     switch (existingSession.Value.Type)
                     {
                         case UserSessionType.ApiToken:
+                        case UserSessionType.ClusterApiToken:
                             if (!sessions.ContainsKey(existingSession.Key))
                                 _sessions.TryRemove(existingSession);
 

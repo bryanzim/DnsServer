@@ -65,6 +65,7 @@ namespace DnsServerCore.Cluster
         DateTime _upSince;
         DateTime _lastSeen;
         HttpApiClient _apiClient;
+        string _apiClientToken;
         readonly object _apiClientLock = new object();
 
         Timer _heartbeatTimer;
@@ -195,27 +196,40 @@ namespace DnsServerCore.Cluster
                 if (_disposed)
                     throw new ObjectDisposedException(nameof(ClusterNode));
 
+                string currentClusterApiToken = null;
+                bool cachedTokenStillValid = false;
+
+                foreach (UserSession session in _clusterManager.DnsWebService.AuthManager.Sessions)
+                {
+                    if (session.Type != UserSessionType.ClusterApiToken)
+                        continue;
+
+                    if (currentClusterApiToken is null)
+                        currentClusterApiToken = session.Token;
+
+                    if ((_apiClientToken is not null) && session.Token.Equals(_apiClientToken, StringComparison.Ordinal))
+                        cachedTokenStillValid = true;
+                }
+
+                if (currentClusterApiToken is null)
+                    throw new InvalidOperationException("No API token was found for the Cluster domain.");
+
+                if ((_apiClient is not null) && !cachedTokenStillValid)
+                {
+                    HttpApiClient staleClient = _apiClient;
+                    _apiClient = null;
+                    _apiClientToken = null;
+                    ReleaseApiClient(staleClient);
+                }
+
                 if (_apiClient is null)
                 {
                     HttpApiClient apiClient = new HttpApiClient(_url, _clusterManager.DnsWebService.DnsServer.Proxy, _clusterManager.DnsWebService.DnsServer.IPv6Mode, false, new InternalDnsClient(_clusterManager.DnsWebService.DnsServer, this));
 
-                    UserSession clusterApiToken = null;
-
-                    foreach (UserSession session in _clusterManager.DnsWebService.AuthManager.Sessions)
-                    {
-                        if (session.Type == UserSessionType.ClusterApiToken)
-                        {
-                            clusterApiToken = session;
-                            break;
-                        }
-                    }
-
-                    if (clusterApiToken is null)
-                        throw new InvalidOperationException("No API token was found for the Cluster domain.");
-
-                    apiClient.UseApiToken(clusterApiToken.Token);
+                    apiClient.UseApiToken(currentClusterApiToken);
 
                     _apiClient = apiClient;
+                    _apiClientToken = currentClusterApiToken;
                 }
 
                 return _apiClient;
@@ -368,6 +382,7 @@ namespace DnsServerCore.Cluster
             {
                 apiClient = _apiClient;
                 _apiClient = null;
+                _apiClientToken = null;
             }
 
             if (apiClient is not null)
