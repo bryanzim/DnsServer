@@ -977,7 +977,8 @@ namespace DnsServerCore.Dhcp
                     if ((existingReservedLease is not null) && existingReservedLease.Address.Equals(existingLease.Address))
                         return existingLease; //return existing reserved lease
 
-                    //reserved lease address was changed; proceed to offer new lease
+                    //reserved lease was removed or its address changed; drop the old lease and its DNS name
+                    ReleaseLease(existingLease);
                 }
                 else
                 {
