@@ -217,8 +217,8 @@ namespace DnsServerCore.Dns.Zones
                     continue;
                 }
 
-                if (historyRecord.Name.Length == _name.Length)
-                    continue; //skip apex records
+                if (!historyRecord.Name.EndsWith("." + _name, StringComparison.OrdinalIgnoreCase))
+                    continue; //skip the apex and out-of-zone glue carried in the difference
 
                 string subdomain = historyRecord.Name.Substring(0, historyRecord.Name.Length - _name.Length - 1).ToLowerInvariant();
                 string[] labels = subdomain.Split('.');
