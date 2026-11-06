@@ -1044,15 +1044,15 @@ namespace DnsServerCore.Dhcp
             Lease reservedLease = GetReservedLease(request);
             if (reservedLease != null)
             {
-                if (IsAddressDeclined(reservedLease.Address))
-                {
-                    _log.Write("DHCP Server failed to offer reserved IP address [" + reservedLease.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the address was declined.");
-
-                    return null;
-                }
-
                 if (IsAddressInRange(reservedLease.Address))
                 {
+                    if (IsAddressDeclined(reservedLease.Address))
+                    {
+                        _log.Write("DHCP Server failed to offer reserved IP address [" + reservedLease.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the address was declined.");
+
+                        return null;
+                    }
+
                     Lease reservedOffer = new Lease(LeaseType.Reserved, clientIdentifier, null, request.ClientHardwareAddress, reservedLease.Address, null, GetLeaseTime());
                     _offers[clientIdentifier] = reservedOffer;
                     return reservedOffer;
