@@ -993,6 +993,11 @@ namespace DnsServerCore.Dhcp
             return !string.IsNullOrWhiteSpace(GetReservedLeaseHostName(lease));
         }
 
+        internal bool BlockLocallyAdministeredMacAddress(DhcpMessage request)
+        {
+            return _blockLocallyAdministeredMacAddresses && (request.HardwareAddressType == DhcpMessageHardwareAddressType.Ethernet) && ((request.ClientHardwareAddress[0] & 0x02) > 0);
+        }
+
         internal async Task<Lease> GetOfferAsync(DhcpMessage request)
         {
             ClientIdentifierOption clientIdentifier = request.GetClientIdentifier(_ignoreClientIdentifierOption);
@@ -1030,11 +1035,12 @@ namespace DnsServerCore.Dhcp
                             //the address is reserved, or this client has a reservation for a different address
                             ReleaseLease(existingLease);
                         }
-                        else if (_blockLocallyAdministeredMacAddresses && (request.HardwareAddressType == DhcpMessageHardwareAddressType.Ethernet) && ((request.ClientHardwareAddress[0] & 0x02) > 0))
+                        else if (BlockLocallyAdministeredMacAddress(request))
                         {
                             _log.Write("DHCP Server failed to offer IP address to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the scope does not allow locally administered MAC addresses.");
 
-                            //prevent renewing existing dynamic lease
+                            //drop the dynamic lease so a later renew cannot extend it
+                            ReleaseLease(existingLease);
                             return null;
                         }
                         else
@@ -1073,14 +1079,11 @@ namespace DnsServerCore.Dhcp
                 return null;
             }
 
-            if (_blockLocallyAdministeredMacAddresses)
+            if (BlockLocallyAdministeredMacAddress(request))
             {
-                if ((request.HardwareAddressType == DhcpMessageHardwareAddressType.Ethernet) && ((request.ClientHardwareAddress[0] & 0x02) > 0))
-                {
-                    _log.Write("DHCP Server failed to offer IP address to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the scope does not allow locally administered MAC addresses.");
+                _log.Write("DHCP Server failed to offer IP address to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the scope does not allow locally administered MAC addresses.");
 
-                    return null;
-                }
+                return null;
             }
 
             Lease dummyOffer = new Lease(LeaseType.None, null, null, null, null, null, 0);

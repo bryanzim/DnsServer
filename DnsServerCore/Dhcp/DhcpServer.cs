@@ -473,6 +473,15 @@ namespace DnsServerCore.Dhcp
                             return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
                         }
 
+                        if ((leaseOffer.Type == LeaseType.Dynamic) && scope.BlockLocallyAdministeredMacAddress(request))
+                        {
+                            //a renew never asks for a new offer, so drop the dynamic lease here
+                            scope.ReleaseLease(leaseOffer);
+                            scope.RemoveOffer(leaseOffer);
+                            //send nak
+                            return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                        }
+
                         Lease reservedLease = scope.GetReservedLease(request);
                         if (reservedLease == null)
                         {
