@@ -4723,8 +4723,17 @@ namespace DnsServerCore.Dns
 
                 if ((blockedAnswer is not null) && (blockedAnswer.Count > 0) && (request.Question.Count > 0))
                 {
-                    //address blocking owns the sinkhole by the alias target; the client asked for the original name
+                    // a direct query uses the question name; a CNAME chase owns the address by the alias name
                     string queryName = request.Question[0].Name;
+
+                    foreach (DnsResourceRecord aliasRecord in response.Answer)
+                    {
+                        if ((aliasRecord.Type == DnsResourceRecordType.ANAME) || (aliasRecord.Type == DnsResourceRecordType.ALIAS))
+                        {
+                            queryName = aliasRecord.Name;
+                            break;
+                        }
+                    }
                     DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedAnswer.Count];
 
                     for (int i = 0; i < blockedAnswer.Count; i++)
