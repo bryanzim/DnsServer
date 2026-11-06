@@ -1414,9 +1414,11 @@ namespace AdvancedBlocking
 
                             firstWord = PopWord(ref line);
 
+                            List<string> hostnames = new List<string>();
+
                             if (line.Length == 0)
                             {
-                                hostname = firstWord;
+                                hostnames.Add(firstWord);
                             }
                             else
                             {
@@ -1424,43 +1426,56 @@ namespace AdvancedBlocking
 
                                 if ((secondWord.Length == 0) || secondWord.StartsWith('#'))
                                 {
-                                    hostname = firstWord;
+                                    hostnames.Add(firstWord);
                                 }
                                 else
                                 {
                                     if (!IPAddress.TryParse(firstWord, out _))
                                         continue; //first word must be an IP address for using second word as hostname as per hosts file format
 
-                                    hostname = secondWord;
+                                    hostnames.Add(secondWord);
+
+                                    while (line.Length > 0)
+                                    {
+                                        string extraWord = PopWord(ref line);
+
+                                        if ((extraWord.Length == 0) || extraWord.StartsWith('#'))
+                                            break;
+
+                                        hostnames.Add(extraWord);
+                                    }
                                 }
                             }
 
-                            hostname = hostname.Trim('.').ToLowerInvariant();
-
-                            switch (hostname)
+                            foreach (string rawHostname in hostnames)
                             {
-                                case "":
-                                case "localhost":
-                                case "localhost.localdomain":
-                                case "local":
-                                case "broadcasthost":
-                                case "ip6-localhost":
-                                case "ip6-loopback":
-                                case "ip6-localnet":
-                                case "ip6-mcastprefix":
-                                case "ip6-allnodes":
-                                case "ip6-allrouters":
-                                case "ip6-allhosts":
-                                    continue; //skip these hostnames
+                                hostname = rawHostname.Trim('.').ToLowerInvariant();
+
+                                switch (hostname)
+                                {
+                                    case "":
+                                    case "localhost":
+                                    case "localhost.localdomain":
+                                    case "local":
+                                    case "broadcasthost":
+                                    case "ip6-localhost":
+                                    case "ip6-loopback":
+                                    case "ip6-localnet":
+                                    case "ip6-mcastprefix":
+                                    case "ip6-allnodes":
+                                    case "ip6-allrouters":
+                                    case "ip6-allhosts":
+                                        continue; //skip these hostnames
+                                }
+
+                                if (!DnsClient.IsDomainNameValid(hostname))
+                                    continue;
+
+                                if (IPAddress.TryParse(hostname, out _))
+                                    continue; //skip line when hostname is IP address
+
+                                domains.Enqueue(hostname);
                             }
-
-                            if (!DnsClient.IsDomainNameValid(hostname))
-                                continue;
-
-                            if (IPAddress.TryParse(hostname, out _))
-                                continue; //skip line when hostname is IP address
-
-                            domains.Enqueue(hostname);
                         }
                     }
 
