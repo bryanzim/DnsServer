@@ -289,6 +289,28 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         #region private
 
+        private static bool IsAuthenticData(IReadOnlyList<DnsResourceRecord> records)
+        {
+            if ((records is null) || (records.Count == 0))
+                return false;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (record.DnssecStatus != DnssecStatus.Secure)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsAuthenticResponse(IReadOnlyList<DnsResourceRecord> answer, IReadOnlyList<DnsResourceRecord> authority)
+        {
+            if ((answer is not null) && (answer.Count > 0))
+                return IsAuthenticData(answer);
+
+            return IsAuthenticData(authority);
+        }
+
         private void CacheMaintenanceTimerCallback(object state)
         {
             try
@@ -1008,17 +1030,14 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                         if (dnssecOk)
                         {
-                            bool authenticData;
+                            bool authenticData = false;
 
-                            switch (dnsSpecialCacheRecord.Type)
+                            if (dnsSpecialCacheRecord.Type == DnsSpecialCacheRecordType.NegativeCache)
                             {
-                                case DnsSpecialCacheRecordType.NegativeCache:
-                                    authenticData = true;
-                                    break;
-
-                                default:
-                                    authenticData = false;
-                                    break;
+                                if (request.CheckingDisabled)
+                                    authenticData = IsAuthenticResponse(dnsSpecialCacheRecord.OriginalAnswer, dnsSpecialCacheRecord.OriginalAuthority);
+                                else
+                                    authenticData = IsAuthenticResponse(dnsSpecialCacheRecord.Answer, dnsSpecialCacheRecord.Authority);
                             }
 
                             if (request.CheckingDisabled)
@@ -1141,7 +1160,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                     }
 
-                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && (answer.Count > 0) && (answer[0].DnssecStatus == DnssecStatus.Secure), request.CheckingDisabled, DnsResponseCode.NoError, request.Question, answer, authority, additional, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
+                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && IsAuthenticData(answer), request.CheckingDisabled, DnsResponseCode.NoError, request.Question, answer, authority, additional, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
                 }
             }
 
@@ -1197,7 +1216,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                             options = [new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, new EDnsExtendedDnsErrorOptionData(EDnsExtendedDnsErrorCode.StaleAnswer, record.Name.ToLowerInvariant() + " " + record.Type.ToString() + " " + record.Class.ToString()))];
                     }
 
-                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && (answer.Count > 0) && (answer[0].DnssecStatus == DnssecStatus.Secure), request.CheckingDisabled, rCode, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
+                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && IsAuthenticData(answer), request.CheckingDisabled, rCode, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
                 }
             }
 
@@ -1236,7 +1255,7 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                                 IReadOnlyList<DnsResourceRecord> additional = GetAdditionalRecords(closestAuthority, serveStale, true, eDnsClientSubnet, advancedForwardingClientSubnet);
 
-                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, closestAuthority[0].DnssecStatus == DnssecStatus.Secure, request.CheckingDisabled, DnsResponseCode.NoError, request.Question, null, closestAuthority, additional);
+                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, IsAuthenticData(closestAuthority), request.CheckingDisabled, DnsResponseCode.NoError, request.Question, null, closestAuthority, additional);
                             }
                         }
                         else
