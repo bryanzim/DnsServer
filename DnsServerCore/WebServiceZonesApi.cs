@@ -3483,7 +3483,27 @@ namespace DnsServerCore
                     throw new DnsWebServiceException("Access was denied.");
 
                 if (request.TryGetQueryOrForm("disabled", bool.Parse, out bool disabled))
+                {
+                    if (disabled)
+                    {
+                        switch (zoneInfo.Type)
+                        {
+                            case AuthZoneType.Primary:
+                                if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
+                                    throw new DnsWebServiceException("Cannot disable the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
+
+                                break;
+
+                            case AuthZoneType.Catalog:
+                                if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
+                                    throw new DnsWebServiceException("Cannot disable the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
+
+                                break;
+                        }
+                    }
+
                     zoneInfo.Disabled = disabled;
+                }
 
                 //catalog zone override options
                 switch (zoneInfo.Type)
