@@ -849,7 +849,27 @@ namespace DnsServerCore.Dns.Zones
                     //serialize current RRSet records
                     List<CanonicallySerializedResourceRecord> serializedResourceRecords = new List<CanonicallySerializedResourceRecord>(rrSet.Value.Count);
 
+                    List<DnsResourceRecord> uniqueRecords = new List<DnsResourceRecord>(rrSet.Value.Count);
+
                     foreach (DnsResourceRecord record in rrSet.Value)
+                    {
+                        //RFC 8976: equal owner, class, type, and RDATA are one instance even when the TTL differs
+                        bool duplicateRData = false;
+
+                        foreach (DnsResourceRecord existingRecord in uniqueRecords)
+                        {
+                            if (record.RDATA.Equals(existingRecord.RDATA))
+                            {
+                                duplicateRData = true;
+                                break;
+                            }
+                        }
+
+                        if (!duplicateRData)
+                            uniqueRecords.Add(record);
+                    }
+
+                    foreach (DnsResourceRecord record in uniqueRecords)
                         serializedResourceRecords.Add(CanonicallySerializedResourceRecord.Create(record.Name, record.Type, record.Class, record.OriginalTtlValue, record.RDATA, rrBuffer));
 
                     //Canonical RR Ordering by sorting RDATA portion of the canonical form of each RR
