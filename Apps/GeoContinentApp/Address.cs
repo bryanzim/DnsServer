@@ -200,12 +200,12 @@ namespace GeoContinent
 
                             if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(requestECS.Address, out IspResponse? csIsp) && (csIsp.Network is not null))
                             {
-                                scopePrefixLength = (byte)csIsp.Network.PrefixLength;
+                                scopePrefixLength = (byte)Math.Min(csIsp.Network.PrefixLength, requestECS.SourcePrefixLength);
                                 asn = csIsp.AutonomousSystemNumber;
                             }
                             else if ((_maxMind.AsnReader is not null) && _maxMind.AsnReader.TryAsn(requestECS.Address, out AsnResponse? csAsn) && (csAsn.Network is not null))
                             {
-                                scopePrefixLength = (byte)csAsn.Network.PrefixLength;
+                                scopePrefixLength = (byte)Math.Min(csAsn.Network.PrefixLength, requestECS.SourcePrefixLength);
                                 asn = csAsn.AutonomousSystemNumber;
                             }
                             else
