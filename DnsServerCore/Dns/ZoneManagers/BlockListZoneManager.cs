@@ -969,7 +969,11 @@ namespace DnsServerCore.Dns.ZoneManagers
                         break;
 
                     case DnsResourceRecordType.SOA:
-                        answer = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _dnsServer.BlockingAnswerTtl, _soaRecord)];
+                        if (question.Name.Equals(blockedDomain, StringComparison.OrdinalIgnoreCase))
+                            answer = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _dnsServer.BlockingAnswerTtl, _soaRecord)];
+                        else
+                            authority = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _dnsServer.BlockingAnswerTtl, _soaRecord)];
+
                         break;
 
                     default:
