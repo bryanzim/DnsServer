@@ -185,6 +185,8 @@ namespace Dns64
                     soaTtl = 600;
             }
 
+            bool synthesizedAAAA = false;
+
             foreach (DnsResourceRecord answer in newResponse.Answer)
             {
                 if (answer.Type != DnsResourceRecordType.A)
@@ -209,7 +211,11 @@ namespace Dns64
                 IPAddress ipv6Address = ipv4Address.MapToIPv6(dns64Prefix);
 
                 newAnswer.Add(new DnsResourceRecord(answer.Name, DnsResourceRecordType.AAAA, answer.Class, Math.Min(answer.TTL, soaTtl), new DnsAAAARecordData(ipv6Address)));
+                synthesizedAAAA = true;
             }
+
+            if (!synthesizedAAAA)
+                return response;
 
             //RFC 6147 section 5.5: a synthesized AAAA is not DNSSEC secure, so the AD bit from the NODATA answer must not be copied
             return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, newResponse.RCODE, response.Question, newAnswer, newResponse.Authority, newResponse.Additional) { Tag = response.Tag };
