@@ -201,6 +201,7 @@ namespace DnsServerCore.Dns.Zones
             bool isAddHistoryRecord = false;
             bool updateGlobalAllowQueryProperty = false;
             bool updateGlobalAllowTransferAndTsigKeyNamesProperties = false;
+            bool updateGlobalPrimariesProperty = false;
             Dictionary<string, object> membersToRemove = new Dictionary<string, object>();
             Dictionary<string, string> membersToAdd = new Dictionary<string, string>();
             Dictionary<string, string> membersToUpdate = new Dictionary<string, string>();
@@ -237,6 +238,10 @@ namespace DnsServerCore.Dns.Zones
                                 case "allow-transfer":
                                 case "transfer-tsig-key-names":
                                     updateGlobalAllowTransferAndTsigKeyNamesProperties = true;
+                                    break;
+
+                                case "primaries":
+                                    updateGlobalPrimariesProperty = true;
                                     break;
                             }
                         }
@@ -301,6 +306,15 @@ namespace DnsServerCore.Dns.Zones
 
             if (updateGlobalAllowTransferAndTsigKeyNamesProperties)
                 UpdateGlobalAllowTransferAndTsigKeyNamesProperties();
+
+            if (updateGlobalPrimariesProperty)
+            {
+                foreach (KeyValuePair<string, string> memberEntry in _membersIndex)
+                {
+                    if (!membersToRemove.ContainsKey(memberEntry.Key))
+                        membersToUpdate.TryAdd(memberEntry.Key, memberEntry.Value);
+                }
+            }
 
             if ((membersToRemove.Count > 0) || (membersToAdd.Count > 0))
                 await AddAndRemoveMemberZonesAsync(membersToRemove, membersToAdd);
