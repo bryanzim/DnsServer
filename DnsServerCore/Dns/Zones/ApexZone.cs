@@ -556,6 +556,9 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
+        protected virtual void OnRecordsExpired()
+        { }
+
         private void RecordExpiryTimerCallback(object state)
         {
             _recordExpiryTimerRunning = false;
@@ -594,7 +597,10 @@ namespace DnsServerCore.Dns.Zones
                 }
 
                 if (recordsDeleted)
+                {
+                    OnRecordsExpired();
                     _dnsServer.AuthZoneManager.SaveZoneFile(_name);
+                }
             }
             catch (Exception ex)
             {
