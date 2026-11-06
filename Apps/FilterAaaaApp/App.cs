@@ -208,7 +208,8 @@ namespace FilterAaaa
             if (!filterDomain)
                 return response;
 
-            DnsDatagram aResponse = await _dnsServer!.DirectQueryAsync(new DnsQuestionRecord(qname, DnsResourceRecordType.A, DnsClass.IN), 2000);
+            DnsDatagram aRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(qname, DnsResourceRecordType.A, DnsClass.IN)]);
+            DnsDatagram aResponse = await _dnsServer!.DirectQueryAsync(aRequest, remoteEP, 2000);
 
             if (aResponse.RCODE != DnsResponseCode.NoError)
                 return response;
