@@ -3831,6 +3831,9 @@ namespace DnsServerCore
                         {
                             string oldCatalogZoneName = zoneInfo.CatalogZoneName;
 
+                            if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name) && !catalogZoneName.Equals(oldCatalogZoneName ?? "", StringComparison.OrdinalIgnoreCase))
+                                throw new DnsWebServiceException("Cannot change the Catalog zone for the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
+
                             if (catalogZoneName.Length == 0)
                             {
                                 if (!string.IsNullOrEmpty(oldCatalogZoneName))
