@@ -833,6 +833,14 @@ namespace DnsServerCore.Cluster
 
             bool secondaryNodeDomainChanged = !secondaryNode.Name.Equals(secondaryNodeUrl.Host, StringComparison.OrdinalIgnoreCase);
 
+            string secondaryNodeDomain = secondaryNodeUrl.Host.ToLowerInvariant();
+
+            if (!secondaryNodeDomain.EndsWith("." + _clusterDomain, StringComparison.OrdinalIgnoreCase))
+                throw new DnsServerException("Failed to update Secondary node: the Secondary node domain name must be a subdomain of the Cluster domain name.");
+
+            //reject an invalid URL before the node's zone records are removed
+            secondaryNode.ValidateNodeUpdate(secondaryNodeUrl, secondaryNodeIpAddresses);
+
             //find existing record TTL values
             FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
 

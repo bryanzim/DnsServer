@@ -300,7 +300,7 @@ namespace DnsServerCore.Cluster
             _url = url;
         }
 
-        public void UpdateNode(Uri url, IReadOnlyList<IPAddress> ipAddresses)
+        public void ValidateNodeUpdate(Uri url, IReadOnlyList<IPAddress> ipAddresses)
         {
             if (url.OriginalString.Length > 255)
                 throw new ArgumentException("Cluster node URL length must be less than 255 bytes.", nameof(url));
@@ -310,6 +310,11 @@ namespace DnsServerCore.Cluster
 
             if (ipAddresses.Count > 10)
                 throw new ArgumentException("Cluster node cannot have more than 10 IP addresses.", nameof(ipAddresses));
+        }
+
+        public void UpdateNode(Uri url, IReadOnlyList<IPAddress> ipAddresses)
+        {
+            ValidateNodeUpdate(url, ipAddresses);
 
             bool changed = false;
 
