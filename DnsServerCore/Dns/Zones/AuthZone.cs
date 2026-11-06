@@ -371,6 +371,7 @@ namespace DnsServerCore.Dns.Zones
                     else
                     {
                         DnsResourceRecord updatedExistingRecord = new DnsResourceRecord(existingRecord.Name, existingRecord.Type, existingRecord.Class, record.OriginalTtlValue, existingRecord.RDATA);
+                        updatedExistingRecord.CopyRecordInfoFrom(existingRecord);
                         updatedRecords.Add(updatedExistingRecord);
 
                         added.Add(updatedExistingRecord);
