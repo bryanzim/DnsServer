@@ -2642,6 +2642,9 @@ namespace DnsServerCore
                 if (actingUser is null)
                     throw new DnsWebServiceException("No such user exists: " + actingUsername);
 
+                if (actingUser.Disabled)
+                    throw new DnsWebServiceException("Access was denied.");
+
                 return actingUser;
             }
             else
