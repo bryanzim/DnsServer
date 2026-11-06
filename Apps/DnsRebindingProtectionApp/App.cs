@@ -88,16 +88,10 @@ namespace DnsRebindingProtection
             switch (record.Type)
             {
                 case DnsResourceRecordType.A:
-                    if (IsPrivateDomain(record.Name))
-                        return false;
-
                     address = (record.RDATA as DnsARecordData).Address;
                     break;
 
                 case DnsResourceRecordType.AAAA:
-                    if (IsPrivateDomain(record.Name))
-                        return false;
-
                     address = (record.RDATA as DnsAAAARecordData).Address;
                     break;
 
@@ -183,6 +177,9 @@ namespace DnsRebindingProtection
 
             if ((response.Tag is not null) && (response.Tag is DnsServerResponseType responseType) && (responseType == DnsServerResponseType.Blocked))
                 return Task.FromResult(response); //allow blocked responses
+
+            if ((request.Question.Count > 0) && IsPrivateDomain(request.Question[0].Name))
+                return Task.FromResult(response); //the name that was queried is allowed to resolve privately
 
             IPAddress remoteIP = remoteEP.Address;
 
