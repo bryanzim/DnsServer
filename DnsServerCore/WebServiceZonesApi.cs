@@ -4887,7 +4887,7 @@ namespace DnsServerCore
                                 if (expiryTtl > 0)
                                     throw new DnsWebServiceException("Cannot set automatic expiry TTL for NS records for Primary zones that are members of the Cluster Catalog zone. These NS records are automatically managed by the Cluster and only their TTL values can be updated.");
 
-                                if (!nameServer.Equals(newNameServer, StringComparison.OrdinalIgnoreCase))
+                                if (!nameServer.Equals(newNameServer, StringComparison.OrdinalIgnoreCase) || !domain.Equals(newDomain, StringComparison.OrdinalIgnoreCase))
                                     throw new DnsWebServiceException("Cannot update NS records for Primary zones that are members of the Cluster Catalog zone. These NS records are automatically managed by the Cluster and only their TTL values can be updated.");
 
                                 if (!string.IsNullOrEmpty(glueAddresses))
