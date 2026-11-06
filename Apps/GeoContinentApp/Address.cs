@@ -72,30 +72,34 @@ namespace GeoContinent
 
         internal static bool TryMatchGroup(JsonElement jsonAppRecordData, long? asn, string? continentCode, out JsonElement jsonContinent)
         {
-            foreach (KeyValuePair<string, List<string>> group in _groups!)
+            if (asn is not null)
             {
-                if (jsonAppRecordData.TryGetProperty(group.Key, out jsonContinent))
+                string asnName = "AS" + asn;
+
+                foreach (KeyValuePair<string, List<string>> group in _groups!)
                 {
-                    List<string> groupEntries = group.Value;
+                    if (!jsonAppRecordData.TryGetProperty(group.Key, out jsonContinent))
+                        continue;
 
-                    if (asn is not null)
+                    foreach (string groupEntry in group.Value)
                     {
-                        string asnName = "AS" + asn;
-
-                        foreach (string groupEntry in groupEntries)
-                        {
-                            if (groupEntry.Equals(asnName, StringComparison.Ordinal))
-                                return true; //found ASN match
-                        }
+                        if (groupEntry.Equals(asnName, StringComparison.Ordinal))
+                            return true; //found ASN match
                     }
+                }
+            }
 
-                    if (continentCode is not null)
+            if (continentCode is not null)
+            {
+                foreach (KeyValuePair<string, List<string>> group in _groups!)
+                {
+                    if (!jsonAppRecordData.TryGetProperty(group.Key, out jsonContinent))
+                        continue;
+
+                    foreach (string groupEntry in group.Value)
                     {
-                        foreach (string groupEntry in groupEntries)
-                        {
-                            if (groupEntry.Equals(continentCode, StringComparison.Ordinal))
-                                return true; //found continent code match
-                        }
+                        if (groupEntry.Equals(continentCode, StringComparison.Ordinal))
+                            return true; //found continent code match
                     }
                 }
             }
