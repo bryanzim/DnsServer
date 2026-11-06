@@ -1323,6 +1323,15 @@ namespace DnsServerCore.Auth
 
             username = username.ToLowerInvariant();
 
+            if (ssoIdentifier is not null)
+            {
+                foreach (KeyValuePair<string, User> existingUser in _users)
+                {
+                    if (ssoIdentifier.Equals(existingUser.Value.SsoIdentifier, StringComparison.Ordinal) && (existingUser.Value.Type == UserType.RemoteSSO))
+                        throw new DnsWebServiceException("SSO user already exists: " + ssoIdentifier);
+                }
+            }
+
             User user = User.CreateSsoUser(displayName, username, ssoIdentifier);
 
             if (_users.TryAdd(username, user))
