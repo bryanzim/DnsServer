@@ -4460,6 +4460,24 @@ namespace DnsServerCore.Dns
             }
 
             ConcurrentQueue<Task<IReadOnlyList<DnsResourceRecord>>> resolveQueue = new ConcurrentQueue<Task<IReadOnlyList<DnsResourceRecord>>>(); //concurrent: ResolveANAMEAsync tasks enqueue from thread pool threads while this method dequeues
+            bool queryIsAllowed = await IsAllowedAsync(request, remoteEP, protocol);
+            DnsDatagram blockedAliasResponse = null;
+
+            async Task<DnsDatagram> GetBlockedAliasResponseAsync(string domain)
+            {
+                if (queryIsAllowed || string.IsNullOrEmpty(domain) || !DnsClient.IsDomainNameValid(domain))
+                    return null;
+
+                DnsDatagram aliasRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(domain, request.Question[0].Type, request.Question[0].Class)], null, null, null, _udpPayloadSize);
+
+                if (request.Metadata is not null)
+                    aliasRequest.SetMetadata(request.Metadata.NameServer);
+
+                if (await IsAllowedAsync(aliasRequest, remoteEP, protocol))
+                    return null; //alias target is in an allowed zone
+
+                return await ProcessBlockedQueryAsync(aliasRequest, remoteEP, protocol);
+            }
 
             async Task<IReadOnlyList<DnsResourceRecord>> ResolveANAMEAsync(DnsResourceRecord anameRR, int queryCount = 0)
             {
@@ -4469,6 +4487,13 @@ namespace DnsServerCore.Dns
 
                 do
                 {
+                    DnsDatagram blockedResponse = await GetBlockedAliasResponseAsync(lastDomain);
+                    if (blockedResponse is not null)
+                    {
+                        blockedAliasResponse = blockedResponse;
+                        return Array.Empty<DnsResourceRecord>();
+                    }
+
                     DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, request.CheckingDisabled, DnsResponseCode.NoError, new DnsQuestionRecord[] { new DnsQuestionRecord(lastDomain, request.Question[0].Type, request.Question[0].Class) }, null, null, null, _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None, eDnsClientSubnetOption);
 
                     //query authoritative zone first
@@ -4606,6 +4631,9 @@ namespace DnsServerCore.Dns
                 else if (records.Count > 0)
                     responseAnswer.AddRange(records);
             }
+
+            if (blockedAliasResponse is not null)
+                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, blockedAliasResponse.RCODE, request.Question, blockedAliasResponse.Answer, blockedAliasResponse.Authority, blockedAliasResponse.Additional) { Tag = blockedAliasResponse.Tag };
 
             DnsResponseCode rcode = DnsResponseCode.NoError;
             IReadOnlyList<DnsResourceRecord> authority = null;
