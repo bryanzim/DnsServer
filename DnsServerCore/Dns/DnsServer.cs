@@ -4694,7 +4694,26 @@ namespace DnsServerCore.Dns
             }
 
             if (blockedAliasResponse is not null)
-                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, blockedAliasResponse.RCODE, request.Question, blockedAliasResponse.Answer, blockedAliasResponse.Authority, blockedAliasResponse.Additional) { Tag = blockedAliasResponse.Tag };
+            {
+                IReadOnlyList<DnsResourceRecord> blockedAnswer = blockedAliasResponse.Answer;
+
+                if ((blockedAnswer is not null) && (blockedAnswer.Count > 0) && (request.Question.Count > 0))
+                {
+                    //address blocking owns the sinkhole by the alias target; the client asked for the original name
+                    string queryName = request.Question[0].Name;
+                    DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedAnswer.Count];
+
+                    for (int i = 0; i < blockedAnswer.Count; i++)
+                    {
+                        DnsResourceRecord answer = blockedAnswer[i];
+                        rewrittenAnswer[i] = new DnsResourceRecord(queryName, answer.Type, answer.Class, answer.TTL, answer.RDATA);
+                    }
+
+                    blockedAnswer = rewrittenAnswer;
+                }
+
+                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, blockedAliasResponse.RCODE, request.Question, blockedAnswer, blockedAliasResponse.Authority, blockedAliasResponse.Additional) { Tag = blockedAliasResponse.Tag };
+            }
 
             DnsResponseCode rcode = DnsResponseCode.NoError;
             IReadOnlyList<DnsResourceRecord> authority = null;
