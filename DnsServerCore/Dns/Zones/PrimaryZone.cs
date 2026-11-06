@@ -924,8 +924,8 @@ namespace DnsServerCore.Dns.Zones
                     while (true)
                     {
                         currentOwnerName = AuthZoneManager.GetParentZone(currentOwnerName);
-                        if (currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
-                            break;
+                        if ((currentOwnerName is null) || currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
+                            break; //GetParentZone returns null for the root
 
                         //add partial NSEC3 record for ENT
                         AuthZone entZone = new PrimarySubDomainZone(null, currentOwnerName); //dummy empty non-terminal (ENT) sub domain object
@@ -1996,8 +1996,8 @@ namespace DnsServerCore.Dns.Zones
                         while (true)
                         {
                             currentOwnerName = AuthZoneManager.GetParentZone(currentOwnerName);
-                            if (currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
-                                break;
+                            if ((currentOwnerName is null) || currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
+                                break; //GetParentZone returns null for the root
 
                             //update NSEC3 rrset for current owner name
                             AuthZone entZone = _dnsServer.AuthZoneManager.GetAuthZone(_name, currentOwnerName);
