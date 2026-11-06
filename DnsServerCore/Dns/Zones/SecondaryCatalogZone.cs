@@ -312,7 +312,7 @@ namespace DnsServerCore.Dns.Zones
                     updatedMembersIndex.Remove(removedMember.Key);
 
                 foreach (KeyValuePair<string, string> addedMember in membersToAdd)
-                    updatedMembersIndex.TryAdd(addedMember.Key, addedMember.Value);
+                    updatedMembersIndex[addedMember.Key] = addedMember.Value; //replace a label kept from before this transfer
 
                 _membersIndex = updatedMembersIndex;
             }
