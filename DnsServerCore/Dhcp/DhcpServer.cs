@@ -1091,15 +1091,20 @@ namespace DnsServerCore.Dhcp
             string zoneName = null;
             bool addedAddressRecord = false;
             DnsResourceRecord addedAddress = null;
+            bool replacedAddressRecord = false;
+            IReadOnlyList<DnsResourceRecord> previousAddressRecords = null;
 
             void RollbackAddedAddress()
             {
-                if (!addedAddressRecord || (addedAddress is null) || (zoneName is null))
+                if (zoneName is null)
                     return;
 
                 try
                 {
-                    _dnsServer.AuthZoneManager.DeleteRecord(zoneName, addedAddress.Name, addedAddress.Type, addedAddress.RDATA);
+                    if (addedAddressRecord && (addedAddress is not null))
+                        _dnsServer.AuthZoneManager.DeleteRecord(zoneName, addedAddress.Name, addedAddress.Type, addedAddress.RDATA);
+                    else if (replacedAddressRecord && (previousAddressRecords is not null) && (previousAddressRecords.Count > 0))
+                        _dnsServer.AuthZoneManager.SetRecords(zoneName, previousAddressRecords);
                 }
                 catch (Exception ex)
                 {
@@ -1107,6 +1112,7 @@ namespace DnsServerCore.Dhcp
                 }
 
                 addedAddressRecord = false;
+                replacedAddressRecord = false;
             }
 
             try
@@ -1188,8 +1194,18 @@ namespace DnsServerCore.Dhcp
                     aRecordInfo.Comments = $"Via '{scope.Name}' DHCP scope";
 
                     _dnsServer.AuthZoneManager.SetRecord(zoneName, aRecord);
-                    addedAddressRecord = true;
-                    addedAddress = aRecord;
+
+                    if (existingARecords.Count == 0)
+                    {
+                        addedAddressRecord = true;
+                        addedAddress = aRecord;
+                    }
+                    else
+                    {
+                        replacedAddressRecord = true;
+                        previousAddressRecords = existingARecords;
+                    }
+
                     _log.Write("DHCP Server updated DNS A record '" + domain + "' with IP address [" + address.ToString() + "].");
                 }
                 else
