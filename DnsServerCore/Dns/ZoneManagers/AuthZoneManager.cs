@@ -340,6 +340,12 @@ namespace DnsServerCore.Dns.ZoneManagers
                 {
                     ValidateIfDomainBelongsToZone(apexZone.Name, zoneEntry.Key);
 
+                    if (IsNameInChildZone(apexZone.Name, zoneEntry.Key))
+                        continue;
+
+                    if (_root.TryGet(apexZone.Name, zoneEntry.Key, out AuthZone existingZone) && (existingZone is SubDomainZone existingSubDomainZone) && !existingSubDomainZone.AuthoritativeZone.Name.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
+                        continue; //name was already loaded for another zone
+
                     AuthZone authZone = GetOrAddSubDomainZone(apexZone.Name, zoneEntry.Key);
 
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
