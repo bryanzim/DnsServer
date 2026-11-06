@@ -2204,6 +2204,9 @@ namespace DnsServerCore.Cluster
 
         public ClusterNode UpdateSelfNodeIPAddresses(IReadOnlyList<IPAddress> ipAddresses)
         {
+            if (ipAddresses.Count > 10)
+                throw new ArgumentException("Cluster node cannot have more than 10 IP addresses.", nameof(ipAddresses));
+
             ClusterNode selfNode = GetSelfNode();
 
             switch (selfNode.Type)
