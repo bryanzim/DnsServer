@@ -2266,6 +2266,10 @@ namespace DnsServerCore.Cluster
             switch (selfNode.Type)
             {
                 case ClusterNodeType.Primary:
+                    Uri newNodeUrl = new Uri($"https://{_dnsWebService.DnsServer.ServerDomain}:{_dnsWebService.WebServiceTlsPort}/");
+                    if (newNodeUrl.OriginalString.Length > 255)
+                        throw new ArgumentException("Cluster node URL length must be less than 255 bytes.", nameof(newNodeUrl));
+
                     //find existing record TTL values
                     FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
 

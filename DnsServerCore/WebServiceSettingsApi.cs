@@ -501,6 +501,17 @@ namespace DnsServerCore
 
                         if (IPAddress.TryParse(dnsServerDomain, out _))
                             throw new DnsServerException("Invalid domain name [" + dnsServerDomain + "]: IP address cannot be used for DNS server domain name.");
+
+                        if (_dnsWebService._clusterManager.ClusterInitialized)
+                        {
+                            int tlsPort = _dnsWebService.WebServiceTlsPort;
+                            if (request.TryGetQueryOrForm("webServiceTlsPort", int.Parse, out int webServiceTlsPort))
+                                tlsPort = webServiceTlsPort;
+
+                            Uri nodeUrl = new Uri($"https://{dnsServerDomain}:{tlsPort}/");
+                            if (nodeUrl.OriginalString.Length > 255)
+                                throw new ArgumentException("Cluster node URL length must be less than 255 bytes.", nameof(dnsServerDomain));
+                        }
                     }
                 }
 
