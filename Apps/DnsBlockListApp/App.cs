@@ -74,7 +74,8 @@ namespace DnsBlockList
             string[] parts = qName.Split('.');
             string lastPart = parts[parts.Length - 1];
 
-            if (byte.TryParse(lastPart, out _) || byte.TryParse(lastPart, NumberStyles.HexNumber, null, out _))
+            //only a reversed IPv4 address or an IPv6 nibble name is an address query; a hex label such as "de" is a domain
+            if (((parts.Length == 4) && byte.TryParse(lastPart, out _)) || ((parts.Length == 32) && byte.TryParse(lastPart, NumberStyles.HexNumber, null, out _)))
             {
                 switch (parts.Length)
                 {
