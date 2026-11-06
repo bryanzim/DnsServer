@@ -2270,7 +2270,10 @@ namespace DnsServerCore
 
         private static ClusterNodeType GetClusterNodeTypeForPath(string path)
         {
-            switch (path)
+            if (string.IsNullOrEmpty(path))
+                return ClusterNodeType.Unknown;
+
+            switch (path.ToLowerInvariant())
             {
                 case "/api/user/createToken":
                 case "/api/user/changePassword":
