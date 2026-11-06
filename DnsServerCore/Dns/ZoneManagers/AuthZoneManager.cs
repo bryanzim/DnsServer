@@ -854,19 +854,16 @@ namespace DnsServerCore.Dns.ZoneManagers
             if ((apexZone is null) || zoneName.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
                 return false;
 
+            if (domain.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
+                return false; //NS and DS at the cut belong to the parent
+
             if (!_root.TryGet(zoneName, out _))
                 return false;
 
-            string subdomain;
-
             if (zoneName.Length == 0)
-                subdomain = domain;
-            else if (domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
-                subdomain = domain.Substring(0, domain.Length - zoneName.Length - 1);
-            else
-                return false;
+                return true;
 
-            return subdomain.Contains('.', StringComparison.Ordinal);
+            return domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase);
         }
 
         internal AuthZone GetOrAddSubDomainZone(string zoneName, string domain)
@@ -881,18 +878,29 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                 if (!zoneName.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
                 {
+                    bool nameIsChildApex = domain.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase);
+
                     if (!_root.TryGet(zoneName, out apexZone))
                         throw new DnsServerException("No such zone was found for: " + domain);
 
-                    string subdomain;
+                    if (!nameIsChildApex)
+                    {
+                        string subdomain;
 
-                    if (zoneName.Length == 0)
-                        subdomain = domain;
-                    else
-                        subdomain = domain.Substring(0, domain.Length - zoneName.Length - 1);
+                        if (zoneName.Length == 0)
+                            subdomain = domain;
+                        else if (domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
+                            subdomain = domain.Substring(0, domain.Length - zoneName.Length - 1);
+                        else
+                            throw new DnsServerException("The domain name '" + domain + "' does not belong to the zone: " + zoneName);
 
-                    if (subdomain.Contains('.', StringComparison.Ordinal))
-                        throw new DnsServerException("The domain name '" + domain + "' does not belong to the zone: " + zoneName); //domain name falls into child zone's bailiwick
+                        if (subdomain.Contains('.', StringComparison.Ordinal))
+                            throw new DnsServerException("The domain name '" + domain + "' does not belong to the zone: " + zoneName); //domain name falls into child zone's bailiwick
+                    }
+                    else if ((zoneName.Length > 0) && !domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new DnsServerException("The domain name '" + domain + "' does not belong to the zone: " + zoneName);
+                    }
                 }
 
                 if (apexZone is PrimaryZone primaryZone)
