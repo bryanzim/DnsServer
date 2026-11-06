@@ -569,6 +569,7 @@ namespace DnsServerCore
 
                     string displayName = principal.FindFirst("name")?.Value
                         ?? principal.FindFirst(ClaimTypes.Name)?.Value
+                        ?? principal.FindFirst("given_name")?.Value
                         ?? principal.FindFirst(ClaimTypes.GivenName)?.Value;
 
                     List<string> remoteGroups = new List<string>();
@@ -688,8 +689,8 @@ namespace DnsServerCore
                             }
                         }
 
-                        //sync display name
-                        if (!user.DisplayName.Equals(displayName, StringComparison.Ordinal))
+                        //sync display name only when the provider sent one
+                        if (!string.IsNullOrWhiteSpace(displayName) && !user.DisplayName.Equals(displayName, StringComparison.Ordinal))
                             user.DisplayName = displayName;
                     }
 
