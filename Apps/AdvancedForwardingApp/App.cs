@@ -333,10 +333,26 @@ namespace AdvancedForwarding
 
                 if (_adguardUpstreams is not null)
                 {
+                    IReadOnlyList<DnsForwarderRecordData>? selectedRecords = null;
+                    string? lastMatchedDomain = null;
+
                     foreach (KeyValuePair<string, AdGuardUpstream> adguardUpstream in _adguardUpstreams)
                     {
-                        if (adguardUpstream.Value.TryGetForwarderRecords(domain, out forwarderRecords, out matchedDomain))
-                            return true;
+                        if (adguardUpstream.Value.TryGetForwarderRecords(domain, out IReadOnlyList<DnsForwarderRecordData>? fwdRecords, out string? currentMatchedDomain))
+                        {
+                            if ((lastMatchedDomain is null) || (currentMatchedDomain.Length > lastMatchedDomain.Length) || ((currentMatchedDomain.Length == lastMatchedDomain.Length) && lastMatchedDomain.StartsWith("*.", StringComparison.Ordinal)))
+                            {
+                                lastMatchedDomain = currentMatchedDomain;
+                                selectedRecords = fwdRecords;
+                            }
+                        }
+                    }
+
+                    if (selectedRecords is not null)
+                    {
+                        forwarderRecords = selectedRecords;
+                        matchedDomain = lastMatchedDomain;
+                        return true;
                     }
                 }
 
