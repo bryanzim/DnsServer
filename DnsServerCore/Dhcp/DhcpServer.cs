@@ -670,7 +670,7 @@ namespace DnsServerCore.Dhcp
                                     clientDomainName = GetSanitizedHostName(request.HostName.HostName) + "." + scope.DomainName;
                             }
 
-                            if (!string.IsNullOrWhiteSpace(clientDomainName))
+                            if (!string.IsNullOrWhiteSpace(clientDomainName) && scope.IsAddressInRange(request.ClientIpAddress))
                                 AddDnsEntries(scope, clientDomainName, request.ClientIpAddress, false);
                         }
 
