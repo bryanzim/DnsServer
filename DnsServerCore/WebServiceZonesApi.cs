@@ -1985,6 +1985,9 @@ namespace DnsServerCore
 
                     //import records
                     _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, importRecords, false, false, false);
+
+                    if ((type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.CatalogZoneName))
+                        _dnsWebService._clusterManager.UpdateClusterRecordsFor(zoneInfo); //the import deletes apex NS and a cluster file is not allowed to contain them
                 }
 
                 Utf8JsonWriter jsonWriter = context.GetCurrentJsonWriter();
@@ -2054,6 +2057,9 @@ namespace DnsServerCore
                 }
 
                 _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, records, overwriteRecords, overwriteZone, overwriteSoaSerial);
+
+                if ((zoneInfo.Type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.CatalogZoneName))
+                    _dnsWebService._clusterManager.UpdateClusterRecordsFor(zoneInfo); //overwrite removes the cluster NS records when the file has none
 
                 _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] Total " + records.Count + " record(s) were imported successfully into " + zoneInfo.TypeName + " zone: " + zoneInfo.DisplayName);
             }
