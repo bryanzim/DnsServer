@@ -3185,6 +3185,10 @@ namespace DnsServerCore.Dns
                 case AuthZoneType.Forwarder:
                     //update
                     {
+                        //refuse before prerequisites so a denied client cannot learn which names exist
+                        if (!await IsUpdatePermittedAsync())
+                            return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.Refused, request.Question) { Tag = DnsServerResponseType.Authoritative };
+
                         //process prerequisite section
                         {
                             Dictionary<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> temp = new Dictionary<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>();
@@ -3301,10 +3305,6 @@ namespace DnsServerCore.Dns
                                 }
                             }
                         }
-
-                        //check for permissions
-                        if (!await IsUpdatePermittedAsync())
-                            return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.Refused, request.Question) { Tag = DnsServerResponseType.Authoritative };
 
                         //process update section
                         {
