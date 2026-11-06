@@ -4,7 +4,7 @@
 MinVersion=6.1sp1
 
 // remove next line if you only deploy 32-bit binaries and dependencies
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64os
 
 // dependency installation requires ready page and ready memo to be enabled (default behaviour)
 DisableReadyPage=no
