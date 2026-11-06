@@ -3881,6 +3881,20 @@ namespace DnsServerCore.Dns.ZoneManagers
                 }
 
                 DnsResourceRecord lastRR = records[records.Count - 1];
+
+                if (dnssecOk)
+                {
+                    //skip trailing RRSIG records appended for DNSSEC OK queries to find the actual last RR
+                    for (int i = records.Count - 1; i >= 0; i--)
+                    {
+                        if (records[i].Type != DnsResourceRecordType.RRSIG)
+                        {
+                            lastRR = records[i];
+                            break;
+                        }
+                    }
+                }
+
                 if (lastRR.Type != DnsResourceRecordType.CNAME)
                 {
                     answerRecords.AddRange(records);
