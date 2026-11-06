@@ -631,6 +631,27 @@ namespace DnsServerCore.Dns.Zones
 
         #region versioning
 
+        private bool IsGlueRecordStillServed(DnsResourceRecord glueRecord)
+        {
+            foreach (AuthZone zone in _dnsServer.AuthZoneManager.GetApexZoneWithSubDomainZones(_name))
+            {
+                foreach (DnsResourceRecord nsRecord in zone.GetRecords(DnsResourceRecordType.NS))
+                {
+                    IReadOnlyList<DnsResourceRecord> glueRecords = nsRecord.GetAuthNSRecordInfo().GlueRecords;
+                    if (glueRecords is null)
+                        continue;
+
+                    foreach (DnsResourceRecord servedGlueRecord in glueRecords)
+                    {
+                        if (servedGlueRecord.Equals(glueRecord))
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         internal virtual void CommitAndIncrementSerial(IReadOnlyList<DnsResourceRecord> deletedRecords = null, IReadOnlyList<DnsResourceRecord> addedRecords = null)
         {
             _lastModified = DateTime.UtcNow;
@@ -717,7 +738,13 @@ namespace DnsServerCore.Dns.Zones
                         {
                             IReadOnlyList<DnsResourceRecord> glueRecords = deletedRecord.GetAuthNSRecordInfo().GlueRecords;
                             if (glueRecords is not null)
-                                _zoneHistory.AddRange(glueRecords);
+                            {
+                                foreach (DnsResourceRecord glueRecord in glueRecords)
+                                {
+                                    if (!IsGlueRecordStillServed(glueRecord))
+                                        _zoneHistory.Add(glueRecord);
+                                }
+                            }
                         }
                     }
                 }

@@ -109,7 +109,7 @@ namespace DnsServerCore.Dns.ResourceRecords
                 {
                     case DnsResourceRecordType.A:
                     case DnsResourceRecordType.AAAA:
-                        if (addedGlueRecord.Name.Equals(domain, StringComparison.OrdinalIgnoreCase))
+                        if (addedGlueRecord.Name.Equals(domain, StringComparison.OrdinalIgnoreCase) && !updatedGlueRecords.Contains(addedGlueRecord))
                         {
                             updatedGlueRecords.Add(addedGlueRecord);
                             updated = true;
