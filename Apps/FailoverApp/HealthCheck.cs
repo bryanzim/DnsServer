@@ -292,6 +292,11 @@ namespace Failover
             }
         }
 
+        public bool IsAddressUnderMaintenance(IPAddress address)
+        {
+            return _service.IsAddressUnderMaintenance(address);
+        }
+
         public async Task<HealthCheckResponse> IsHealthyAsync(IPAddress address, Uri? healthCheckUrl)
         {
             if (_service.IsAddressUnderMaintenance(address))

@@ -65,6 +65,11 @@ namespace Failover
                     {
                         HealthCheckResponse healthCheckResponse = await _healthCheck.IsHealthyAsync(_address, healthCheckUrl);
 
+                        if (_healthCheck.IsAddressUnderMaintenance(_address))
+                            healthCheckResponse = new HealthCheckResponse(HealthStatus.Maintenance);
+                        else if (healthCheckResponse.Status == HealthStatus.Maintenance)
+                            healthCheckResponse = new HealthCheckResponse(HealthStatus.Unknown);
+
                         bool statusChanged = false;
                         bool maintenance = false;
 
