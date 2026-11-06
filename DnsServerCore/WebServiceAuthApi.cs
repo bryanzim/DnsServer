@@ -1544,7 +1544,18 @@ namespace DnsServerCore
                         }
 
                         if (group.Name.Equals("administrators", StringComparison.OrdinalIgnoreCase))
+                        {
                             users[sessionUser.Username] = sessionUser; //ensure current admin user is member of administrators group to avoid self lockout
+
+                            if (_dnsWebService._clusterManager.ClusterInitialized)
+                            {
+                                foreach (UserSession userSession in _dnsWebService._authManager.Sessions)
+                                {
+                                    if (userSession.Type == UserSessionType.ClusterApiToken)
+                                        users[userSession.User.Username] = userSession.User;
+                                }
+                            }
+                        }
 
                         _dnsWebService._authManager.SyncGroupMembers(group, users);
                     }
