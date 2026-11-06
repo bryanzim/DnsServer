@@ -1027,33 +1027,28 @@ namespace DnsServerCore.Dns.Trees
                 }
             }
 
-            if (isWildcardAnswer)
-            {
-                //add proof of cover for the domain to prove non-existence (wildcard)
+            //add closest encloser proof
+            string hashedClosestEncloser = nsec3Param.ComputeHashedOwnerNameBase32HexString(closestEncloser) + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : "");
+
+            AuthZone closestEncloserZone = GetAuthZone(closestAuthority.Name, hashedClosestEncloser);
+            if (closestEncloserZone is null)
+                throw new InvalidOperationException();
+
+            IReadOnlyList<DnsResourceRecord> closestEncloserProofRecords = closestEncloserZone.QueryRecords(DnsResourceRecordType.NSEC3, true);
+            if (closestEncloserProofRecords.Count == 0)
+                throw new InvalidOperationException();
+
+            nsec3Records.AddRange(closestEncloserProofRecords);
+
+            DnsResourceRecord closestEncloserProofRecord = closestEncloserProofRecords[0];
+            DnsNSEC3RecordData closestEncloserProof = closestEncloserProofRecord.RDATA as DnsNSEC3RecordData;
+
+            //add proof of cover for the next closer name
+            if (!DnsNSECRecordData.IsDomainCovered(closestEncloserProofRecord.Name, closestEncloserProof.NextHashedOwnerName + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : ""), hashedNextCloserName))
                 NSec3AddProofOfCoverFor(hashedNextCloserName, closestAuthority.Name, nsec3Records);
-            }
-            else
+
+            if (!isWildcardAnswer)
             {
-                //add closest encloser proof
-                string hashedClosestEncloser = nsec3Param.ComputeHashedOwnerNameBase32HexString(closestEncloser) + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : "");
-
-                AuthZone nsec3Zone = GetAuthZone(closestAuthority.Name, hashedClosestEncloser);
-                if (nsec3Zone is null)
-                    throw new InvalidOperationException();
-
-                IReadOnlyList<DnsResourceRecord> closestEncloserProofRecords = nsec3Zone.QueryRecords(DnsResourceRecordType.NSEC3, true);
-                if (closestEncloserProofRecords.Count == 0)
-                    throw new InvalidOperationException();
-
-                nsec3Records.AddRange(closestEncloserProofRecords);
-
-                DnsResourceRecord closestEncloserProofRecord = closestEncloserProofRecords[0];
-                DnsNSEC3RecordData closestEncloserProof = closestEncloserProofRecord.RDATA as DnsNSEC3RecordData;
-
-                //add proof of cover for the next closer name
-                if (!DnsNSECRecordData.IsDomainCovered(closestEncloserProofRecord.Name, closestEncloserProof.NextHashedOwnerName + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : ""), hashedNextCloserName))
-                    NSec3AddProofOfCoverFor(hashedNextCloserName, closestAuthority.Name, nsec3Records);
-
                 //add proof of cover to prove that a wildcard expansion was not possible
                 string wildcardDomain = closestEncloser.Length > 0 ? "*." + closestEncloser : "*";
                 string hashedWildcardDomainName = nsec3Param.ComputeHashedOwnerNameBase32HexString(wildcardDomain) + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : "");
