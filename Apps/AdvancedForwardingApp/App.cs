@@ -426,36 +426,49 @@ namespace AdvancedForwarding
 
             #region static
 
-            public static bool TryGetForwarderRecords(string domain, IReadOnlyList<Forwarding> forwardings, [MaybeNullWhen(false)] out IReadOnlyList<DnsForwarderRecordData> forwarderRecords, [MaybeNullWhen(false)] out string matchedDomain)
+            public static bool TryGetForwarderRecords(string domain, IReadOnlyList<Forwarding> forwardings, [MaybeNullWhen(false)] out IReadOnlyList<DnsForwarderRecordData> forwarderRecords, [MaybeNullWhen(false)] out string matchedDomain, bool skipForwarderDomain = false)
             {
-                if (forwardings.Count == 1)
-                {
-                    if (forwardings[0].TryGetForwarderRecords(domain, out forwarderRecords, out matchedDomain))
-                        return true;
-                }
-                else
-                {
-                    forwarderRecords = null;
-                    string? lastMatchedDomain = null;
+                forwarderRecords = null;
+                matchedDomain = null;
+                string? lastMatchedDomain = null;
 
-                    foreach (Forwarding forwarding in forwardings)
+                foreach (Forwarding forwarding in forwardings)
+                {
+                    if (!forwarding.TryGetForwarderRecords(domain, out IReadOnlyList<DnsForwarderRecordData>? fwdRecords, out string? currentMatchedDomain))
+                        continue;
+
+                    if (skipForwarderDomain)
                     {
-                        if (forwarding.TryGetForwarderRecords(domain, out IReadOnlyList<DnsForwarderRecordData>? fwdRecords, out string? currentMatchedDomain))
-                        {
-                            if ((lastMatchedDomain is null) || (currentMatchedDomain.Length > lastMatchedDomain.Length) || ((currentMatchedDomain.Length == lastMatchedDomain.Length) && lastMatchedDomain.StartsWith("*.", StringComparison.Ordinal)))
-                            {
-                                lastMatchedDomain = currentMatchedDomain;
-                                forwarderRecords = fwdRecords;
-                            }
-                        }
+                        fwdRecords = ExcludeForwarderDomain(domain, fwdRecords);
+                        if (fwdRecords.Count == 0)
+                            continue;
                     }
 
-                    matchedDomain = lastMatchedDomain;
-                    return forwarderRecords is not null;
+                    if ((lastMatchedDomain is null) || (currentMatchedDomain.Length > lastMatchedDomain.Length) || ((currentMatchedDomain.Length == lastMatchedDomain.Length) && lastMatchedDomain.StartsWith("*.", StringComparison.Ordinal)))
+                    {
+                        lastMatchedDomain = currentMatchedDomain;
+                        forwarderRecords = fwdRecords;
+                    }
                 }
 
-                forwarderRecords = null;
-                return false;
+                matchedDomain = lastMatchedDomain;
+                return forwarderRecords is not null;
+            }
+
+            public static IReadOnlyList<DnsForwarderRecordData> ExcludeForwarderDomain(string domain, IReadOnlyList<DnsForwarderRecordData> forwarderRecords)
+            {
+                if (!IsForwarderDomain(domain, forwarderRecords))
+                    return forwarderRecords;
+
+                List<DnsForwarderRecordData> usableForwarderRecords = new List<DnsForwarderRecordData>(forwarderRecords.Count);
+
+                foreach (DnsForwarderRecordData forwarderRecord in forwarderRecords)
+                {
+                    if (!domain.Equals(forwarderRecord.NameServer.Host, StringComparison.OrdinalIgnoreCase))
+                        usableForwarderRecords.Add(forwarderRecord);
+                }
+
+                return usableForwarderRecords;
             }
 
             public static bool IsForwarderDomain(string domain, IReadOnlyList<Forwarding> forwardings)
@@ -799,31 +812,18 @@ namespace AdvancedForwarding
 
             public bool TryGetForwarderRecords(string domain, [MaybeNullWhen(false)] out IReadOnlyList<DnsForwarderRecordData> forwarderRecords, [MaybeNullWhen(false)] out string matchedDomain)
             {
-                if ((_forwardings is not null) && (_forwardings.Count > 0))
-                {
-                    if (Forwarding.IsForwarderDomain(domain, _forwardings))
-                    {
-                        matchedDomain = null;
-                        forwarderRecords = null;
-                        return false;
-                    }
-
-                    if (Forwarding.TryGetForwarderRecords(domain, _forwardings, out forwarderRecords, out matchedDomain))
-                        return true;
-                }
+                if ((_forwardings is not null) && (_forwardings.Count > 0) && Forwarding.TryGetForwarderRecords(domain, _forwardings, out forwarderRecords, out matchedDomain, true))
+                    return true;
 
                 if ((_defaultForwarderRecords is not null) && (_defaultForwarderRecords.Count > 0))
                 {
-                    if (Forwarding.IsForwarderDomain(domain, _defaultForwarderRecords))
+                    IReadOnlyList<DnsForwarderRecordData> usableDefaultForwarders = Forwarding.ExcludeForwarderDomain(domain, _defaultForwarderRecords);
+                    if (usableDefaultForwarders.Count > 0)
                     {
-                        matchedDomain = null;
-                        forwarderRecords = null;
-                        return false;
+                        matchedDomain = "*";
+                        forwarderRecords = usableDefaultForwarders;
+                        return true;
                     }
-
-                    matchedDomain = "*";
-                    forwarderRecords = _defaultForwarderRecords;
-                    return true;
                 }
 
                 matchedDomain = null;
