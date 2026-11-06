@@ -5041,22 +5041,35 @@ namespace DnsServerCore.Dns
 
                 if ((record.Type == DnsResourceRecordType.ANAME) || (record.Type == DnsResourceRecordType.ALIAS))
                 {
-                    // clients do not follow ANAME or ALIAS, so the sinkhole has to be owned by the queried name
-                    if ((blockedAnswer is not null) && (blockedAnswer.Count > 0) && (request.Question.Count > 0))
+                    // clients do not follow ANAME or ALIAS; a direct query owns the sinkhole by this record, and a CNAME chain must stay in front of it
+                    string ownerName = record.Name;
+                    bool directAlias = (request.Question.Count == 0) || ownerName.Equals(request.Question[0].Name, StringComparison.OrdinalIgnoreCase);
+
+                    if ((blockedAnswer is not null) && (blockedAnswer.Count > 0))
                     {
-                        string queryName = request.Question[0].Name;
                         DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedAnswer.Count];
 
                         for (int j = 0; j < blockedAnswer.Count; j++)
                         {
                             DnsResourceRecord blockedRecord = blockedAnswer[j];
-                            rewrittenAnswer[j] = new DnsResourceRecord(queryName, blockedRecord.Type, blockedRecord.Class, blockedRecord.TTL, blockedRecord.RDATA);
+                            rewrittenAnswer[j] = new DnsResourceRecord(ownerName, blockedRecord.Type, blockedRecord.Class, blockedRecord.TTL, blockedRecord.RDATA);
                         }
 
                         blockedAnswer = rewrittenAnswer;
                     }
 
-                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, blockedResponse.RCODE, request.Question, blockedAnswer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
+                    if (directAlias)
+                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, blockedResponse.RCODE, request.Question, blockedAnswer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
+
+                    List<DnsResourceRecord> aliasAnswer = new List<DnsResourceRecord>(i + (blockedAnswer is null ? 0 : blockedAnswer.Count));
+
+                    for (int j = 0; j < i; j++)
+                        aliasAnswer.Add(response.Answer[j]);
+
+                    if (blockedAnswer is not null)
+                        aliasAnswer.AddRange(blockedAnswer);
+
+                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, blockedResponse.RCODE, request.Question, aliasAnswer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
                 }
 
                 int blockedCount = blockedAnswer is null ? 0 : blockedAnswer.Count;
