@@ -1594,7 +1594,7 @@ namespace DnsServerCore.Dhcp
 
             foreach (KeyValuePair<ClientIdentifierOption, Lease> lease in _leases)
             {
-                if ((lease.Value.Type != LeaseType.Reserved) && !IsAddressInRange(lease.Value.Address))
+                if (!IsAddressInRange(lease.Value.Address))
                 {
                     leasesOutsideRange ??= new List<Lease>();
                     leasesOutsideRange.Add(lease.Value);
