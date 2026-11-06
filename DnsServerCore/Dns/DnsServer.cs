@@ -5029,6 +5029,27 @@ namespace DnsServerCore.Dns
 
                 //found cname cloaking
                 IReadOnlyList<DnsResourceRecord> blockedAnswer = blockedResponse.Answer;
+
+                if ((record.Type == DnsResourceRecordType.ANAME) || (record.Type == DnsResourceRecordType.ALIAS))
+                {
+                    // clients do not follow ANAME or ALIAS, so the sinkhole has to be owned by the queried name
+                    if ((blockedAnswer is not null) && (blockedAnswer.Count > 0) && (request.Question.Count > 0))
+                    {
+                        string queryName = request.Question[0].Name;
+                        DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedAnswer.Count];
+
+                        for (int j = 0; j < blockedAnswer.Count; j++)
+                        {
+                            DnsResourceRecord blockedRecord = blockedAnswer[j];
+                            rewrittenAnswer[j] = new DnsResourceRecord(queryName, blockedRecord.Type, blockedRecord.Class, blockedRecord.TTL, blockedRecord.RDATA);
+                        }
+
+                        blockedAnswer = rewrittenAnswer;
+                    }
+
+                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, blockedResponse.RCODE, request.Question, blockedAnswer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
+                }
+
                 int blockedCount = blockedAnswer is null ? 0 : blockedAnswer.Count;
                 List<DnsResourceRecord> answer = new List<DnsResourceRecord>(i + 1 + blockedCount);
 
