@@ -2307,6 +2307,8 @@ namespace DnsServerCore.Dns
 
         private async Task ReadStreamRequestAsync(Stream stream, IPEndPoint remoteEP, NameServerAddress dnsEP, DnsTransportProtocol protocol)
         {
+            IPEndPoint connectionEP = remoteEP;
+
             try
             {
                 using MemoryStream readBuffer = new MemoryStream(64);
@@ -2316,6 +2318,7 @@ namespace DnsServerCore.Dns
                 while (true)
                 {
                     DnsDatagram request;
+                    IPEndPoint requestEP = connectionEP;
 
                     //read dns datagram with timeout
                     using (CancellationTokenSource cancellationTokenSource = new CancellationTokenSource())
@@ -2337,7 +2340,7 @@ namespace DnsServerCore.Dns
 
                     if ((protocol == DnsTransportProtocol.Tcp) && _enableEDnsClientSubnetSourceAddress)
                     {
-                        if (NetworkAccessControl.IsAddressAllowed(remoteEP.Address, _dnsReverseProxyNetworkACL))
+                        if (NetworkAccessControl.IsAddressAllowed(connectionEP.Address, _dnsReverseProxyNetworkACL))
                         {
                             //this feature is intended to be used with a reverse proxy or load balancer on private network
                             EDnsClientSubnetOptionData ecs = request.GetEDnsClientSubnetOption(true);
@@ -2347,13 +2350,13 @@ namespace DnsServerCore.Dns
                                 {
                                     case 32:
                                         if (ecs.Family == EDnsClientSubnetAddressFamily.IPv4)
-                                            remoteEP = new IPEndPoint(ecs.Address, 0);
+                                            requestEP = new IPEndPoint(ecs.Address, 0);
 
                                         break;
 
                                     case 128:
                                         if (ecs.Family == EDnsClientSubnetAddressFamily.IPv6)
-                                            remoteEP = new IPEndPoint(ecs.Address, 0);
+                                            requestEP = new IPEndPoint(ecs.Address, 0);
 
                                         break;
                                 }
@@ -2361,14 +2364,14 @@ namespace DnsServerCore.Dns
                         }
                     }
 
-                    if (HasQpmLimitExceeded(remoteEP.Address, DnsTransportProtocol.Tcp))
+                    if (HasQpmLimitExceeded(requestEP.Address, DnsTransportProtocol.Tcp))
                     {
-                        _statsManager.QueueUpdate(null, remoteEP, protocol, null, true);
+                        _statsManager.QueueUpdate(null, requestEP, protocol, null, true);
                         break;
                     }
 
                     //process request async
-                    _ = ProcessStreamRequestAsync(stream, writeBuffer, writeSemaphore, remoteEP, request, protocol);
+                    _ = ProcessStreamRequestAsync(stream, writeBuffer, writeSemaphore, requestEP, request, protocol);
                 }
             }
             catch (ObjectDisposedException)
