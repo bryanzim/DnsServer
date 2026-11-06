@@ -68,7 +68,8 @@ namespace SplitHorizon
                 if ((name == "public") || (name == "private"))
                     continue;
 
-                if (SimpleAddress.Networks.TryGetValue(name, out List<NetworkAddress> networkAddresses))
+                Dictionary<string, List<NetworkAddress>> networks = SimpleAddress.Networks;
+                if ((networks is not null) && networks.TryGetValue(name, out List<NetworkAddress> networkAddresses))
                 {
                     foreach (NetworkAddress networkAddress in networkAddresses)
                     {
