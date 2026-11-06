@@ -86,28 +86,137 @@ namespace ZoneAlias
             return false;
         }
 
+        private static string AliasName(string name, string zone, string alias)
+        {
+            if (string.IsNullOrEmpty(name))
+                return null;
+
+            int j = name.LastIndexOf(zone, StringComparison.OrdinalIgnoreCase);
+            bool atLabelBoundary = (j == 0) || ((j > 0) && (name[j - 1] == '.'));
+            bool isSuffix = (j > -1) && ((j + zone.Length) == name.Length);
+
+            if (!(atLabelBoundary && isSuffix))
+                return null;
+
+            if (j == 0)
+                return alias;
+
+            return string.Concat(name.AsSpan(0, j), alias);
+        }
+
+        private static DnsResourceRecordData AliasRecordData(DnsResourceRecord record, string zone, string alias)
+        {
+            switch (record.Type)
+            {
+                case DnsResourceRecordType.CNAME:
+                    {
+                        string domain = AliasName((record.RDATA as DnsCNAMERecordData).Domain, zone, alias);
+                        if (domain is not null)
+                            return new DnsCNAMERecordData(domain);
+                    }
+                    break;
+
+                case DnsResourceRecordType.DNAME:
+                    {
+                        string domain = AliasName((record.RDATA as DnsDNAMERecordData).Domain, zone, alias);
+                        if (domain is not null)
+                            return new DnsDNAMERecordData(domain);
+                    }
+                    break;
+
+                case DnsResourceRecordType.NS:
+                    {
+                        string nameServer = AliasName((record.RDATA as DnsNSRecordData).NameServer, zone, alias);
+                        if (nameServer is not null)
+                            return new DnsNSRecordData(nameServer);
+                    }
+                    break;
+
+                case DnsResourceRecordType.MX:
+                    {
+                        DnsMXRecordData mx = record.RDATA as DnsMXRecordData;
+                        string exchange = AliasName(mx.Exchange, zone, alias);
+                        if (exchange is not null)
+                            return new DnsMXRecordData(mx.Preference, exchange);
+                    }
+                    break;
+
+                case DnsResourceRecordType.SRV:
+                    {
+                        DnsSRVRecordData srv = record.RDATA as DnsSRVRecordData;
+                        string target = AliasName(srv.Target, zone, alias);
+                        if (target is not null)
+                            return new DnsSRVRecordData(srv.Priority, srv.Weight, srv.Port, target);
+                    }
+                    break;
+
+                case DnsResourceRecordType.PTR:
+                    {
+                        string domain = AliasName((record.RDATA as DnsPTRRecordData).Domain, zone, alias);
+                        if (domain is not null)
+                            return new DnsPTRRecordData(domain);
+                    }
+                    break;
+
+                case DnsResourceRecordType.ANAME:
+                case DnsResourceRecordType.ALIAS:
+                    {
+                        string domain = AliasName((record.RDATA as DnsANAMERecordData).Domain, zone, alias);
+                        if (domain is not null)
+                        {
+                            if (record.Type == DnsResourceRecordType.ALIAS)
+                                return new DnsALIASRecordData((record.RDATA as DnsALIASRecordData).Type, domain);
+
+                            return new DnsANAMERecordData(domain);
+                        }
+                    }
+                    break;
+
+                case DnsResourceRecordType.SOA:
+                    {
+                        DnsSOARecordData soa = record.RDATA as DnsSOARecordData;
+                        string primaryNameServer = AliasName(soa.PrimaryNameServer, zone, alias) ?? soa.PrimaryNameServer;
+                        string responsiblePerson = AliasName(soa.ResponsiblePerson, zone, alias) ?? soa.ResponsiblePerson;
+
+                        if (!primaryNameServer.Equals(soa.PrimaryNameServer, StringComparison.OrdinalIgnoreCase) || !responsiblePerson.Equals(soa.ResponsiblePerson, StringComparison.OrdinalIgnoreCase))
+                            return new DnsSOARecordData(primaryNameServer, responsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, soa.Minimum);
+                    }
+                    break;
+
+                case DnsResourceRecordType.SVCB:
+                case DnsResourceRecordType.HTTPS:
+                    {
+                        DnsSVCBRecordData svcb = record.RDATA as DnsSVCBRecordData;
+                        if (svcb is null)
+                            break;
+
+                        string targetName = AliasName(svcb.TargetName, zone, alias);
+                        if (targetName is not null)
+                            return new DnsSVCBRecordData(svcb.SvcPriority, targetName, svcb.SvcParams);
+                    }
+                    break;
+            }
+
+            return record.RDATA;
+        }
+
         private static IReadOnlyList<DnsResourceRecord> ConvertRecords(IReadOnlyList<DnsResourceRecord> records, string zone, string alias)
         {
             if (records.Count == 0)
                 return records;
 
             DnsResourceRecord[] newRecords = new DnsResourceRecord[records.Count];
-            int j;
 
             for (int i = 0; i < records.Count; i++)
             {
                 DnsResourceRecord record = records[i];
+                string name = AliasName(record.Name, zone, alias) ?? record.Name;
+                DnsResourceRecordData rdata = AliasRecordData(record, zone, alias);
 
-                j = record.Name.LastIndexOf(zone, StringComparison.OrdinalIgnoreCase);
-                bool atLabelBoundary = (j == 0) || ((j > 0) && (record.Name[j - 1] == '.'));
-                bool isSuffix = (j > -1) && ((j + zone.Length) == record.Name.Length);
-
-                if (atLabelBoundary && isSuffix && (j == 0))
-                    newRecords[i] = new DnsResourceRecord(alias, record.Type, record.Class, record.TTL, record.RDATA);
-                else if (atLabelBoundary && isSuffix)
-                    newRecords[i] = new DnsResourceRecord(string.Concat(record.Name.AsSpan(0, j), alias), record.Type, record.Class, record.TTL, record.RDATA);
-                else
+                if (name.Equals(record.Name, StringComparison.Ordinal) && ReferenceEquals(rdata, record.RDATA))
                     newRecords[i] = record;
+                else
+                    newRecords[i] = new DnsResourceRecord(name, record.Type, record.Class, record.TTL, rdata);
             }
 
             return newRecords;
