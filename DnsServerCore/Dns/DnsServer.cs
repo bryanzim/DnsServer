@@ -4797,6 +4797,9 @@ namespace DnsServerCore.Dns
                     DnsDatagram appBlockedResponse = await blockingHandler.ProcessRequestAsync(request, remoteEP);
                     if (appBlockedResponse is not null)
                     {
+                        if (appBlockedResponse.RecursionAvailable != recursionAvailable)
+                            appBlockedResponse = new DnsDatagram(appBlockedResponse.Identifier, true, appBlockedResponse.OPCODE, appBlockedResponse.AuthoritativeAnswer, appBlockedResponse.Truncation, appBlockedResponse.RecursionDesired, recursionAvailable, appBlockedResponse.AuthenticData, appBlockedResponse.CheckingDisabled, appBlockedResponse.RCODE, appBlockedResponse.Question, appBlockedResponse.Answer, appBlockedResponse.Authority, appBlockedResponse.Additional);
+
                         if (appBlockedResponse.Tag is null)
                             appBlockedResponse.Tag = DnsServerResponseType.Blocked;
 
