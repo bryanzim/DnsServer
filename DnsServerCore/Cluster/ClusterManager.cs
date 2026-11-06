@@ -54,6 +54,7 @@ namespace DnsServerCore.Cluster
         readonly DnsWebService _dnsWebService;
 
         string _clusterDomain;
+        bool _serverDomainRenamed;
         ushort _heartbeatRefreshIntervalSeconds;
         ushort _heartbeatRetryIntervalSeconds;
         ushort _configRefreshIntervalSeconds;
@@ -325,6 +326,7 @@ namespace DnsServerCore.Cluster
             {
                 //unload
                 _clusterDomain = null;
+                _serverDomainRenamed = false;
                 _configLastSynced = default;
                 _clusterNodes = null;
 
@@ -360,12 +362,16 @@ namespace DnsServerCore.Cluster
             switch (version)
             {
                 case 1:
+                case 2:
                     _clusterDomain = bR.ReadString();
                     _heartbeatRefreshIntervalSeconds = bR.ReadUInt16();
                     _heartbeatRetryIntervalSeconds = bR.ReadUInt16();
                     _configRefreshIntervalSeconds = bR.ReadUInt16();
                     _configRetryIntervalSeconds = bR.ReadUInt16();
                     _configLastSynced = s.ReadDateTime();
+
+                    // version 1 did not record this and always removed a matching suffix
+                    _serverDomainRenamed = (version == 1) || bR.ReadBoolean();
 
                     Dictionary<int, ClusterNode> clusterNodes = null;
                     int count = bR.ReadByte();
@@ -394,7 +400,7 @@ namespace DnsServerCore.Cluster
             BinaryWriter bW = new BinaryWriter(s);
 
             bW.Write(Encoding.ASCII.GetBytes("CL")); //format
-            bW.Write((byte)1); //version
+            bW.Write((byte)2); //version
 
             bW.Write(_clusterDomain);
             bW.Write(_heartbeatRefreshIntervalSeconds);
@@ -402,6 +408,7 @@ namespace DnsServerCore.Cluster
             bW.Write(_configRefreshIntervalSeconds);
             bW.Write(_configRetryIntervalSeconds);
             s.WriteDateTime(_configLastSynced);
+            bW.Write(_serverDomainRenamed);
 
             IReadOnlyDictionary<int, ClusterNode> clusterNodes = _clusterNodes;
             if (clusterNodes is null)
@@ -495,7 +502,7 @@ namespace DnsServerCore.Cluster
             }
 
             //finalize
-            if (_dnsWebService.DnsServer.ServerDomain.EndsWith("." + _clusterDomain, StringComparison.OrdinalIgnoreCase))
+            if (_serverDomainRenamed && _dnsWebService.DnsServer.ServerDomain.EndsWith("." + _clusterDomain, StringComparison.OrdinalIgnoreCase))
                 _dnsWebService.DnsServer.ServerDomain = _dnsWebService.DnsServer.ServerDomain.Substring(0, _dnsWebService.DnsServer.ServerDomain.Length - (_clusterDomain.Length + 1));
 
             //save all changes
@@ -524,6 +531,7 @@ namespace DnsServerCore.Cluster
 
             //create self node
             string serverDomain = _dnsWebService.DnsServer.ServerDomain;
+            _serverDomainRenamed = false;
             if (!serverDomain.EndsWith("." + clusterDomain, StringComparison.OrdinalIgnoreCase))
             {
                 int x = serverDomain.IndexOf('.');
@@ -531,6 +539,8 @@ namespace DnsServerCore.Cluster
                     serverDomain = serverDomain + "." + clusterDomain;
                 else
                     serverDomain = string.Concat(serverDomain.AsSpan(0, x), ".", clusterDomain);
+
+                _serverDomainRenamed = true;
             }
 
             Uri primaryNodeUrl = new Uri($"https://{serverDomain}:{_dnsWebService.WebServiceTlsPort}/");
@@ -1382,6 +1392,7 @@ namespace DnsServerCore.Cluster
 
                 //create self node
                 string serverDomain = _dnsWebService.DnsServer.ServerDomain;
+                _serverDomainRenamed = false;
                 if (!serverDomain.EndsWith("." + primaryNodeClusterInfo.ClusterDomain, StringComparison.OrdinalIgnoreCase))
                 {
                     int x = serverDomain.IndexOf('.');
@@ -1389,6 +1400,8 @@ namespace DnsServerCore.Cluster
                         serverDomain = serverDomain + "." + primaryNodeClusterInfo.ClusterDomain;
                     else
                         serverDomain = string.Concat(serverDomain.AsSpan(0, x), ".", primaryNodeClusterInfo.ClusterDomain);
+
+                    _serverDomainRenamed = true;
                 }
 
                 Uri secondaryNodeUrl = new Uri($"https://{serverDomain}:{_dnsWebService.WebServiceTlsPort}/");
