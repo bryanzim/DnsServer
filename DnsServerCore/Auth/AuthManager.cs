@@ -1158,6 +1158,9 @@ namespace DnsServerCore.Auth
                     await ThrowAuthFailedExceptionAsync("Invalid time-based one-time password (TOTP) was attempted for user: " + username);
             }
 
+            if (user.Disabled)
+                throw new DnsWebServiceException("User account is disabled. Please contact your administrator.");
+
             if (applyLdapProfile)
             {
                 user.DisplayName = ldapDisplayName;
@@ -1167,9 +1170,6 @@ namespace DnsServerCore.Auth
             }
 
             ResetFailedLoginAttempts(network);
-
-            if (user.Disabled)
-                throw new DnsWebServiceException("User account is disabled. Please contact your administrator.");
 
             return user;
 
