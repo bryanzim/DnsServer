@@ -25,6 +25,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using TechnitiumLibrary;
 using TechnitiumLibrary.Net.Dns;
+using TechnitiumLibrary.Net.Dns.EDnsOptions;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
 namespace ZoneAlias
@@ -283,9 +284,30 @@ namespace ZoneAlias
 
             DnsQuestionRecord newQuestion = new DnsQuestionRecord(newQname, question.Type, question.Class);
 
+            ushort udpPayloadSize = ushort.MinValue;
+            EDnsHeaderFlags ednsFlags = EDnsHeaderFlags.None;
+            IReadOnlyList<EDnsOption> options = null;
+
+            if (request.EDNS is not null)
+            {
+                udpPayloadSize = request.EDNS.UdpPayloadSize < 512 ? (ushort)512 : request.EDNS.UdpPayloadSize;
+                ednsFlags = request.EDNS.Flags;
+            }
+
+            EDnsClientSubnetOptionData requestECS = request.GetEDnsClientSubnetOption();
+            if (requestECS is not null)
+            {
+                options = [new EDnsOption(EDnsOptionCode.EDNS_CLIENT_SUBNET, requestECS)];
+
+                if (udpPayloadSize < 512)
+                    udpPayloadSize = 512;
+            }
+
+            DnsDatagram aliasRequest = new DnsDatagram(request.Identifier, false, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, request.CheckingDisabled, DnsResponseCode.NoError, [newQuestion], null, null, null, udpPayloadSize, ednsFlags, options);
+
             try
             {
-                DnsDatagram response = await _dnsServer.DirectQueryAsync(newQuestion);
+                DnsDatagram response = await _dnsServer.DirectQueryAsync(aliasRequest, remoteEP);
 
                 IReadOnlyList<DnsResourceRecord> newAnswer = ConvertRecords(response.Answer, zone, alias);
                 IReadOnlyList<DnsResourceRecord> newAuthority = ConvertRecords(response.Authority, zone, alias);
