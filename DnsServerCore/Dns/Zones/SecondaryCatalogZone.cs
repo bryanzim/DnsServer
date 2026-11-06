@@ -254,7 +254,12 @@ namespace DnsServerCore.Dns.Zones
                                     string memberZoneDomain = subdomain + "." + _name;
 
                                     //a later difference in this transfer wins, so an add followed by a delete does not recreate the member
-                                    membersToRemove.Remove(memberZoneName);
+                                    //a new label is a new membership, so the existing zone is removed and provisioned again
+                                    if (_membersIndex.TryGetValue(memberZoneName, out string existingMemberZoneDomain) && !existingMemberZoneDomain.Equals(memberZoneDomain, StringComparison.OrdinalIgnoreCase))
+                                        membersToRemove[memberZoneName] = null;
+                                    else
+                                        membersToRemove.Remove(memberZoneName);
+
                                     membersToAdd[memberZoneName] = memberZoneDomain;
                                     membersToUpdate[memberZoneName] = memberZoneDomain;
                                 }
