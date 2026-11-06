@@ -165,6 +165,31 @@ namespace DnsServerCore.Auth
                 _userPermissions[userPermission.Key] = userPermission.Value;
         }
 
+        public void SyncSubItemPermissions(IReadOnlyDictionary<string, Permission> subItemPermissions)
+        {
+            List<string> removedSubItems = new List<string>();
+
+            foreach (KeyValuePair<string, Permission> existingSubItem in _subItemPermissions)
+            {
+                if (!subItemPermissions.ContainsKey(existingSubItem.Key))
+                    removedSubItems.Add(existingSubItem.Key);
+            }
+
+            foreach (string removedSubItem in removedSubItems)
+                _subItemPermissions.TryRemove(removedSubItem, out _);
+
+            foreach (KeyValuePair<string, Permission> subItemPermission in subItemPermissions)
+            {
+                Permission localSubItem = _subItemPermissions.GetOrAdd(subItemPermission.Key, delegate (string key)
+                {
+                    return new Permission(_section, key);
+                });
+
+                localSubItem.SyncPermissions(subItemPermission.Value.UserPermissions);
+                localSubItem.SyncPermissions(subItemPermission.Value.GroupPermissions);
+            }
+        }
+
         public void SetSubItemPermission(string subItemName, User user, PermissionFlag flags)
         {
             Permission subItemPermission = _subItemPermissions.GetOrAdd(subItemName.ToLowerInvariant(), delegate (string key)

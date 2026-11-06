@@ -754,11 +754,12 @@ namespace DnsServerCore.Auth
                     switch (permission.Key)
                     {
                         case PermissionSection.Zones:
-                            //sync user and group permissions as-is for zones section
+                            //sync user and group permissions as-is for zones section, including each zone
                             Permission zonesPermission = _permissions[PermissionSection.Zones];
 
                             zonesPermission.SyncPermissions(permission.Value.UserPermissions);
                             zonesPermission.SyncPermissions(permission.Value.GroupPermissions);
+                            zonesPermission.SyncSubItemPermissions(permission.Value.SubItemPermissions);
                             break;
 
                         default:
