@@ -155,7 +155,7 @@ namespace DnsServerCore.Dns.Zones
 
                     if (string.IsNullOrEmpty(primaryZoneTransferTsigKeyName))
                         soaResponse = await dnsClient.RawResolveAsync(soaRequest);
-                    else if ((secondaryZone._dnsServer.TsigKeys is not null) && secondaryZone._dnsServer.TsigKeys.TryGetValue(primaryZoneTransferTsigKeyName, out TsigKey key))
+                    else if ((secondaryZone._dnsServer.TsigKeys is not null) && secondaryZone._dnsServer.TsigKeys.TryGetValue(NormalizeZoneTransferTsigKeyName(primaryZoneTransferTsigKeyName), out TsigKey key))
                         soaResponse = await dnsClient.TsigResolveAsync(soaRequest, key, REFRESH_TSIG_FUDGE);
                     else
                         throw new DnsServerException("No such TSIG key was found configured: " + primaryZoneTransferTsigKeyName);
@@ -284,7 +284,7 @@ namespace DnsServerCore.Dns.Zones
 
                         TsigKey key = null;
 
-                        if (!string.IsNullOrEmpty(primaryZoneTransferTsigKeyName) && ((_dnsServer.TsigKeys is null) || !_dnsServer.TsigKeys.TryGetValue(primaryZoneTransferTsigKeyName, out key)))
+                        if (!string.IsNullOrEmpty(primaryZoneTransferTsigKeyName) && ((_dnsServer.TsigKeys is null) || !_dnsServer.TsigKeys.TryGetValue(NormalizeZoneTransferTsigKeyName(primaryZoneTransferTsigKeyName), out key)))
                         {
                             _dnsServer.LogManager.Write("DNS Server does not have TSIG key '" + primaryZoneTransferTsigKeyName + "' configured for refreshing " + GetZoneTypeName() + " zone: " + ToString());
 
@@ -1036,6 +1036,16 @@ namespace DnsServerCore.Dns.Zones
                         throw new NotSupportedException("Zone transfer protocol is not supported: XFR-over-" + value.ToString().ToUpper());
                 }
             }
+        }
+
+        static string NormalizeZoneTransferTsigKeyName(string keyName)
+        {
+            keyName = keyName.TrimEnd('.').ToLowerInvariant();
+
+            if (DnsClient.IsDomainNameUnicode(keyName))
+                keyName = DnsClient.ConvertDomainNameToAscii(keyName);
+
+            return keyName;
         }
 
         public string PrimaryZoneTransferTsigKeyName
