@@ -267,6 +267,7 @@ namespace DnsServerCore.Cluster
             try
             {
                 _configRefreshTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                _configRefreshTimerTriggered = false;
             }
             catch (ObjectDisposedException)
             { }
@@ -319,6 +320,7 @@ namespace DnsServerCore.Cluster
         private void UnloadAndDeleteConfigFile()
         {
             StopConfigRefreshTimer();
+            _configRefreshIncludeZones = null;
 
             DisposeAllNodes(); //dispose existing nodes, if any
 
@@ -1726,7 +1728,7 @@ namespace DnsServerCore.Cluster
             }
             finally
             {
-                if (success)
+                if (success || removedFromCluster)
                 {
                     _configRefreshTimerTriggered = false;
                     _configRefreshIncludeZones = null;
