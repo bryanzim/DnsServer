@@ -2880,26 +2880,13 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             if (zoneName.Length == 0)
             {
-                //root zone case
+                //root zone: every name is in-bailiwick, so addresses are zone data rather than glue
                 for (int i = 1; i < xfrRecords.Count; i++)
                 {
                     DnsResourceRecord record = xfrRecords[i];
 
-                    switch (record.Type)
-                    {
-                        case DnsResourceRecordType.A:
-                        case DnsResourceRecordType.AAAA:
-                            if (!allGlueRecords.Contains(record))
-                                allGlueRecords.Add(record);
-
-                            break;
-
-                        default:
-                            if (!latestRecords.Contains(record))
-                                latestRecords.Add(record);
-
-                            break;
-                    }
+                    if (!latestRecords.Contains(record))
+                        latestRecords.Add(record);
                 }
             }
             else
@@ -3011,36 +2998,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (record.Type == DnsResourceRecordType.SOA)
                         break;
 
-                    if (zoneName.Length == 0)
+                    if ((zoneName.Length == 0) || record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
                     {
-                        //root zone case
+                        //the root zone name is empty, so every name belongs to the zone and its addresses are zone data
+                        deletedRecords.Add(record);
+                    }
+                    else
+                    {
                         switch (record.Type)
                         {
                             case DnsResourceRecordType.A:
                             case DnsResourceRecordType.AAAA:
                                 deletedGlueRecords.Add(record);
                                 break;
-
-                            default:
-                                deletedRecords.Add(record);
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        if (record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            deletedRecords.Add(record);
-                        }
-                        else
-                        {
-                            switch (record.Type)
-                            {
-                                case DnsResourceRecordType.A:
-                                case DnsResourceRecordType.AAAA:
-                                    deletedGlueRecords.Add(record);
-                                    break;
-                            }
                         }
                     }
 
@@ -3060,36 +3030,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (record.Type == DnsResourceRecordType.SOA)
                         break;
 
-                    if (zoneName.Length == 0)
+                    if ((zoneName.Length == 0) || record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
                     {
-                        //root zone case
+                        //the root zone name is empty, so every name belongs to the zone and its addresses are zone data
+                        addedRecords.Add(record);
+                    }
+                    else
+                    {
                         switch (record.Type)
                         {
                             case DnsResourceRecordType.A:
                             case DnsResourceRecordType.AAAA:
                                 addedGlueRecords.Add(record);
                                 break;
-
-                            default:
-                                addedRecords.Add(record);
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        if (record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            addedRecords.Add(record);
-                        }
-                        else
-                        {
-                            switch (record.Type)
-                            {
-                                case DnsResourceRecordType.A:
-                                case DnsResourceRecordType.AAAA:
-                                    addedGlueRecords.Add(record);
-                                    break;
-                            }
                         }
                     }
 
@@ -3208,9 +3161,17 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (record.Type == DnsResourceRecordType.SOA)
                         break;
 
-                    if (zoneName.Length == 0)
+                    if ((zoneName.Length == 0) || record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
                     {
-                        //root zone case
+                        //the root zone name is empty, so every name belongs to the zone and its addresses are zone data
+                        if (!addedRecords.Remove(record))
+                        {
+                            if (!deletedRecords.Contains(record)) //check to prevent duplicate delete entries which Microsoft DNS Server may emit in IXFR response
+                                deletedRecords.Add(record);
+                        }
+                    }
+                    else
+                    {
                         switch (record.Type)
                         {
                             case DnsResourceRecordType.A:
@@ -3222,41 +3183,6 @@ namespace DnsServerCore.Dns.ZoneManagers
                                 }
 
                                 break;
-
-                            default:
-                                if (!addedRecords.Remove(record))
-                                {
-                                    if (!deletedRecords.Contains(record)) //check to prevent duplicate delete entries
-                                        deletedRecords.Add(record);
-                                }
-
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        if (record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (!addedRecords.Remove(record))
-                            {
-                                if (!deletedRecords.Contains(record)) //check to prevent duplicate delete entries which Microsoft DNS Server may emit in IXFR response
-                                    deletedRecords.Add(record);
-                            }
-                        }
-                        else
-                        {
-                            switch (record.Type)
-                            {
-                                case DnsResourceRecordType.A:
-                                case DnsResourceRecordType.AAAA:
-                                    if (!addedGlueRecords.Remove(record))
-                                    {
-                                        if (!deletedGlueRecords.Contains(record)) //check to prevent duplicate delete entries
-                                            deletedGlueRecords.Add(record);
-                                    }
-
-                                    break;
-                            }
                         }
                     }
 
@@ -3278,9 +3204,17 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (record.Type == DnsResourceRecordType.SOA)
                         break;
 
-                    if (zoneName.Length == 0)
+                    if ((zoneName.Length == 0) || record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
                     {
-                        //root zone case
+                        //the root zone name is empty, so every name belongs to the zone and its addresses are zone data
+                        if (!deletedRecords.Remove(record))
+                        {
+                            if (!addedRecords.Contains(record)) //check to prevent duplicate add entries
+                                addedRecords.Add(record);
+                        }
+                    }
+                    else
+                    {
                         switch (record.Type)
                         {
                             case DnsResourceRecordType.A:
@@ -3292,41 +3226,6 @@ namespace DnsServerCore.Dns.ZoneManagers
                                 }
 
                                 break;
-
-                            default:
-                                if (!deletedRecords.Remove(record))
-                                {
-                                    if (!addedRecords.Contains(record)) //check to prevent duplicate add entries
-                                        addedRecords.Add(record);
-                                }
-
-                                break;
-                        }
-                    }
-                    else
-                    {
-                        if (record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (!deletedRecords.Remove(record))
-                            {
-                                if (!addedRecords.Contains(record)) //check to prevent duplicate add entries
-                                    addedRecords.Add(record);
-                            }
-                        }
-                        else
-                        {
-                            switch (record.Type)
-                            {
-                                case DnsResourceRecordType.A:
-                                case DnsResourceRecordType.AAAA:
-                                    if (!deletedGlueRecords.Remove(record))
-                                    {
-                                        if (!addedGlueRecords.Contains(record)) //check to prevent duplicate add entries
-                                            addedGlueRecords.Add(record);
-                                    }
-
-                                    break;
-                            }
                         }
                     }
 
