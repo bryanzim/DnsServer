@@ -4632,6 +4632,9 @@ namespace DnsServerCore.Dns
                     }
 
                     //check new response
+                    if (newResponse.RCODE == DnsResponseCode.NxDomain)
+                        return Array.Empty<DnsResourceRecord>(); //the alias name exists
+
                     if (newResponse.RCODE != DnsResponseCode.NoError)
                         return null; //cannot proceed to resolve further
 
