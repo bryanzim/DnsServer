@@ -468,7 +468,7 @@ namespace SplitHorizon
                                 uint hostMask = ~(0xFFFFFFFFu << (32 - selectedExternal.PrefixLength));
                                 uint host = externalIp.ConvertIpToNumber() & hostMask;
                                 uint addr = selectedInternal.Address.ConvertIpToNumber();
-                                uint internalAddr = addr | host;
+                                uint internalAddr = (addr & ~hostMask) | host;
 
                                 internalIp = IPAddressExtensions.ConvertNumberToIp(internalAddr);
                                 return true;
@@ -539,7 +539,7 @@ namespace SplitHorizon
                                 uint hostMask = ~(0xFFFFFFFFu << (32 - selectedInternal.PrefixLength));
                                 uint host = internalIp.ConvertIpToNumber() & hostMask;
                                 uint addr = selectedExternal.Address.ConvertIpToNumber();
-                                uint externalAddr = addr | host;
+                                uint externalAddr = (addr & ~hostMask) | host;
 
                                 externalIp = IPAddressExtensions.ConvertNumberToIp(externalAddr);
                                 return true;
