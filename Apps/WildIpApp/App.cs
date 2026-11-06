@@ -66,8 +66,12 @@ namespace WildIp
         {
             DnsQuestionRecord question = request.Question[0];
             string qname = question.Name;
+            string recordSuffix = appRecordName;
 
-            if (qname.Length == appRecordName.Length)
+            if (recordSuffix.StartsWith("*.", StringComparison.Ordinal))
+                recordSuffix = recordSuffix.Substring(2);
+
+            if ((qname.Length <= recordSuffix.Length) || !qname.EndsWith("." + recordSuffix, StringComparison.OrdinalIgnoreCase))
                 return null;
 
             DnsResourceRecord answer = null;
@@ -77,7 +81,7 @@ namespace WildIp
                 case DnsResourceRecordType.A:
                 case DnsResourceRecordType.AAAA:
                     IPAddress address = null;
-                    string subdomain = qname.Substring(0, qname.Length - appRecordName.Length - 1);
+                    string subdomain = qname.Substring(0, qname.Length - recordSuffix.Length - 1);
 
                     //attempt to parse ipv6 first
                     {
