@@ -3899,7 +3899,7 @@ namespace DnsServerCore.Dns
                         DnsResourceRecordType questionType = request.Question[0].Type;
                         DnsResourceRecord lastRR = response.GetLastAnswerRecord();
 
-                        if ((lastRR.Type != questionType) && (questionType != DnsResourceRecordType.ANY))
+                        if ((lastRR is not null) && (lastRR.Type != questionType) && (questionType != DnsResourceRecordType.ANY))
                         {
                             switch (lastRR.Type)
                             {
@@ -4306,10 +4306,12 @@ namespace DnsServerCore.Dns
                     break; //cannot proceed to resolve further
 
                 lastRR = newResponse.GetLastAnswerRecord();
-                if (lastRR.Type != DnsResourceRecordType.CNAME)
+                if ((lastRR is null) || (lastRR.Type != DnsResourceRecordType.CNAME))
                 {
-                    newAnswer.AddRange(newResponse.Answer);
-                    break; //cname was resolved
+                    if (lastRR is not null)
+                        newAnswer.AddRange(newResponse.Answer);
+
+                    break; //cname was resolved, or the answer does not continue this name
                 }
 
                 foreach (DnsResourceRecord newResponseAnswerRecord in newResponse.Answer)
@@ -4518,6 +4520,9 @@ namespace DnsServerCore.Dns
 
                     DnsResourceRecordType questionType = request.Question[0].Type;
                     DnsResourceRecord lastRR = newResponse.GetLastAnswerRecord();
+                    if (lastRR is null)
+                        return Array.Empty<DnsResourceRecord>(); //answer does not continue this name
+
                     if (lastRR.Type == questionType)
                     {
                         //found final answer
@@ -4947,7 +4952,7 @@ namespace DnsServerCore.Dns
                 DnsResourceRecordType questionType = request.Question[0].Type;
                 DnsResourceRecord lastRR = response.GetLastAnswerRecord();
 
-                if ((lastRR.Type != questionType) && (lastRR.Type == DnsResourceRecordType.CNAME) && (questionType != DnsResourceRecordType.ANY))
+                if ((lastRR is not null) && (lastRR.Type != questionType) && (lastRR.Type == DnsResourceRecordType.CNAME) && (questionType != DnsResourceRecordType.ANY))
                 {
                     response = await ProcessCNAMEAsync(request, response, remoteEP, protocol, true, skipDnsAppAuthoritativeRequestHandlers, clientTimeout, context);
                     if (response is null)
