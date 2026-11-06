@@ -215,7 +215,22 @@ namespace Dns64
             }
 
             if (!synthesizedAAAA)
-                return response;
+            {
+                //an AAAA NODATA must stay NODATA; an excluded AAAA answer is still replaced below
+                bool originalHadAAAA = false;
+
+                foreach (DnsResourceRecord originalAnswer in response.Answer)
+                {
+                    if (originalAnswer.Type == DnsResourceRecordType.AAAA)
+                    {
+                        originalHadAAAA = true;
+                        break;
+                    }
+                }
+
+                if (!originalHadAAAA)
+                    return response;
+            }
 
             //RFC 6147 section 5.5: a synthesized AAAA is not DNSSEC secure, so the AD bit from the NODATA answer must not be copied
             return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, newResponse.RCODE, response.Question, newAnswer, newResponse.Authority, newResponse.Additional) { Tag = response.Tag };
