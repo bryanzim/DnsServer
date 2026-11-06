@@ -771,13 +771,18 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
+        internal void NotifyMemberZoneRemoved(AuthZoneInfo zoneInfo)
+        {
+            ZoneRemoved?.Invoke(this, new SecondaryCatalogEventArgs(zoneInfo));
+        }
+
         private void DeleteMemberZone(ApexZone apexZone)
         {
             AuthZoneInfo zoneInfo = new AuthZoneInfo(apexZone);
 
             if (_dnsServer.AuthZoneManager.DeleteZone(zoneInfo, true))
             {
-                ZoneRemoved?.Invoke(this, new SecondaryCatalogEventArgs(zoneInfo));
+                NotifyMemberZoneRemoved(zoneInfo);
 
                 _dnsServer.LogManager.Write(apexZone.GetZoneTypeName() + " zone '" + apexZone.ToString() + "' was removed via Secondary Catalog zone '" + ToString() + "' sucessfully.");
             }

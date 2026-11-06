@@ -1475,8 +1475,8 @@ namespace DnsServerCore.Dns.ZoneManagers
                             if (memberZoneInfo is null)
                                 continue;
 
-                            if (zoneInfo.Name.Equals(memberZoneInfo.CatalogZoneName, StringComparison.OrdinalIgnoreCase))
-                                DeleteZone(memberZoneInfo, true);
+                            if (zoneInfo.Name.Equals(memberZoneInfo.CatalogZoneName, StringComparison.OrdinalIgnoreCase) && DeleteZone(memberZoneInfo, true))
+                                (zoneInfo.ApexZone as SecondaryCatalogZone).NotifyMemberZoneRemoved(memberZoneInfo);
                         }
                         break;
                 }
