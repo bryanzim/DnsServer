@@ -253,12 +253,16 @@ namespace DnsServerCore.Dns.Zones
                                 {
                                     string memberZoneDomain = subdomain + "." + _name;
 
-                                    membersToAdd.TryAdd(memberZoneName, memberZoneDomain);
-                                    membersToUpdate.TryAdd(memberZoneName, memberZoneDomain);
+                                    //a later difference in this transfer wins, so an add followed by a delete does not recreate the member
+                                    membersToRemove.Remove(memberZoneName);
+                                    membersToAdd[memberZoneName] = memberZoneDomain;
+                                    membersToUpdate[memberZoneName] = memberZoneDomain;
                                 }
                                 else
                                 {
-                                    membersToRemove.TryAdd(memberZoneName, null);
+                                    membersToAdd.Remove(memberZoneName);
+                                    membersToUpdate.Remove(memberZoneName);
+                                    membersToRemove[memberZoneName] = null;
                                 }
                             }
                         }
