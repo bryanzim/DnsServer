@@ -421,6 +421,9 @@ namespace SplitHorizon
                 if (_externalToInternalTranslation.TryGetValue(externalIp, out internalIp))
                     return true;
 
+                NetworkAddress selectedExternal = null;
+                NetworkAddress selectedInternal = null;
+
                 foreach (KeyValuePair<NetworkAddress, NetworkAddress> networkEntry in _externalToInternalNetworkTranslation)
                 {
                     NetworkAddress external = networkEntry.Key;
@@ -428,51 +431,55 @@ namespace SplitHorizon
                     if (external.AddressFamily != externalIp.AddressFamily)
                         continue;
 
-                    if (external.Contains(externalIp))
+                    if (external.Contains(externalIp) && ((selectedExternal is null) || (external.PrefixLength > selectedExternal.PrefixLength)))
                     {
-                        NetworkAddress @internal = networkEntry.Value;
+                        selectedExternal = external;
+                        selectedInternal = networkEntry.Value;
+                    }
+                }
 
-                        switch (external.AddressFamily)
-                        {
-                            case AddressFamily.InterNetwork:
+                if (selectedExternal is not null)
+                {
+                    switch (selectedExternal.AddressFamily)
+                    {
+                        case AddressFamily.InterNetwork:
+                            {
+                                uint hostMask = ~(0xFFFFFFFFu << (32 - selectedExternal.PrefixLength));
+                                uint host = externalIp.ConvertIpToNumber() & hostMask;
+                                uint addr = selectedInternal.Address.ConvertIpToNumber();
+                                uint internalAddr = addr | host;
+
+                                internalIp = IPAddressExtensions.ConvertNumberToIp(internalAddr);
+                                return true;
+                            }
+
+                        case AddressFamily.InterNetworkV6:
+                            {
+                                byte[] externalIpBytes = externalIp.GetAddressBytes();
+                                byte[] internalIpBytes = selectedInternal.Address.GetAddressBytes();
+                                int copyBytes = selectedExternal.PrefixLength / 8;
+                                int balanceBits = selectedExternal.PrefixLength - (copyBytes * 8);
+
+                                if (balanceBits > 0)
                                 {
-                                    uint hostMask = ~(0xFFFFFFFFu << (32 - external.PrefixLength));
-                                    uint host = externalIp.ConvertIpToNumber() & hostMask;
-                                    uint addr = @internal.Address.ConvertIpToNumber();
-                                    uint internalAddr = addr | host;
+                                    //byte at copyBytes is split between network and host bits
+                                    Buffer.BlockCopy(externalIpBytes, copyBytes + 1, internalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
 
-                                    internalIp = IPAddressExtensions.ConvertNumberToIp(internalAddr);
-                                    return true;
+                                    int mask = 0xFF << (8 - balanceBits);
+                                    internalIpBytes[copyBytes] = (byte)((internalIpBytes[copyBytes] & mask) | (externalIpBytes[copyBytes] & ~mask));
+                                }
+                                else if (copyBytes < 16)
+                                {
+                                    //prefix is byte aligned so byte at copyBytes is entirely host bits and must be copied too
+                                    Buffer.BlockCopy(externalIpBytes, copyBytes, internalIpBytes, copyBytes, 16 - copyBytes);
                                 }
 
-                            case AddressFamily.InterNetworkV6:
-                                {
-                                    byte[] externalIpBytes = externalIp.GetAddressBytes();
-                                    byte[] internalIpBytes = @internal.Address.GetAddressBytes();
-                                    int copyBytes = external.PrefixLength / 8;
-                                    int balanceBits = external.PrefixLength - (copyBytes * 8);
+                                internalIp = new IPAddress(internalIpBytes);
+                                return true;
+                            }
 
-                                    if (balanceBits > 0)
-                                    {
-                                        //byte at copyBytes is split between network and host bits
-                                        Buffer.BlockCopy(externalIpBytes, copyBytes + 1, internalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
-
-                                        int mask = 0xFF << (8 - balanceBits);
-                                        internalIpBytes[copyBytes] = (byte)((internalIpBytes[copyBytes] & mask) | (externalIpBytes[copyBytes] & ~mask));
-                                    }
-                                    else if (copyBytes < 16)
-                                    {
-                                        //prefix is byte aligned so byte at copyBytes is entirely host bits and must be copied too
-                                        Buffer.BlockCopy(externalIpBytes, copyBytes, internalIpBytes, copyBytes, 16 - copyBytes);
-                                    }
-
-                                    internalIp = new IPAddress(internalIpBytes);
-                                    return true;
-                                }
-
-                            default:
-                                throw new InvalidOperationException();
-                        }
+                        default:
+                            throw new InvalidOperationException();
                     }
                 }
 
@@ -485,6 +492,9 @@ namespace SplitHorizon
                 if (_internalToExternalTranslation.TryGetValue(internalIp, out externalIp))
                     return true;
 
+                NetworkAddress selectedInternal = null;
+                NetworkAddress selectedExternal = null;
+
                 foreach (KeyValuePair<NetworkAddress, NetworkAddress> networkEntry in _externalToInternalNetworkTranslation)
                 {
                     NetworkAddress @internal = networkEntry.Value;
@@ -492,51 +502,55 @@ namespace SplitHorizon
                     if (@internal.AddressFamily != internalIp.AddressFamily)
                         continue;
 
-                    if (@internal.Contains(internalIp))
+                    if (@internal.Contains(internalIp) && ((selectedInternal is null) || (@internal.PrefixLength > selectedInternal.PrefixLength)))
                     {
-                        NetworkAddress external = networkEntry.Key;
+                        selectedInternal = @internal;
+                        selectedExternal = networkEntry.Key;
+                    }
+                }
 
-                        switch (@internal.AddressFamily)
-                        {
-                            case AddressFamily.InterNetwork:
+                if (selectedInternal is not null)
+                {
+                    switch (selectedInternal.AddressFamily)
+                    {
+                        case AddressFamily.InterNetwork:
+                            {
+                                uint hostMask = ~(0xFFFFFFFFu << (32 - selectedInternal.PrefixLength));
+                                uint host = internalIp.ConvertIpToNumber() & hostMask;
+                                uint addr = selectedExternal.Address.ConvertIpToNumber();
+                                uint externalAddr = addr | host;
+
+                                externalIp = IPAddressExtensions.ConvertNumberToIp(externalAddr);
+                                return true;
+                            }
+
+                        case AddressFamily.InterNetworkV6:
+                            {
+                                byte[] internalIpBytes = internalIp.GetAddressBytes();
+                                byte[] externalIpBytes = selectedExternal.Address.GetAddressBytes();
+                                int copyBytes = selectedInternal.PrefixLength / 8;
+                                int balanceBits = selectedInternal.PrefixLength - (copyBytes * 8);
+
+                                if (balanceBits > 0)
                                 {
-                                    uint hostMask = ~(0xFFFFFFFFu << (32 - @internal.PrefixLength));
-                                    uint host = internalIp.ConvertIpToNumber() & hostMask;
-                                    uint addr = external.Address.ConvertIpToNumber();
-                                    uint externalAddr = addr | host;
+                                    //byte at copyBytes is split between network and host bits
+                                    Buffer.BlockCopy(internalIpBytes, copyBytes + 1, externalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
 
-                                    externalIp = IPAddressExtensions.ConvertNumberToIp(externalAddr);
-                                    return true;
+                                    int mask = 0xFF << (8 - balanceBits);
+                                    externalIpBytes[copyBytes] = (byte)((externalIpBytes[copyBytes] & mask) | (internalIpBytes[copyBytes] & ~mask));
+                                }
+                                else if (copyBytes < 16)
+                                {
+                                    //prefix is byte aligned so byte at copyBytes is entirely host bits and must be copied too
+                                    Buffer.BlockCopy(internalIpBytes, copyBytes, externalIpBytes, copyBytes, 16 - copyBytes);
                                 }
 
-                            case AddressFamily.InterNetworkV6:
-                                {
-                                    byte[] internalIpBytes = internalIp.GetAddressBytes();
-                                    byte[] externalIpBytes = external.Address.GetAddressBytes();
-                                    int copyBytes = @internal.PrefixLength / 8;
-                                    int balanceBits = @internal.PrefixLength - (copyBytes * 8);
+                                externalIp = new IPAddress(externalIpBytes);
+                                return true;
+                            }
 
-                                    if (balanceBits > 0)
-                                    {
-                                        //byte at copyBytes is split between network and host bits
-                                        Buffer.BlockCopy(internalIpBytes, copyBytes + 1, externalIpBytes, copyBytes + 1, 16 - copyBytes - 1);
-
-                                        int mask = 0xFF << (8 - balanceBits);
-                                        externalIpBytes[copyBytes] = (byte)((externalIpBytes[copyBytes] & mask) | (internalIpBytes[copyBytes] & ~mask));
-                                    }
-                                    else if (copyBytes < 16)
-                                    {
-                                        //prefix is byte aligned so byte at copyBytes is entirely host bits and must be copied too
-                                        Buffer.BlockCopy(internalIpBytes, copyBytes, externalIpBytes, copyBytes, 16 - copyBytes);
-                                    }
-
-                                    externalIp = new IPAddress(externalIpBytes);
-                                    return true;
-                                }
-
-                            default:
-                                throw new InvalidOperationException();
-                        }
+                        default:
+                            throw new InvalidOperationException();
                     }
                 }
 
