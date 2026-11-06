@@ -459,6 +459,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 DnsResourceRecord cnameRR = new DnsResourceRecord(question.Name, DnsResourceRecordType.CNAME, question.Class, dnameRR.TTL, new DnsCNAMERecordData(result));
 
+                //the synthesized CNAME is authentic when the DNAME is; a new record otherwise stays Unknown and clears AD
+                new DnsDatagram(0, true, DnsOpcode.StandardQuery, false, false, false, false, false, false, DnsResponseCode.NoError, null, [cnameRR]).SetDnssecStatusForAllRecords(dnameRR.DnssecStatus);
+
                 List<DnsResourceRecord> list = new List<DnsResourceRecord>(5)
                 {
                     dnameRR,
