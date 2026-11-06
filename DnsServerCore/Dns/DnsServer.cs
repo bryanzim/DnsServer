@@ -4828,6 +4828,88 @@ namespace DnsServerCore.Dns
             return null;
         }
 
+        private async Task<DnsDatagram> ApplyCnameCloakingAsync(DnsDatagram request, DnsDatagram response, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool queryIsAllowed)
+        {
+            if (queryIsAllowed || (response is null) || (response.Answer is null) || (response.Answer.Count == 0) || !AnswerContainsAlias(response.Answer))
+                return response;
+
+            for (int i = 0; i < response.Answer.Count; i++)
+            {
+                DnsResourceRecord record = response.Answer[i];
+                string aliasDomain;
+
+                switch (record.Type)
+                {
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.DNAME:
+                        continue;
+
+                    case DnsResourceRecordType.CNAME:
+                        aliasDomain = (record.RDATA as DnsCNAMERecordData).Domain;
+                        break;
+
+                    case DnsResourceRecordType.ANAME:
+                    case DnsResourceRecordType.ALIAS:
+                        aliasDomain = (record.RDATA as DnsANAMERecordData).Domain;
+                        break;
+
+                    default:
+                        return response;
+                }
+
+                if (string.IsNullOrEmpty(aliasDomain) || !DnsClient.IsDomainNameValid(aliasDomain))
+                    continue;
+
+                DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(aliasDomain, request.Question[0].Type, request.Question[0].Class)], null, null, null, _udpPayloadSize);
+
+                if (request.Metadata is not null)
+                    newRequest.SetMetadata(request.Metadata.NameServer);
+
+                //check allowed zone
+                if (await IsAllowedAsync(newRequest, remoteEP, protocol))
+                    return response; //alias target is in an allowed zone
+
+                //check blocked zone and block list zone
+                DnsDatagram blockedResponse = await ProcessBlockedQueryAsync(newRequest, remoteEP, protocol);
+                if (blockedResponse is null)
+                    continue;
+
+                //found cname cloaking
+                IReadOnlyList<DnsResourceRecord> blockedAnswer = blockedResponse.Answer;
+                int blockedCount = blockedAnswer is null ? 0 : blockedAnswer.Count;
+                List<DnsResourceRecord> answer = new List<DnsResourceRecord>(i + 1 + blockedCount);
+
+                //copy current and previous records, including a leading DNAME or signature
+                for (int j = 0; j <= i; j++)
+                    answer.Add(response.Answer[j]);
+
+                if (blockedAnswer is not null)
+                    answer.AddRange(blockedAnswer);
+
+                //include blocked response additional section to pass on Extended DNS Errors
+                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, blockedResponse.RCODE, request.Question, answer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
+            }
+
+            return response;
+        }
+
+        private static bool AnswerContainsAlias(IReadOnlyList<DnsResourceRecord> answer)
+        {
+            foreach (DnsResourceRecord record in answer)
+            {
+                switch (record.Type)
+                {
+                    case DnsResourceRecordType.CNAME:
+                    case DnsResourceRecordType.DNAME:
+                    case DnsResourceRecordType.ANAME:
+                    case DnsResourceRecordType.ALIAS:
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
         private async Task<DnsDatagram> ProcessRecursiveQueryAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, IReadOnlyList<DnsResourceRecord> conditionalForwarders, bool dnssecValidation, bool skipDnsAppAuthoritativeRequestHandlers, int clientTimeout)
         {
             bool isAllowed = await IsAllowedAsync(request, remoteEP, protocol);
@@ -4857,49 +4939,7 @@ namespace DnsServerCore.Dns
                 }
 
                 if (!isAllowed)
-                {
-                    //check for CNAME cloaking
-                    for (int i = 0; i < response.Answer.Count; i++)
-                    {
-                        DnsResourceRecord record = response.Answer[i];
-
-                        if (record.Type != DnsResourceRecordType.CNAME)
-                            break; //no further CNAME records exists
-
-                        string cnameDomain = (record.RDATA as DnsCNAMERecordData).Domain;
-
-                        if (!DnsClient.IsDomainNameValid(cnameDomain))
-                            continue; //skip check for invalid domain
-
-                        DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(cnameDomain, request.Question[0].Type, request.Question[0].Class)], null, null, null, _udpPayloadSize);
-
-                        if (request.Metadata is not null)
-                            newRequest.SetMetadata(request.Metadata.NameServer);
-
-                        //check allowed zone
-                        isAllowed = await IsAllowedAsync(newRequest, remoteEP, protocol);
-                        if (isAllowed)
-                            break; //CNAME is in allowed zone
-
-                        //check blocked zone and block list zone
-                        DnsDatagram blockedResponse = await ProcessBlockedQueryAsync(newRequest, remoteEP, protocol);
-                        if (blockedResponse is not null)
-                        {
-                            //found cname cloaking
-                            List<DnsResourceRecord> answer = new List<DnsResourceRecord>(i + 1 + blockedResponse.Answer.Count);
-
-                            //copy current and previous CNAME records
-                            for (int j = 0; j <= i; j++)
-                                answer.Add(response.Answer[j]);
-
-                            //copy last response answers
-                            answer.AddRange(blockedResponse.Answer);
-
-                            //include blocked response additional section to pass on Extended DNS Errors
-                            return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, true, true, false, false, blockedResponse.RCODE, request.Question, answer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
-                        }
-                    }
-                }
+                    response = await ApplyCnameCloakingAsync(request, response, remoteEP, protocol, false);
             }
 
             if (response.Tag is null)
