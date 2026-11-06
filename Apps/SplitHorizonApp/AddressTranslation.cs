@@ -475,7 +475,7 @@ namespace SplitHorizon
                     {
                         case AddressFamily.InterNetwork:
                             {
-                                uint hostMask = ~(0xFFFFFFFFu << (32 - selectedExternal.PrefixLength));
+                                uint hostMask = (selectedExternal.PrefixLength == 0) ? 0xFFFFFFFFu : ~(0xFFFFFFFFu << (32 - selectedExternal.PrefixLength));
                                 uint host = externalIp.ConvertIpToNumber() & hostMask;
                                 uint addr = selectedInternal.Address.ConvertIpToNumber();
                                 uint internalAddr = (addr & ~hostMask) | host;
@@ -553,7 +553,7 @@ namespace SplitHorizon
                     {
                         case AddressFamily.InterNetwork:
                             {
-                                uint hostMask = ~(0xFFFFFFFFu << (32 - selectedInternal.PrefixLength));
+                                uint hostMask = (selectedInternal.PrefixLength == 0) ? 0xFFFFFFFFu : ~(0xFFFFFFFFu << (32 - selectedInternal.PrefixLength));
                                 uint host = internalIp.ConvertIpToNumber() & hostMask;
                                 uint addr = selectedExternal.Address.ConvertIpToNumber();
                                 uint externalAddr = (addr & ~hostMask) | host;
