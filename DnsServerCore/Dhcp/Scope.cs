@@ -1461,6 +1461,12 @@ namespace DnsServerCore.Dhcp
             _lastModified = DateTime.UtcNow;
         }
 
+        internal void RemoveOffer(Lease lease)
+        {
+            if (_offers.TryRemove(lease.ClientIdentifier, out _))
+                _lastModified = DateTime.UtcNow;
+        }
+
         internal void DeclineLease(Lease lease)
         {
             //an offer is not a committed lease; ReleaseLease leaves it for the client to be given again

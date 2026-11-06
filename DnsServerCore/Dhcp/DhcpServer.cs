@@ -437,35 +437,6 @@ namespace DnsServerCore.Dhcp
                                 }
                             }
 
-                            if ((leaseOffer.Type == LeaseType.Dynamic) && (scope.IsAddressExcluded(leaseOffer.Address) || scope.IsAddressReserved(leaseOffer.Address)))
-                            {
-                                //client ip is excluded/reserved for dynamic allocations
-                                scope.ReleaseLease(leaseOffer);
-                                //send nak
-                                return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
-                            }
-
-                            Lease reservedLease = scope.GetReservedLease(request);
-                            if (reservedLease == null)
-                            {
-                                if (leaseOffer.Type == LeaseType.Reserved)
-                                {
-                                    //client's reserved lease has been removed so release the current lease and send NAK to allow it to get new allocation
-                                    scope.ReleaseLease(leaseOffer);
-                                    //send nak
-                                    return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
-                                }
-                            }
-                            else
-                            {
-                                if (!reservedLease.Address.Equals(leaseOffer.Address))
-                                {
-                                    //client has a new reserved lease so release the current lease and send NAK to allow it to get new allocation
-                                    scope.ReleaseLease(leaseOffer);
-                                    //send nak
-                                    return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
-                                }
-                            }
                         }
                         else
                         {
@@ -493,12 +464,44 @@ namespace DnsServerCore.Dhcp
                             }
                         }
 
+                        if ((leaseOffer.Type == LeaseType.Dynamic) && (scope.IsAddressExcluded(leaseOffer.Address) || scope.IsAddressReserved(leaseOffer.Address)))
+                        {
+                            //client ip is excluded/reserved for dynamic allocations
+                            scope.ReleaseLease(leaseOffer);
+                            scope.RemoveOffer(leaseOffer);
+                            //send nak
+                            return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                        }
+
+                        Lease reservedLease = scope.GetReservedLease(request);
+                        if (reservedLease == null)
+                        {
+                            if (leaseOffer.Type == LeaseType.Reserved)
+                            {
+                                //client's reserved lease has been removed so release the current lease and send NAK to allow it to get new allocation
+                                scope.ReleaseLease(leaseOffer);
+                                scope.RemoveOffer(leaseOffer);
+                                //send nak
+                                return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                            }
+                        }
+                        else
+                        {
+                            if (!reservedLease.Address.Equals(leaseOffer.Address))
+                            {
+                                //client has a new reserved lease so release the current lease and send NAK to allow it to get new allocation
+                                scope.ReleaseLease(leaseOffer);
+                                scope.RemoveOffer(leaseOffer);
+                                //send nak
+                                return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                            }
+                        }
+
                         string reservedLeaseHostName = null;
 
                         if (!string.IsNullOrWhiteSpace(scope.DomainName))
                         {
                             //get override host name from reserved lease
-                            Lease reservedLease = scope.GetReservedLease(request);
                             if (reservedLease is not null)
                                 reservedLeaseHostName = reservedLease.HostName;
                         }
