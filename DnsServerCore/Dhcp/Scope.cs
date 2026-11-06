@@ -510,13 +510,8 @@ namespace DnsServerCore.Dhcp
                     return AddressStatus.FALSE;
             }
 
-            if (_declinedAddresses.TryGetValue(address, out DateTime declinedUntil))
-            {
-                if (DateTime.UtcNow < declinedUntil)
-                    return AddressStatus.FALSE; //client declined this address; it is already in use
-
-                _declinedAddresses.TryRemove(address, out _);
-            }
+            if (IsAddressDeclined(address))
+                return AddressStatus.FALSE; //client declined this address; it is already in use
 
             if (_pingCheckEnabled)
             {
@@ -935,6 +930,19 @@ namespace DnsServerCore.Dhcp
             return false;
         }
 
+        private bool IsAddressDeclined(IPAddress address)
+        {
+            if (_declinedAddresses.TryGetValue(address, out DateTime declinedUntil))
+            {
+                if (DateTime.UtcNow < declinedUntil)
+                    return true;
+
+                _declinedAddresses.TryRemove(address, out _);
+            }
+
+            return false;
+        }
+
         internal bool IsAddressReserved(IPAddress address)
         {
             foreach (KeyValuePair<ClientIdentifierOption, Lease> reservedLease in _reservedLeases)
@@ -1036,6 +1044,13 @@ namespace DnsServerCore.Dhcp
             Lease reservedLease = GetReservedLease(request);
             if (reservedLease != null)
             {
+                if (IsAddressDeclined(reservedLease.Address))
+                {
+                    _log.Write("DHCP Server failed to offer reserved IP address [" + reservedLease.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope '" + _name + "': the address was declined.");
+
+                    return null;
+                }
+
                 if (IsAddressInRange(reservedLease.Address))
                 {
                     Lease reservedOffer = new Lease(LeaseType.Reserved, clientIdentifier, null, request.ClientHardwareAddress, reservedLease.Address, null, GetLeaseTime());
