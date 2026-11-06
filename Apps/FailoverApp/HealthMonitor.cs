@@ -182,6 +182,7 @@ namespace Failover
                     else
                     {
                         HealthCheckResponse healthCheckResponse = await _healthCheck.IsHealthyAsync(_domain, _type, healthCheckUrl);
+                        healthCheckResponse = await _healthCheck.ApplyDomainMaintenanceAsync(_domain, _type, healthCheckResponse);
 
                         bool statusChanged = false;
                         bool maintenance = false;

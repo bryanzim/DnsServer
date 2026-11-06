@@ -297,6 +297,30 @@ namespace Failover
             return _service.IsAddressUnderMaintenance(address);
         }
 
+        public async Task<HealthCheckResponse> ApplyDomainMaintenanceAsync(string domain, DnsResourceRecordType type, HealthCheckResponse response)
+        {
+            DnsDatagram lookup = await _service.DnsServer.DirectQueryAsync(new DnsQuestionRecord(domain, type, DnsClass.IN));
+            if ((lookup is null) || (lookup.Answer.Count == 0))
+                return response;
+
+            IReadOnlyList<IPAddress> addresses = type == DnsResourceRecordType.AAAA ? DnsClient.ParseResponseAAAA(lookup) : DnsClient.ParseResponseA(lookup);
+            if (addresses.Count == 0)
+                return response;
+
+            foreach (IPAddress address in addresses)
+            {
+                if (!IsAddressUnderMaintenance(address))
+                {
+                    if (response.Status == HealthStatus.Maintenance)
+                        return new HealthCheckResponse(HealthStatus.Unknown);
+
+                    return response;
+                }
+            }
+
+            return new HealthCheckResponse(HealthStatus.Maintenance);
+        }
+
         public async Task<HealthCheckResponse> IsHealthyAsync(IPAddress address, Uri? healthCheckUrl)
         {
             if (_service.IsAddressUnderMaintenance(address))
