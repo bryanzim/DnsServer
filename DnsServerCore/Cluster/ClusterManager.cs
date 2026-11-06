@@ -507,9 +507,9 @@ namespace DnsServerCore.Cluster
             if (_serverDomainRenamed && _dnsWebService.DnsServer.ServerDomain.EndsWith("." + _clusterDomain, StringComparison.OrdinalIgnoreCase))
                 _dnsWebService.DnsServer.ServerDomain = _dnsWebService.DnsServer.ServerDomain.Substring(0, _dnsWebService.DnsServer.ServerDomain.Length - (_clusterDomain.Length + 1));
 
-            //save all changes
-            _dnsWebService.DnsServer.SaveConfigFile();
-            _dnsWebService.AuthManager.SaveConfigFile();
+            //save the restored server name and the removed cluster token before the cluster file is deleted
+            _dnsWebService.DnsServer.SaveConfigFile(true);
+            _dnsWebService.AuthManager.SaveConfigFile(true);
 
             UnloadAndDeleteConfigFile();
         }
