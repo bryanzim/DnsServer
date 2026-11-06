@@ -318,8 +318,8 @@ namespace DnsServerCore.Dns.Zones
                 DnsSOARecordData currentSoa = currentSoaRecord.RDATA as DnsSOARecordData;
                 DnsSOARecordData receivedSoa = receivedSoaRecord.RDATA as DnsSOARecordData;
 
-                //compare using sequence space arithmetic
-                if (!_resync && !currentSoa.IsZoneUpdateAvailable(receivedSoa))
+                //compare using sequence space arithmetic; a new stub has serial 0 and no NS, so an equal primary serial must still sync
+                if (!_resync && (GetRecords(DnsResourceRecordType.NS).Count > 0) && !currentSoa.IsZoneUpdateAvailable(receivedSoa))
                 {
                     _dnsServer.LogManager.Write("DNS Server successfully checked for '" + ToString() + "' Stub zone update from: " + soaResponse.Metadata.NameServer.ToString());
 
