@@ -184,6 +184,26 @@ namespace ZoneAlias
                     }
                     break;
 
+                case DnsResourceRecordType.NAPTR:
+                    {
+                        DnsNAPTRRecordData naptr = record.RDATA as DnsNAPTRRecordData;
+                        string replacement = AliasName(naptr.Replacement, zone, alias);
+                        if (replacement is not null)
+                            return new DnsNAPTRRecordData(naptr.Order, naptr.Preference, naptr.Flags, naptr.Services, naptr.Regexp, replacement);
+                    }
+                    break;
+
+                case DnsResourceRecordType.RP:
+                    {
+                        DnsRPRecordData rp = record.RDATA as DnsRPRecordData;
+                        string mailbox = AliasName(rp.Mailbox, zone, alias) ?? rp.Mailbox;
+                        string txtDomain = AliasName(rp.TxtDomain, zone, alias) ?? rp.TxtDomain;
+
+                        if (!mailbox.Equals(rp.Mailbox, StringComparison.OrdinalIgnoreCase) || !txtDomain.Equals(rp.TxtDomain, StringComparison.OrdinalIgnoreCase))
+                            return new DnsRPRecordData(mailbox, txtDomain);
+                    }
+                    break;
+
                 case DnsResourceRecordType.SVCB:
                 case DnsResourceRecordType.HTTPS:
                     {
