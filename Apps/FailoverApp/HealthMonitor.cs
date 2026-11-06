@@ -141,10 +141,6 @@ namespace Failover
 
                         _lastHealthCheckResponse = new HealthCheckResponse(HealthStatus.Failed, ex.ToString(), ex);
                     }
-                    else
-                    {
-                        _lastHealthCheckResponse = null;
-                    }
                 }
                 finally
                 {
@@ -257,10 +253,6 @@ namespace Failover
                             _ = webHook.CallAsync(_domain, _type, _healthCheck.Name, ex);
 
                         _lastHealthCheckResponse = new HealthCheckResponse(HealthStatus.Failed, ex.ToString(), ex);
-                    }
-                    else
-                    {
-                        _lastHealthCheckResponse = null;
                     }
                 }
                 finally
