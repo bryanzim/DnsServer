@@ -117,7 +117,20 @@ namespace GeoCountry
             _dnsServer = dnsServer;
             _maxMind = MaxMind.Create(dnsServer);
 
-            if (string.IsNullOrWhiteSpace(config) || config.StartsWith('#') || !config.TrimStart().StartsWith('{'))
+            static bool IsJsonObjectConfig(string config)
+            {
+                try
+                {
+                    using JsonDocument jsonDocument = JsonDocument.Parse(config, _jsonParseOptions);
+                    return jsonDocument.RootElement.ValueKind == JsonValueKind.Object;
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(config) || config.StartsWith('#') || !IsJsonObjectConfig(config))
             {
                 //save default config into file
                 config = "{\r\n    \"groups\": {\r\n        \"custom-group\": [\r\n            \"SG\",\r\n            \"FR\",\r\n            \"AS1234\"\r\n        ]\r\n    }\r\n}\r\n";
