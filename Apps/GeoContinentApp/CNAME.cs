@@ -135,6 +135,8 @@ namespace GeoContinent
                 if ((requestECS is not null) && ecsClientLocated)
                     return Task.FromResult<DnsDatagram?>(null);
 
+                scopePrefixLength = 0; //this answer is chosen from the resolver, not the ECS client
+
                 long? asn = null;
 
                 if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(remoteEP.Address, out IspResponse? csIsp) && (csIsp.Network is not null))
