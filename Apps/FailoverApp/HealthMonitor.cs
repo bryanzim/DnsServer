@@ -308,6 +308,28 @@ namespace Failover
             _lastHealthCheckResponse = new HealthCheckResponse(HealthStatus.Maintenance);
         }
 
+        public void ApplyMaintenance(bool underMaintenance)
+        {
+            if (underMaintenance)
+            {
+                SetUnderMaintenance();
+                return;
+            }
+
+            if ((_lastHealthCheckResponse is not null) && (_lastHealthCheckResponse.Status == HealthStatus.Maintenance))
+                _lastHealthCheckResponse = null;
+        }
+
+        public void RequestCheck()
+        {
+            try
+            {
+                _healthCheckTimer?.Change(0, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            { }
+        }
+
         #endregion
 
         #region properties
