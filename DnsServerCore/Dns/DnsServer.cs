@@ -2069,6 +2069,30 @@ namespace DnsServerCore.Dns
 
                 sendBuffer = ArrayPool<byte>.Shared.Rent(sendBufferSize);
 
+                if ((response.NextDatagram is not null) && response.IsZoneTransfer)
+                {
+                    //a split zone transfer is more than one message; the first chunk can still compress into this buffer
+                    DnsDatagram truncatedResponse = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, true, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, response.RCODE, response.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative };
+
+                    if (response.IsSigned)
+                    {
+                        try
+                        {
+                            truncatedResponse = truncatedResponse.SignResponse(request, _tsigKeys);
+                        }
+                        catch (NotSupportedException)
+                        {
+                            //the signed truncation does not fit; send it unsigned
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            //the signed truncation does not fit; send it unsigned
+                        }
+                    }
+
+                    response = truncatedResponse;
+                }
+
                 using (MemoryStream sendBufferStream = new MemoryStream(sendBuffer, 0, sendBufferSize))
                 {
                     try
