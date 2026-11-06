@@ -2986,7 +2986,6 @@ namespace DnsServerCore.Dns
                             case DnsResourceRecordType.IXFR:
                                 return await ProcessZoneTransferQueryAsync(request, remoteEP, protocol, tsigAuthenticatedKeyName);
 
-                            case DnsResourceRecordType.RRSIG:
                             case DnsResourceRecordType.FWD:
                             case DnsResourceRecordType.APP:
                             case DnsResourceRecordType.CHILD_NS:
