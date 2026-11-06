@@ -2208,8 +2208,7 @@ namespace DnsServerCore
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Delete))
                     throw new DnsWebServiceException("Access was denied.");
 
-                if ((zoneInfo.Type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
-                    throw new DnsWebServiceException("Cannot convert the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
+                ThrowIfClusterManagedZone(zoneInfo, "convert");
 
                 _dnsWebService._dnsServer.AuthZoneManager.ConvertZoneTypeTo(zoneInfo.Name, type);
 
@@ -3031,20 +3030,7 @@ namespace DnsServerCore
                     if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Delete))
                         throw new DnsWebServiceException("Access was denied.");
 
-                    switch (zoneInfo.Type)
-                    {
-                        case AuthZoneType.Primary:
-                            if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
-                                throw new DnsWebServiceException("Cannot delete the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
-
-                            break;
-
-                        case AuthZoneType.Catalog:
-                            if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
-                                throw new DnsWebServiceException("Cannot delete the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
-
-                            break;
-                    }
+                    ThrowIfClusterManagedZone(zoneInfo, "delete");
 
                     if (!_dnsWebService._dnsServer.AuthZoneManager.DeleteZone(zoneInfo, true))
                         throw new DnsWebServiceException("Failed to delete the zone '" + zoneInfo.DisplayName + "': no such zone exists.");
@@ -3087,6 +3073,30 @@ namespace DnsServerCore
                 _dnsWebService._dnsServer.CacheZoneManager.DeleteZone(zoneInfo.Name);
             }
 
+            private void ThrowIfClusterManagedZone(AuthZoneInfo zoneInfo, string action)
+            {
+                if (!_dnsWebService._clusterManager.ClusterInitialized)
+                    return;
+
+                switch (zoneInfo.Type)
+                {
+                    case AuthZoneType.Primary:
+                    case AuthZoneType.Secondary:
+                    case AuthZoneType.SecondaryForwarder:
+                        if (_dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
+                            throw new DnsWebServiceException("Cannot " + action + " the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
+
+                        break;
+
+                    case AuthZoneType.Catalog:
+                    case AuthZoneType.SecondaryCatalog:
+                        if (_dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
+                            throw new DnsWebServiceException("Cannot " + action + " the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
+
+                        break;
+                }
+            }
+
             public void DisableZone(HttpContext context)
             {
                 User sessionUser = _dnsWebService.GetSessionUser(context);
@@ -3106,20 +3116,7 @@ namespace DnsServerCore
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Modify))
                     throw new DnsWebServiceException("Access was denied.");
 
-                switch (zoneInfo.Type)
-                {
-                    case AuthZoneType.Primary:
-                        if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
-                            throw new DnsWebServiceException("Cannot disable the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
-
-                        break;
-
-                    case AuthZoneType.Catalog:
-                        if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
-                            throw new DnsWebServiceException("Cannot disable the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
-
-                        break;
-                }
+                ThrowIfClusterManagedZone(zoneInfo, "disable");
 
                 zoneInfo.Disabled = true;
                 _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(zoneInfo.Name);
@@ -3482,25 +3479,16 @@ namespace DnsServerCore
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Delete))
                     throw new DnsWebServiceException("Access was denied.");
 
+                if (_dnsWebService._clusterManager.ClusterInitialized && ((zoneInfo.Type == AuthZoneType.Secondary) || (zoneInfo.Type == AuthZoneType.SecondaryForwarder) || (zoneInfo.Type == AuthZoneType.SecondaryCatalog)) && (_dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name) || _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name)))
+                {
+                    if ((request.QueryOrForm("primaryNameServerAddresses") is not null) || (request.QueryOrForm("primaryZoneTransferProtocol") is not null) || (request.QueryOrForm("primaryZoneTransferTsigKeyName") is not null))
+                        throw new DnsWebServiceException("Cannot update primary name servers for the " + (_dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name) ? "Cluster Primary" : "Cluster Catalog") + " zone '" + zoneInfo.DisplayName + "'.");
+                }
+
                 if (request.TryGetQueryOrForm("disabled", bool.Parse, out bool disabled))
                 {
                     if (disabled)
-                    {
-                        switch (zoneInfo.Type)
-                        {
-                            case AuthZoneType.Primary:
-                                if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
-                                    throw new DnsWebServiceException("Cannot disable the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
-
-                                break;
-
-                            case AuthZoneType.Catalog:
-                                if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
-                                    throw new DnsWebServiceException("Cannot disable the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
-
-                                break;
-                        }
-                    }
+                        ThrowIfClusterManagedZone(zoneInfo, "disable");
 
                     zoneInfo.Disabled = disabled;
                 }
