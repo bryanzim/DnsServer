@@ -160,6 +160,7 @@ namespace DnsServerCore.Auth
 
                 case UserSessionType.ApiToken:
                 case UserSessionType.ClusterApiToken:
+                case UserSessionType.SingleUse:
                     return false;
 
                 default:
