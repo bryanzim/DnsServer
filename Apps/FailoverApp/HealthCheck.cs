@@ -240,7 +240,7 @@ namespace Failover
                 case DnsResourceRecordType.A:
                     {
                         DnsDatagram response = await _service.DnsServer.DirectQueryAsync(new DnsQuestionRecord(domain, type, DnsClass.IN));
-                        if ((response is null) || (response.Answer.Count == 0))
+                        if ((response is null) || (response.RCODE != DnsResponseCode.NoError) || (response.Answer.Count == 0))
                             return new HealthCheckResponse(HealthStatus.Failed, "Failed to resolve address.");
 
                         IReadOnlyList<IPAddress> addresses = DnsClient.ParseResponseA(response);
@@ -272,7 +272,7 @@ namespace Failover
                 case DnsResourceRecordType.AAAA:
                     {
                         DnsDatagram response = await _service.DnsServer.DirectQueryAsync(new DnsQuestionRecord(domain, type, DnsClass.IN));
-                        if ((response is null) || (response.Answer.Count == 0))
+                        if ((response is null) || (response.RCODE != DnsResponseCode.NoError) || (response.Answer.Count == 0))
                             return new HealthCheckResponse(HealthStatus.Failed, "Failed to resolve address.");
 
                         IReadOnlyList<IPAddress> addresses = DnsClient.ParseResponseAAAA(response);
