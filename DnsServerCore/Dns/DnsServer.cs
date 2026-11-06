@@ -3904,10 +3904,18 @@ namespace DnsServerCore.Dns
                             switch (lastRR.Type)
                             {
                                 case DnsResourceRecordType.CNAME:
-                                    return await ProcessCNAMEAsync(request, response, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, _clientTimeout, context ?? new DnsClient.ResolverContext());
+                                    response = await ProcessCNAMEAsync(request, response, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, _clientTimeout, context ?? new DnsClient.ResolverContext());
+                                    if (response is null)
+                                        return null;
+
+                                    return await ApplyCnameCloakingAsync(request, response, remoteEP, protocol);
 
                                 case DnsResourceRecordType.ANAME:
                                 case DnsResourceRecordType.ALIAS:
+                                    DnsDatagram cloakedResponse = await ApplyCnameCloakingAsync(request, response, remoteEP, protocol);
+                                    if (!ReferenceEquals(cloakedResponse, response))
+                                        return cloakedResponse;
+
                                     return await ProcessANAMEAsync(request, response, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, _clientTimeout, context ?? new DnsClient.ResolverContext());
                             }
                         }
@@ -3961,7 +3969,7 @@ namespace DnsServerCore.Dns
             }
             while (reprocessResponse);
 
-            return response;
+            return await ApplyCnameCloakingAsync(request, response, remoteEP, protocol);
         }
 
         internal async Task<DnsDatagram> AuthoritativeQueryAsync(DnsDatagram request, DnsTransportProtocol protocol, bool isRecursionAllowed, bool skipDnsAppAuthoritativeRequestHandlers, IPEndPoint remoteEP = null)
@@ -4826,6 +4834,14 @@ namespace DnsServerCore.Dns
             }
 
             return null;
+        }
+
+        private async Task<DnsDatagram> ApplyCnameCloakingAsync(DnsDatagram request, DnsDatagram response, IPEndPoint remoteEP, DnsTransportProtocol protocol)
+        {
+            if ((response is null) || (response.Answer is null) || (response.Answer.Count == 0) || !AnswerContainsAlias(response.Answer))
+                return response;
+
+            return await ApplyCnameCloakingAsync(request, response, remoteEP, protocol, await IsAllowedAsync(request, remoteEP, protocol));
         }
 
         private async Task<DnsDatagram> ApplyCnameCloakingAsync(DnsDatagram request, DnsDatagram response, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool queryIsAllowed)
