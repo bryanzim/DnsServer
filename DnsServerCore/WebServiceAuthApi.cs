@@ -1042,10 +1042,11 @@ namespace DnsServerCore
             public void DeleteSession(HttpContext context, bool isAdminContext)
             {
                 UserSession session = context.GetCurrentSession();
+                User sessionUser = _dnsWebService.GetSessionUser(context);
 
                 if (isAdminContext)
                 {
-                    if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, session.User, PermissionFlag.Delete))
+                    if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Delete))
                         throw new DnsWebServiceException("Access was denied.");
                 }
 
@@ -1087,7 +1088,7 @@ namespace DnsServerCore
 
                 UserSession deletedSession = _dnsWebService._authManager.DeleteSession(sessionToDelete.Token);
 
-                _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + session.User.Username + "] User session [" + strPartialToken + "] was deleted successfully for user: " + deletedSession.User.Username);
+                _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] User session [" + strPartialToken + "] was deleted successfully for user: " + deletedSession.User.Username);
 
                 _dnsWebService._authManager.SaveConfigFile();
 
