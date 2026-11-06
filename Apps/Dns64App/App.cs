@@ -97,11 +97,8 @@ namespace Dns64
             if (request.DnssecOk)
                 return response;
 
-            switch (response.RCODE)
-            {
-                case DnsResponseCode.NxDomain:
-                    return response;
-            }
+            if (response.RCODE != DnsResponseCode.NoError)
+                return response;
 
             DnsQuestionRecord question = request.Question[0];
             if (question.Type != DnsResourceRecordType.AAAA)
