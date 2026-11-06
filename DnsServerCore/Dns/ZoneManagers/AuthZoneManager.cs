@@ -3143,6 +3143,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             List<DnsResourceRecord> deletedGlueRecords = new List<DnsResourceRecord>();
             List<DnsResourceRecord> addedRecords = new List<DnsResourceRecord>();
             List<DnsResourceRecord> addedGlueRecords = new List<DnsResourceRecord>();
+            List<DnsResourceRecord> unchangedGlueRecords = new List<DnsResourceRecord>();
 
             //read and apply difference sequences
             int index = 1;
@@ -3230,6 +3231,11 @@ namespace DnsServerCore.Dns.ZoneManagers
                                     if (!addedGlueRecords.Contains(record)) //check to prevent duplicate add entries
                                         addedGlueRecords.Add(record);
                                 }
+                                else if (!unchangedGlueRecords.Contains(record))
+                                {
+                                    // same glue on both sides is dropped, which also drops it from an NS record this difference replaces
+                                    unchangedGlueRecords.Add(record);
+                                }
 
                                 break;
                         }
@@ -3248,6 +3254,12 @@ namespace DnsServerCore.Dns.ZoneManagers
                 currentSoa = addedSoaRecord.RDATA as DnsSOARecordData;
             }
 
+            foreach (DnsResourceRecord glueRecord in unchangedGlueRecords)
+            {
+                if (NameServerRecordWasReplaced(glueRecord.Name, deletedRecords, addedRecords) && !addedGlueRecords.Contains(glueRecord))
+                    addedGlueRecords.Add(glueRecord);
+            }
+
             //create condensed records
             List<DnsResourceRecord> condensedRecords = new List<DnsResourceRecord>(2 + 2 + deletedRecords.Count + deletedGlueRecords.Count + addedRecords.Count + addedGlueRecords.Count);
 
@@ -3264,6 +3276,31 @@ namespace DnsServerCore.Dns.ZoneManagers
             condensedRecords.Add(lastSoaRecord);
 
             return condensedRecords;
+        }
+
+        private static bool NameServerRecordWasReplaced(string glueName, List<DnsResourceRecord> deletedRecords, List<DnsResourceRecord> addedRecords)
+        {
+            bool deleted = false;
+
+            foreach (DnsResourceRecord record in deletedRecords)
+            {
+                if ((record.Type == DnsResourceRecordType.NS) && (record.RDATA is DnsNSRecordData deletedNameServer) && deletedNameServer.NameServer.Equals(glueName, StringComparison.OrdinalIgnoreCase))
+                {
+                    deleted = true;
+                    break;
+                }
+            }
+
+            if (!deleted)
+                return false;
+
+            foreach (DnsResourceRecord record in addedRecords)
+            {
+                if ((record.Type == DnsResourceRecordType.NS) && (record.RDATA is DnsNSRecordData addedNameServer) && addedNameServer.NameServer.Equals(glueName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         internal void ImportRecords(string zoneName, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone, bool overwriteSoaSerial)
