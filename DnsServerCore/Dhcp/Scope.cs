@@ -2344,6 +2344,7 @@ namespace DnsServerCore.Dhcp
                 else
                 {
                     HashSet<IPAddress> reservedAddresses = new HashSet<IPAddress>();
+                    HashSet<ClientIdentifierOption> reservedClients = new HashSet<ClientIdentifierOption>();
 
                     foreach (Lease reservedLease in value)
                     {
@@ -2352,6 +2353,9 @@ namespace DnsServerCore.Dhcp
 
                         if (!reservedAddresses.Add(reservedLease.Address))
                             throw new ArgumentException("Reserved address is already reserved for another client: " + reservedLease.Address.ToString());
+
+                        if (!reservedClients.Add(reservedLease.ClientIdentifier))
+                            throw new ArgumentException("Hardware address is already reserved for another address: " + reservedLease.Address.ToString());
                     }
 
                     //remove DNS entries for reserved leases being removed, renamed, or moved to another address
@@ -2378,8 +2382,10 @@ namespace DnsServerCore.Dhcp
 
                     foreach (Lease reservedLease in value)
                     {
-                        if (_reservedLeases.TryAdd(reservedLease.ClientIdentifier, reservedLease))
-                            _dhcpServer.AddDnsEntries(this, reservedLease); //add DNS entries for new reserved lease
+                        if (!_reservedLeases.TryAdd(reservedLease.ClientIdentifier, reservedLease))
+                            throw new ArgumentException("Hardware address is already reserved for another address: " + reservedLease.Address.ToString());
+
+                        _dhcpServer.AddDnsEntries(this, reservedLease); //add DNS entries for new reserved lease
                     }
                 }
             }

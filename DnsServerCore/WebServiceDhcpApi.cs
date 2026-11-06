@@ -496,6 +496,8 @@ namespace DnsServerCore
                 if (!string.IsNullOrEmpty(strReservedLeases))
                 {
                     string[] strReservedLeaseParts = strReservedLeases.Split('|');
+                    HashSet<IPAddress> reservedAddresses = new HashSet<IPAddress>();
+                    HashSet<ClientIdentifierOption> reservedClients = new HashSet<ClientIdentifierOption>();
 
                     for (int i = 0; i < strReservedLeaseParts.Length; i += 4)
                     {
@@ -503,6 +505,12 @@ namespace DnsServerCore
 
                         if (!Scope.IsAddressInRange(reservedLease.Address, startingAddress, endingAddress))
                             throw new ArgumentOutOfRangeException(nameof(Scope.ReservedLeases), "Reserved address must be in scope range.");
+
+                        if (!reservedAddresses.Add(reservedLease.Address))
+                            throw new ArgumentException("Reserved address is already reserved for another client: " + reservedLease.Address.ToString());
+
+                        if (!reservedClients.Add(reservedLease.ClientIdentifier))
+                            throw new ArgumentException("Hardware address is already reserved for another address: " + reservedLease.Address.ToString());
                     }
                 }
 
