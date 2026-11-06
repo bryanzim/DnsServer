@@ -2879,7 +2879,13 @@ namespace DnsServerCore
 
             //set default permissions
             _authManager.SetPermission(PermissionSection.Zones, memberZoneInfo.Name, _authManager.GetGroup(Group.ADMINISTRATORS), PermissionFlag.ViewModifyDelete);
-            _authManager.SetPermission(PermissionSection.Zones, memberZoneInfo.Name, _authManager.GetGroup(Group.DNS_ADMINISTRATORS), PermissionFlag.ViewModifyDelete);
+
+            PermissionFlag dnsAdminPermission = PermissionFlag.ViewModifyDelete;
+
+            if (_clusterManager.ClusterInitialized && (_clusterManager.IsClusterPrimaryZone(memberZoneInfo.Name) || _clusterManager.IsClusterCatalogZone(memberZoneInfo.Name)))
+                dnsAdminPermission = PermissionFlag.View;
+
+            _authManager.SetPermission(PermissionSection.Zones, memberZoneInfo.Name, _authManager.GetGroup(Group.DNS_ADMINISTRATORS), dnsAdminPermission);
             _authManager.SaveConfigFile();
 
             //sync dnssec private keys for secondary members zone when it is a cluster secondary catalog zone
