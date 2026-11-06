@@ -215,9 +215,8 @@ namespace QueryLogsMySql
                         if (logs.Count < 1)
                             continue;
 
-                        await BulkInsertLogsAsync(logs, sb);
-
-                        logs.Clear();
+                        if (await BulkInsertLogsAsync(logs, sb))
+                            logs.Clear();
                     }
                 }
                 catch (Exception ex)
@@ -239,7 +238,7 @@ namespace QueryLogsMySql
             _channel?.Writer.TryComplete();
         }
 
-        private async Task BulkInsertLogsAsync(List<LogEntry> logs, StringBuilder sb)
+        private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs, StringBuilder sb)
         {
             try
             {
@@ -347,12 +346,14 @@ namespace QueryLogsMySql
                         await command.ExecuteNonQueryAsync();
                     }
                 }
+                return true;
             }
             catch (Exception ex)
             {
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
+                return false;
             }
         }
 

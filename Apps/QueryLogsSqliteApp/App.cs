@@ -235,9 +235,8 @@ namespace QueryLogsSqlite
                         if (logs.Count < 1)
                             continue;
 
-                        await BulkInsertLogsAsync(logs);
-
-                        logs.Clear();
+                        if (await BulkInsertLogsAsync(logs))
+                            logs.Clear();
                     }
                 }
                 catch (Exception ex)
@@ -259,7 +258,7 @@ namespace QueryLogsSqlite
             _channel?.Writer.TryComplete();
         }
 
-        private async Task BulkInsertLogsAsync(List<LogEntry> logs)
+        private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs)
         {
             try
             {
@@ -354,12 +353,14 @@ namespace QueryLogsSqlite
                         }
                     }
                 }
+                return true;
             }
             catch (Exception ex)
             {
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
+                return false;
             }
         }
 
