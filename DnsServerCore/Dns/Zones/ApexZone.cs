@@ -662,6 +662,33 @@ namespace DnsServerCore.Dns.Zones
             _dnsServer.AuthZoneManager.SaveZoneFile(_name);
         }
 
+        internal void ScheduleAdoptedRecordExpiry(IReadOnlyList<DnsResourceRecord> records)
+        {
+            if ((records is null) || (records.Count == 0))
+                return;
+
+            uint minExpiryTtl = 0u;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                GenericRecordInfo recordInfo = record.GetAuthGenericRecordInfo();
+                if (recordInfo.ExpiryTtl == 0u)
+                    continue;
+
+                uint pendingExpiryTtl = recordInfo.GetPendingExpiryTtl();
+                if (pendingExpiryTtl == 0u)
+                    pendingExpiryTtl = 10;
+
+                if (minExpiryTtl == 0u)
+                    minExpiryTtl = pendingExpiryTtl;
+                else
+                    minExpiryTtl = Math.Min(minExpiryTtl, pendingExpiryTtl);
+            }
+
+            if (minExpiryTtl > 0u)
+                StartRecordExpiryTimer(minExpiryTtl);
+        }
+
         internal void PublishRemovedRecords(IReadOnlyList<DnsResourceRecord> deletedRecords)
         {
             if ((deletedRecords is null) || (deletedRecords.Count == 0))

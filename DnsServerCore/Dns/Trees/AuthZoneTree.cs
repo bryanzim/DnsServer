@@ -539,6 +539,8 @@ namespace DnsServerCore.Dns.Trees
                     moved.Key.PublishRemovedRecords(moved.Value);
                 else
                     moved.Key.SaveZoneFile();
+
+                apexZone.ScheduleAdoptedRecordExpiry(moved.Value);
             }
 
             apexZone.SaveZoneFile();

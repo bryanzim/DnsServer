@@ -916,6 +916,13 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if (authZone is SubDomainZone subDomainZone)
                     subDomainZone.AutoUpdateState();
 
+                List<DnsResourceRecord> adoptedRecords = new List<DnsResourceRecord>();
+
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in rrsets)
+                    adoptedRecords.AddRange(rrsetEntry.Value);
+
+                childZone.ScheduleAdoptedRecordExpiry(adoptedRecords);
+
                 bool childAlreadyQueued = false;
 
                 foreach (string childZoneName in childZonesToSave)
