@@ -501,8 +501,8 @@ namespace DnsServerCore.Dns.Zones
                             IReadOnlyList<DnsResourceRecord> rrset = ValidateRRSet(existingRecords, serveStale, skipSpecialCacheRecord);
                             if (rrset.Count > 0)
                             {
-                                if (rrset[0].RDATA is DnsCache.DnsSpecialCacheRecordData splRecord && (splRecord.Type == DnsCache.DnsSpecialCacheRecordType.FailureCache))
-                                    records = rrset; //hold failure rrset so that CNAME can be checked before answering since any resolution failure gets stored as a Failure Cache entry
+                                if (rrset[0].RDATA is DnsCache.DnsSpecialCacheRecordData splRecord && ((splRecord.Type == DnsCache.DnsSpecialCacheRecordType.FailureCache) || (splRecord.Type == DnsCache.DnsSpecialCacheRecordType.NegativeCache)))
+                                    records = rrset; //hold this rrset so that a CNAME at the same name is checked before answering
                                 else
                                     return rrset;
                             }
