@@ -439,7 +439,8 @@ namespace DnsServerCore.Dns.Zones
 
                         if (cacheSubnet.Equals(eDnsClientSubnet) || cacheSubnet.Contains(eDnsClientSubnet.Address))
                         {
-                            if ((selectedNetwork is null) || (cacheSubnet.PrefixLength < selectedNetwork.PrefixLength))
+                            //longest prefix that still covers the client; a scope of zero must not hide a more specific answer
+                            if ((selectedNetwork is null) || (cacheSubnet.PrefixLength > selectedNetwork.PrefixLength))
                             {
                                 selectedNetwork = cacheSubnet;
                                 entries = ecsEntry.Value;
