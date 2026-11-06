@@ -3408,7 +3408,7 @@ namespace DnsServerCore.Dns
                             }
 
                             //update
-                            Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSets = new Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>>();
+                            Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSets = new Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>>(StringComparer.OrdinalIgnoreCase);
 
                             void AddToOriginalRRSets(string domain, DnsResourceRecordType type, IReadOnlyList<DnsResourceRecord> existingRRSet)
                             {
