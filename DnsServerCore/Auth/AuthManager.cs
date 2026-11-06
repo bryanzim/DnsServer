@@ -1079,6 +1079,10 @@ namespace DnsServerCore.Auth
                 throw new InvalidOperationException();
             }
 
+            string ldapDisplayName = null;
+            Dictionary<string, Group> ldapGroups = null;
+            bool applyLdapProfile = false;
+
             switch (user.Type)
             {
                 case UserType.RemoteSSO:
@@ -1096,10 +1100,10 @@ namespace DnsServerCore.Auth
                         LdapAuthProvider ldapProvider = new LdapAuthProvider(_dnsWebService.DnsServer, _ldapServer, _ldapPort, _ldapSslOption, _ldapIgnoreSslErrors, _ldapBindUsername, _ldapBindPassword, _ldapSearchBase, _ldapUserSearchFilter, _ldapGroupAttribute);
                         LdapAuthProvider.AuthInfo authInfo = await ldapProvider.AuthenticateAsync(username, password);
 
-                        //sync display name
-                        user.DisplayName = authInfo.DisplayName;
+                        //hold the directory profile until the second factor succeeds
+                        applyLdapProfile = true;
+                        ldapDisplayName = authInfo.DisplayName;
 
-                        //sync group memberships
                         if (_ldapGroupMap is not null)
                         {
                             Dictionary<string, Group> groups = new Dictionary<string, Group>(4);
@@ -1117,7 +1121,7 @@ namespace DnsServerCore.Auth
                             Group everyone = GetGroup(Group.EVERYONE);
                             groups[everyone.Name.ToLowerInvariant()] = everyone;
 
-                            user.SyncGroups(groups);
+                            ldapGroups = groups;
                         }
                     }
                     catch (LdapAuthFailedException ex)
@@ -1152,6 +1156,14 @@ namespace DnsServerCore.Auth
 
                 if (!authenticator.IsTOTPValid(totp))
                     await ThrowAuthFailedExceptionAsync("Invalid time-based one-time password (TOTP) was attempted for user: " + username);
+            }
+
+            if (applyLdapProfile)
+            {
+                user.DisplayName = ldapDisplayName;
+
+                if (ldapGroups is not null)
+                    user.SyncGroups(ldapGroups);
             }
 
             ResetFailedLoginAttempts(network);
