@@ -678,12 +678,17 @@ CREATE TABLE IF NOT EXISTS dns_logs
                     totalEntries = Convert.ToInt64(await command.ExecuteScalarAsync());
                 }
 
+                if (entriesPerPage < 1)
+                    entriesPerPage = 25;
+
                 long totalPages = (totalEntries / entriesPerPage) + (totalEntries % entriesPerPage > 0 ? 1 : 0);
 
                 if (totalPages < 1)
                     pageNumber = 1;
                 else if ((pageNumber > totalPages) || (pageNumber < 0))
                     pageNumber = totalPages;
+                else if (pageNumber < 1)
+                    pageNumber = 1;
 
                 long offset = (pageNumber - 1) * entriesPerPage;
 
