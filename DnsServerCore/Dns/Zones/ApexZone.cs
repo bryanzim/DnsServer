@@ -652,6 +652,30 @@ namespace DnsServerCore.Dns.Zones
             return false;
         }
 
+        internal virtual bool CanCommitZoneChange()
+        {
+            return _dnssecStatus == AuthZoneDnssecStatus.Unsigned;
+        }
+
+        internal void SaveZoneFile()
+        {
+            _dnsServer.AuthZoneManager.SaveZoneFile(_name);
+        }
+
+        internal void PublishRemovedRecords(IReadOnlyList<DnsResourceRecord> deletedRecords)
+        {
+            if ((deletedRecords is null) || (deletedRecords.Count == 0))
+                return;
+
+            if ((GetRecords(DnsResourceRecordType.SOA).Count > 0) && CanCommitZoneChange())
+            {
+                CommitAndIncrementSerial(deletedRecords);
+                TriggerNotify();
+            }
+
+            SaveZoneFile();
+        }
+
         internal virtual void CommitAndIncrementSerial(IReadOnlyList<DnsResourceRecord> deletedRecords = null, IReadOnlyList<DnsResourceRecord> addedRecords = null)
         {
             _lastModified = DateTime.UtcNow;

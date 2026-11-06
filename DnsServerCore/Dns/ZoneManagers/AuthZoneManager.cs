@@ -327,6 +327,8 @@ namespace DnsServerCore.Dns.ZoneManagers
         private void LoadAndInitZone(AuthZoneInfo zoneInfo, IReadOnlyList<DnsResourceRecord> records)
         {
             ApexZone apexZone = zoneInfo.ApexZone;
+            List<DnsResourceRecord> recordsMovedToChild = new List<DnsResourceRecord>();
+            List<string> childZonesToSave = new List<string>();
 
             //load records
             foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> zoneEntry in DnsResourceRecord.GroupRecords(records))
@@ -341,7 +343,12 @@ namespace DnsServerCore.Dns.ZoneManagers
                     ValidateIfDomainBelongsToZone(apexZone.Name, zoneEntry.Key);
 
                     if (IsNameInChildZone(apexZone.Name, zoneEntry.Key))
+                    {
+                        if ((apexZone is PrimaryZone) || (apexZone is ForwarderZone))
+                            GiveLoadedNameToChildZone(zoneEntry.Key, zoneEntry.Value, recordsMovedToChild, childZonesToSave);
+
                         continue;
+                    }
 
                     if (_root.TryGet(apexZone.Name, zoneEntry.Key, out AuthZone existingZone) && (existingZone is SubDomainZone existingSubDomainZone) && !existingSubDomainZone.AuthoritativeZone.Name.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
                         continue; //name was already loaded for another zone
@@ -358,6 +365,14 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             //update dnssec status
             apexZone.UpdateDnssecStatus();
+
+            if (recordsMovedToChild.Count > 0)
+            {
+                apexZone.PublishRemovedRecords(recordsMovedToChild);
+
+                foreach (string childZoneName in childZonesToSave)
+                    SaveZoneFile(childZoneName);
+            }
 
             //init zone
             switch (zoneInfo.Type)
@@ -870,6 +885,54 @@ namespace DnsServerCore.Dns.ZoneManagers
                 return true;
 
             return domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void GiveLoadedNameToChildZone(string domain, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> rrsets, List<DnsResourceRecord> recordsMovedToChild, List<string> childZonesToSave)
+        {
+            _ = _root.FindZone(domain, out _, out _, out ApexZone childZone, out _);
+
+            if ((childZone is null) || domain.Equals(childZone.Name, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if ((childZone is not PrimaryZone) && (childZone is not ForwarderZone))
+                return;
+
+            if (!TryGetAuthZone(childZone.Name, domain, out _))
+            {
+                AuthZone authZone;
+
+                try
+                {
+                    authZone = GetOrAddSubDomainZone(childZone.Name, domain);
+                }
+                catch (DnsServerException)
+                {
+                    return;
+                }
+
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in rrsets)
+                    authZone.LoadRecords(rrsetEntry.Key, rrsetEntry.Value);
+
+                if (authZone is SubDomainZone subDomainZone)
+                    subDomainZone.AutoUpdateState();
+
+                bool childAlreadyQueued = false;
+
+                foreach (string childZoneName in childZonesToSave)
+                {
+                    if (childZoneName.Equals(childZone.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        childAlreadyQueued = true;
+                        break;
+                    }
+                }
+
+                if (!childAlreadyQueued)
+                    childZonesToSave.Add(childZone.Name);
+            }
+
+            foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in rrsets)
+                recordsMovedToChild.AddRange(rrsetEntry.Value);
         }
 
         internal AuthZone GetOrAddSubDomainZone(string zoneName, string domain)

@@ -1936,6 +1936,34 @@ namespace DnsServerCore.Dns.Zones
             return rrsigRecords;
         }
 
+        internal override bool CanCommitZoneChange()
+        {
+            if (_dnssecStatus == AuthZoneDnssecStatus.Unsigned)
+                return true;
+
+            if (_dnssecPrivateKeys is null)
+                return false;
+
+            lock (_dnssecPrivateKeys)
+            {
+                foreach (KeyValuePair<ushort, DnssecPrivateKey> privateKeyEntry in _dnssecPrivateKeys)
+                {
+                    DnssecPrivateKey privateKey = privateKeyEntry.Value;
+                    if (privateKey.KeyType != DnssecPrivateKeyType.ZoneSigningKey)
+                        continue;
+
+                    switch (privateKey.State)
+                    {
+                        case DnssecPrivateKeyState.Ready:
+                        case DnssecPrivateKeyState.Active:
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         internal void UpdateDnssecRecordsFor(AuthZone zone, DnsResourceRecordType type)
         {
             //lock to sync this call to prevent inconsistent NSEC/NSEC3 updates

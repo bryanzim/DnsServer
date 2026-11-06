@@ -455,6 +455,7 @@ namespace DnsServerCore.Dns.Trees
 
             Node current = currentNode;
             byte[] currentKey = ConvertToByteKey(apexZone.Name);
+            Dictionary<ApexZone, List<DnsResourceRecord>> movedFromParent = new Dictionary<ApexZone, List<DnsResourceRecord>>();
 
             do
             {
@@ -511,9 +512,36 @@ namespace DnsServerCore.Dns.Trees
                     continue;
 
                 if (!authZoneNode.TryAdd(adopted))
+                {
                     authZoneNode.TryAdd(removed);
+                    continue;
+                }
+
+                if (removed.AuthoritativeZone is null)
+                    continue;
+
+                if (!movedFromParent.TryGetValue(removed.AuthoritativeZone, out List<DnsResourceRecord> movedRecords))
+                {
+                    movedRecords = new List<DnsResourceRecord>();
+                    movedFromParent.Add(removed.AuthoritativeZone, movedRecords);
+                }
+
+                movedRecords.AddRange(records);
             }
             while (true);
+
+            if (movedFromParent.Count == 0)
+                return;
+
+            foreach (KeyValuePair<ApexZone, List<DnsResourceRecord>> moved in movedFromParent)
+            {
+                if ((moved.Key is PrimaryZone) || (moved.Key is ForwarderZone))
+                    moved.Key.PublishRemovedRecords(moved.Value);
+                else
+                    moved.Key.SaveZoneFile();
+            }
+
+            apexZone.SaveZoneFile();
         }
 
         private static SubDomainZone CreateSubDomainZone(ApexZone apexZone, string domain)
