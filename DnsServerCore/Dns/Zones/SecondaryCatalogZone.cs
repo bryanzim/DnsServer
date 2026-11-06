@@ -366,7 +366,7 @@ namespace DnsServerCore.Dns.Zones
 
                                             primaryNameServerAddresses = primaryNameServerAddressesList;
                                             primaryZoneTransferProtocol = DnsTransportProtocol.Tcp;
-                                            primaryZoneTransferTsigKeyName = primaries[0].Item2;
+                                            primaryZoneTransferTsigKeyName = SelectCatalogPrimaryTsigKeyName(primaries);
                                             overrideCatalogPrimaryNameServers = true;
 
                                             foreach (Tuple<IPAddress, string> primaryNameServer in primaries)
@@ -674,7 +674,7 @@ namespace DnsServerCore.Dns.Zones
                             if (primaries.Count > 0)
                             {
                                 List<NameServerAddress> primaryNameServerAddresses = new List<NameServerAddress>();
-                                string primaryZoneTransferTsigKeyName = primaries[0].Item2;
+                                string primaryZoneTransferTsigKeyName = SelectCatalogPrimaryTsigKeyName(primaries);
 
                                 foreach (Tuple<IPAddress, string> primaryNameServer in primaries)
                                 {
@@ -780,6 +780,18 @@ namespace DnsServerCore.Dns.Zones
                 return Enum.Parse<AuthZoneType>((records[0].RDATA as DnsTXTRecordData).GetText(), true);
 
             return AuthZoneType.Primary;
+        }
+
+        private static string SelectCatalogPrimaryTsigKeyName(List<Tuple<IPAddress, string>> primaries)
+        {
+            //an unkeyed address is listed before keyed ones; a null key must not hide a TSIG primary
+            foreach (Tuple<IPAddress, string> primary in primaries)
+            {
+                if (primary.Item2 is not null)
+                    return primary.Item2;
+            }
+
+            return null;
         }
 
         private List<Tuple<IPAddress, string>> GetPrimariesProperty(string memberZoneDomain)
