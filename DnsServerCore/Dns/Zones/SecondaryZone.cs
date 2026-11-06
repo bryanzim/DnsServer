@@ -449,9 +449,8 @@ namespace DnsServerCore.Dns.Zones
                                     if (option.Data is EDnsExpireOptionData expireOptionData && (expireOptionData.Expire is not null))
                                     {
                                         uint ednsExpire = Math.Min(expireOptionData.Expire.Value, receivedSoa.Expire);
-                                        uint expire = Math.Max(ednsExpire, CurrentExpireValue);
 
-                                        return (true, expire);
+                                        return (true, ednsExpire);
                                     }
 
                                     break;
@@ -601,9 +600,8 @@ namespace DnsServerCore.Dns.Zones
                                     if (option.Data is EDnsExpireOptionData expireOptionData && (expireOptionData.Expire is not null))
                                     {
                                         uint ednsExpire = Math.Min(expireOptionData.Expire.Value, xfrSoa.Expire);
-                                        uint expire = Math.Max(ednsExpire, CurrentExpireValue);
 
-                                        return (true, expire);
+                                        return (true, ednsExpire);
                                     }
 
                                     break;
