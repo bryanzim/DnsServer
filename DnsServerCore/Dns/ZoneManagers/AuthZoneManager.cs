@@ -3427,11 +3427,15 @@ namespace DnsServerCore.Dns.ZoneManagers
                     answer = closest.QueryRecords(DnsResourceRecordType.DNAME, dnssecOk);
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, remoteIP);
+                        List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
                             answer = dnameAnswer;
+
+                        if (dnameAuthority.Count > 0)
+                            authority = dnameAuthority;
                     }
                     else
                     {
@@ -3445,11 +3449,15 @@ namespace DnsServerCore.Dns.ZoneManagers
                     answer = apexZone.QueryRecords(DnsResourceRecordType.DNAME, dnssecOk);
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, remoteIP);
+                        List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
                             answer = dnameAnswer;
+
+                        if (dnameAuthority.Count > 0)
+                            authority = dnameAuthority;
                     }
                     else
                     {
@@ -3532,11 +3540,15 @@ namespace DnsServerCore.Dns.ZoneManagers
                     answer = closest.QueryRecords(DnsResourceRecordType.DNAME, dnssecOk);
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, remoteIP);
+                        List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
                             answer = dnameAnswer;
+
+                        if (dnameAuthority.Count > 0)
+                            authority = dnameAuthority;
                     }
                 }
 
@@ -3546,11 +3558,15 @@ namespace DnsServerCore.Dns.ZoneManagers
                     answer = apexZone.QueryRecords(DnsResourceRecordType.DNAME, dnssecOk);
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, remoteIP);
+                        List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
                             answer = dnameAnswer;
+
+                        if (dnameAuthority.Count > 0)
+                            authority = dnameAuthority;
                     }
                 }
 
@@ -3669,9 +3685,26 @@ namespace DnsServerCore.Dns.ZoneManagers
                                     List<DnsResourceRecord> newAnswers = new List<DnsResourceRecord>(answer.Count + 1);
                                     newAnswers.AddRange(answer);
 
-                                    await ResolveCNAME(question, dnssecOk, lastRR, newAnswers, remoteIP);
+                                    List<DnsResourceRecord> cnameAuthority = new List<DnsResourceRecord>();
+                                    await ResolveCNAME(question, dnssecOk, lastRR, newAnswers, cnameAuthority, remoteIP);
 
                                     answer = newAnswers;
+
+                                    if (cnameAuthority.Count > 0)
+                                    {
+                                        if (authority is null)
+                                        {
+                                            authority = cnameAuthority;
+                                        }
+                                        else
+                                        {
+                                            List<DnsResourceRecord> newAuthority = new List<DnsResourceRecord>(authority.Count + cnameAuthority.Count);
+                                            newAuthority.AddRange(authority);
+                                            newAuthority.AddRange(cnameAuthority);
+                                            authority = newAuthority;
+                                        }
+                                    }
+
                                     break;
 
                                 case DnsResourceRecordType.ANAME:
@@ -3808,7 +3841,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private async Task ResolveCNAME(DnsQuestionRecord question, bool dnssecOk, DnsResourceRecord lastCNAME, List<DnsResourceRecord> answerRecords, IPAddress remoteIP)
+        private async Task ResolveCNAME(DnsQuestionRecord question, bool dnssecOk, DnsResourceRecord lastCNAME, List<DnsResourceRecord> answerRecords, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP)
         {
             int queryCount = 0;
             ApexZone cnameApex;
@@ -3829,6 +3862,23 @@ namespace DnsServerCore.Dns.ZoneManagers
                 IReadOnlyList<DnsResourceRecord> records = cnameZone.QueryRecordsWildcard(question.Type, dnssecOk, cnameDomain);
                 if (records.Count < 1)
                     break;
+
+                if (dnssecOk && cnameZone.Name.StartsWith('*') && !cnameZone.Name.Equals(cnameDomain, StringComparison.OrdinalIgnoreCase))
+                {
+                    //wildcard expansion of a chased name needs the same non-existence proof as a direct wildcard answer
+                    IReadOnlyList<DnsResourceRecord> nsecRecords;
+
+                    if (cnameApex.DnssecStatus == AuthZoneDnssecStatus.SignedWithNSEC3)
+                        nsecRecords = _root.FindNSec3ProofOfNonExistenceNxDomain(cnameDomain, true);
+                    else
+                        nsecRecords = _root.FindNSecProofOfNonExistenceNxDomain(cnameDomain, true);
+
+                    foreach (DnsResourceRecord nsecRecord in nsecRecords)
+                    {
+                        if (!authorityRecords.Contains(nsecRecord))
+                            authorityRecords.Add(nsecRecord);
+                    }
+                }
 
                 DnsResourceRecord lastRR = records[records.Count - 1];
                 if (lastRR.Type != DnsResourceRecordType.CNAME)
@@ -3853,7 +3903,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             while (++queryCount < DnsServer.MAX_CNAME_HOPS);
         }
 
-        private async Task<IReadOnlyList<DnsResourceRecord>> DoDNAMESubstitution(DnsQuestionRecord question, bool dnssecOk, IReadOnlyList<DnsResourceRecord> answer, IPAddress remoteIP)
+        private async Task<IReadOnlyList<DnsResourceRecord>> DoDNAMESubstitution(DnsQuestionRecord question, bool dnssecOk, IReadOnlyList<DnsResourceRecord> answer, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP)
         {
             DnsResourceRecord dnameRR = answer[0];
 
@@ -3869,7 +3919,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             list.AddRange(answer);
             list.Add(cnameRR);
 
-            await ResolveCNAME(question, dnssecOk, cnameRR, list, remoteIP);
+            await ResolveCNAME(question, dnssecOk, cnameRR, list, authorityRecords, remoteIP);
 
             return list;
         }
