@@ -4220,6 +4220,7 @@ namespace DnsServerCore.Dns
             int queryCount = 0;
             do
             {
+                bool resolvedAlias = false;
                 string cnameDomain = (lastRR.RDATA as DnsCNAMERecordData).Domain;
                 if (lastRR.Name.Equals(cnameDomain, StringComparison.OrdinalIgnoreCase))
                 {
@@ -4261,6 +4262,8 @@ namespace DnsServerCore.Dns
                     newResponse = await ProcessANAMEAsync(request, newResponse, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, clientTimeout, context);
                     if (newResponse is null)
                         return null; //drop request
+
+                    resolvedAlias = true; //synthesized addresses are owned by the alias name, not the question
                 }
                 else if ((newResponse.Answer.Count == 0) && (newResponse.Authority.Count > 0))
                 {
@@ -4309,9 +4312,9 @@ namespace DnsServerCore.Dns
                     break; //cannot proceed to resolve further
 
                 lastRR = newResponse.GetLastAnswerRecord();
-                if ((lastRR is null) || (lastRR.Type != DnsResourceRecordType.CNAME))
+                if (resolvedAlias || (lastRR is null) || (lastRR.Type != DnsResourceRecordType.CNAME))
                 {
-                    if (lastRR is not null)
+                    if (resolvedAlias ? (newResponse.Answer.Count > 0) : (lastRR is not null))
                         newAnswer.AddRange(newResponse.Answer);
 
                     break; //cname was resolved, or the answer does not continue this name
