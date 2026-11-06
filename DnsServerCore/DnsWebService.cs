@@ -458,9 +458,12 @@ namespace DnsServerCore
                     saveConfig = true;
                 }
 
-                if ((zonePermission is null) || !zonePermission.GroupPermissions.TryGetValue(dnsAdmins, out PermissionFlag dnsAdminsPermission) || (dnsAdminsPermission != PermissionFlag.ViewModifyDelete))
+                bool clusterViewOnly = (_clusterManager is not null) && _clusterManager.ClusterInitialized && (_clusterManager.IsClusterPrimaryZone(zone.Name) || _clusterManager.IsClusterCatalogZone(zone.Name));
+                PermissionFlag dnsAdminPermission = clusterViewOnly ? PermissionFlag.View : PermissionFlag.ViewModifyDelete;
+
+                if ((zonePermission is null) || !zonePermission.GroupPermissions.TryGetValue(dnsAdmins, out PermissionFlag dnsAdminsPermission) || (dnsAdminsPermission != dnsAdminPermission))
                 {
-                    _authManager.SetPermission(PermissionSection.Zones, zone.Name, dnsAdmins, PermissionFlag.ViewModifyDelete);
+                    _authManager.SetPermission(PermissionSection.Zones, zone.Name, dnsAdmins, dnsAdminPermission);
                     saveConfig = true;
                 }
             }
@@ -2931,7 +2934,6 @@ namespace DnsServerCore
                 _dnsServer.AuthZoneManager.SecondaryCatalogZoneAdded += AuthZoneManager_SecondaryCatalogZoneAdded;
                 _dnsServer.AuthZoneManager.SecondaryCatalogZoneRemoved += AuthZoneManager_SecondaryCatalogZoneRemoved;
                 _dnsServer.AuthZoneManager.LoadAllZoneFiles();
-                InspectAndFixZonePermissions();
 
                 //disable zones from old config format
                 if (_configDisabledZones != null)
@@ -2954,6 +2956,7 @@ namespace DnsServerCore
 
                 //init cluster manager and load config file
                 _clusterManager = new ClusterManager(this);
+                InspectAndFixZonePermissions();
 
                 //cert may have changed so update cluster certs when loading
                 if (_clusterManager.ClusterInitialized)
