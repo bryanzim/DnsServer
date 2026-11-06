@@ -3879,6 +3879,8 @@ namespace DnsServerCore
                 uint expiryTtl = request.GetQueryOrForm("expiryTtl", ZoneFile.ParseTtl, 0u);
 
                 DnsResourceRecord newRecord;
+                DnsResourceRecord ptrRecord = null;
+                string ptrZoneName = null;
 
                 switch (type)
                 {
@@ -3929,12 +3931,10 @@ namespace DnsServerCore
                                 if ((reverseZoneInfo.Type != AuthZoneType.Primary) && (reverseZoneInfo.Type != AuthZoneType.Forwarder))
                                     throw new DnsWebServiceException("Reverse zone '" + reverseZoneInfo.DisplayName + "' is not a primary or forwarder zone.");
 
-                                DnsResourceRecord ptrRecord = new DnsResourceRecord(ptrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(domain));
+                                ptrRecord = new DnsResourceRecord(ptrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(domain));
                                 ptrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
                                 ptrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
-
-                                _dnsWebService._dnsServer.AuthZoneManager.SetRecord(reverseZoneInfo.Name, ptrRecord);
-                                _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(reverseZoneInfo.Name);
+                                ptrZoneName = reverseZoneInfo.Name;
                             }
 
                             if (type == DnsResourceRecordType.A)
@@ -4259,6 +4259,16 @@ namespace DnsServerCore
                 {
                     if (!_dnsWebService._dnsServer.AuthZoneManager.AddRecord(zoneInfo.Name, newRecord))
                         throw new DnsWebServiceException("Cannot add record: record already exists.");
+                }
+
+                if (ptrRecord is not null)
+                {
+                    //replace only the PTR for this name so other names at the same address are kept
+                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(ptrZoneName, ptrRecord.Name, DnsResourceRecordType.PTR, ptrRecord.RDATA);
+                    if (!_dnsWebService._dnsServer.AuthZoneManager.AddRecord(ptrZoneName, ptrRecord))
+                        throw new DnsWebServiceException("Cannot add PTR record: record already exists.");
+
+                    _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(ptrZoneName);
                 }
 
                 //additional processing
@@ -4688,6 +4698,10 @@ namespace DnsServerCore
 
                 DnsResourceRecord oldRecord = null;
                 DnsResourceRecord newRecord;
+                DnsResourceRecord newPtrRecord = null;
+                string newPtrZoneName = null;
+                string oldPtrZoneName = null;
+                string oldPtrName = null;
 
                 switch (type)
                 {
@@ -4741,18 +4755,14 @@ namespace DnsServerCore
                                     if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, oldReverseZoneInfo.Name, sessionUser, PermissionFlag.Delete))
                                         throw new DnsWebServiceException("Cannot update reverse zone to delete existing PTR record: access was denied.");
 
-                                    //delete old PTR record if any and save old reverse zone
-                                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecords(oldReverseZoneInfo.Name, oldPtrDomain, DnsResourceRecordType.PTR);
-                                    _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(oldReverseZoneInfo.Name);
+                                    oldPtrZoneName = oldReverseZoneInfo.Name;
+                                    oldPtrName = oldPtrDomain;
                                 }
 
-                                //add new PTR record and save reverse zone
-                                DnsResourceRecord ptrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(newDomain)); //PTR must point to the updated record name
-                                ptrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
-                                ptrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
-
-                                _dnsWebService._dnsServer.AuthZoneManager.SetRecord(newReverseZoneInfo.Name, ptrRecord);
-                                _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(newReverseZoneInfo.Name);
+                                newPtrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(newDomain)); //PTR must point to the updated record name
+                                newPtrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
+                                newPtrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
+                                newPtrZoneName = newReverseZoneInfo.Name;
                             }
 
                             if (type == DnsResourceRecordType.A)
@@ -5234,6 +5244,23 @@ namespace DnsServerCore
                 else
                 {
                     _dnsWebService._dnsServer.AuthZoneManager.UpdateRecord(zoneInfo.Name, oldRecord, newRecord);
+                }
+
+                if (newPtrRecord is not null)
+                {
+                    if (oldPtrZoneName is not null)
+                        _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(oldPtrZoneName, oldPtrName, DnsResourceRecordType.PTR, new DnsPTRRecordData(domain));
+
+                    //replace only the PTR for this name so other names at the same address are kept
+                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(newPtrZoneName, newPtrRecord.Name, DnsResourceRecordType.PTR, newPtrRecord.RDATA);
+                    if (!_dnsWebService._dnsServer.AuthZoneManager.AddRecord(newPtrZoneName, newPtrRecord))
+                        throw new DnsWebServiceException("Cannot add PTR record: record already exists.");
+
+                    if (oldPtrZoneName is not null)
+                        _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(oldPtrZoneName);
+
+                    if ((oldPtrZoneName is null) || !oldPtrZoneName.Equals(newPtrZoneName, StringComparison.OrdinalIgnoreCase))
+                        _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(newPtrZoneName);
                 }
 
                 //additional processing
