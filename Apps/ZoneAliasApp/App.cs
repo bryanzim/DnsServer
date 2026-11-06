@@ -226,19 +226,39 @@ namespace ZoneAlias
             if (records.Count == 0)
                 return records;
 
-            DnsResourceRecord[] newRecords = new DnsResourceRecord[records.Count];
+            List<DnsResourceRecord> newRecords = new List<DnsResourceRecord>(records.Count);
+            bool changed = false;
 
             for (int i = 0; i < records.Count; i++)
             {
                 DnsResourceRecord record = records[i];
+
+                switch (record.Type)
+                {
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.NSEC:
+                    case DnsResourceRecordType.NSEC3:
+                        // the signed data still names the source zone, so a validator would treat the alias as bogus
+                        changed = true;
+                        continue;
+                }
+
                 string name = AliasName(record.Name, zone, alias) ?? record.Name;
                 DnsResourceRecordData rdata = AliasRecordData(record, zone, alias);
 
                 if (name.Equals(record.Name, StringComparison.Ordinal) && ReferenceEquals(rdata, record.RDATA))
-                    newRecords[i] = record;
+                {
+                    newRecords.Add(record);
+                }
                 else
-                    newRecords[i] = new DnsResourceRecord(name, record.Type, record.Class, record.TTL, rdata);
+                {
+                    changed = true;
+                    newRecords.Add(new DnsResourceRecord(name, record.Type, record.Class, record.TTL, rdata));
+                }
             }
+
+            if (!changed)
+                return records;
 
             return newRecords;
         }
