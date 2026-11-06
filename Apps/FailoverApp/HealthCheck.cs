@@ -314,7 +314,7 @@ namespace Failover
         public async Task<HealthCheckResponse> ApplyDomainMaintenanceAsync(string domain, DnsResourceRecordType type, HealthCheckResponse response)
         {
             DnsDatagram lookup = await _service.DnsServer.DirectQueryAsync(new DnsQuestionRecord(domain, type, DnsClass.IN));
-            if ((lookup is null) || (lookup.Answer.Count == 0))
+            if ((lookup is null) || (lookup.RCODE != DnsResponseCode.NoError) || (lookup.Answer.Count == 0))
                 return response;
 
             IReadOnlyList<IPAddress> addresses = type == DnsResourceRecordType.AAAA ? DnsClient.ParseResponseAAAA(lookup) : DnsClient.ParseResponseA(lookup);
