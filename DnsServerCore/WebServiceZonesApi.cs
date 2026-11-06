@@ -99,6 +99,64 @@ namespace DnsServerCore
 
             #region private
 
+            private DnsResourceRecord RemoveMatchingPtrRecord(string zoneName, string ptrName, DnsResourceRecordData ptrData)
+            {
+                IReadOnlyList<DnsResourceRecord> records = _dnsWebService._dnsServer.AuthZoneManager.GetRecords(zoneName, ptrName, DnsResourceRecordType.PTR);
+
+                foreach (DnsResourceRecord record in records)
+                {
+                    if (!record.RDATA.Equals(ptrData))
+                        continue;
+
+                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(zoneName, record.Name, DnsResourceRecordType.PTR, record.RDATA);
+                    return record;
+                }
+
+                return null;
+            }
+
+            private static void RestorePtrRecord(AuthZoneManager authZoneManager, string zoneName, DnsResourceRecord record)
+            {
+                if (record is null)
+                    return;
+
+                try
+                {
+                    authZoneManager.AddRecord(zoneName, record);
+                }
+                catch
+                { }
+            }
+
+            private void ReplacePtrRecord(string zoneName, DnsResourceRecord ptrRecord, string oldZoneName, string oldPtrName, DnsResourceRecordData oldPtrData)
+            {
+                AuthZoneManager authZoneManager = _dnsWebService._dnsServer.AuthZoneManager;
+                DnsResourceRecord removedRecord = RemoveMatchingPtrRecord(zoneName, ptrRecord.Name, ptrRecord.RDATA);
+                DnsResourceRecord removedOldRecord = null;
+
+                if (oldZoneName is not null)
+                {
+                    bool sameRecord = oldZoneName.Equals(zoneName, StringComparison.OrdinalIgnoreCase) && oldPtrName.Equals(ptrRecord.Name, StringComparison.OrdinalIgnoreCase) && oldPtrData.Equals(ptrRecord.RDATA);
+                    if (!sameRecord)
+                        removedOldRecord = RemoveMatchingPtrRecord(oldZoneName, oldPtrName, oldPtrData);
+                }
+
+                try
+                {
+                    if (!authZoneManager.AddRecord(zoneName, ptrRecord))
+                        throw new DnsWebServiceException("Cannot add PTR record: record already exists.");
+                }
+                catch
+                {
+                    RestorePtrRecord(authZoneManager, zoneName, removedRecord);
+
+                    if (oldZoneName is not null)
+                        RestorePtrRecord(authZoneManager, oldZoneName, removedOldRecord);
+
+                    throw;
+                }
+            }
+
             private static Dictionary<DnsSvcParamKey, DnsSvcParamValue> ParseSvcParams(string strSvcParams)
             {
                 string[] strSvcParamsParts = strSvcParams.Split('|');
@@ -4264,9 +4322,7 @@ namespace DnsServerCore
                 if (ptrRecord is not null)
                 {
                     //replace only the PTR for this name so other names at the same address are kept
-                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(ptrZoneName, ptrRecord.Name, DnsResourceRecordType.PTR, ptrRecord.RDATA);
-                    if (!_dnsWebService._dnsServer.AuthZoneManager.AddRecord(ptrZoneName, ptrRecord))
-                        throw new DnsWebServiceException("Cannot add PTR record: record already exists.");
+                    ReplacePtrRecord(ptrZoneName, ptrRecord, null, null, null);
 
                     _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(ptrZoneName);
                 }
@@ -5248,13 +5304,8 @@ namespace DnsServerCore
 
                 if (newPtrRecord is not null)
                 {
-                    if (oldPtrZoneName is not null)
-                        _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(oldPtrZoneName, oldPtrName, DnsResourceRecordType.PTR, new DnsPTRRecordData(domain));
-
                     //replace only the PTR for this name so other names at the same address are kept
-                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(newPtrZoneName, newPtrRecord.Name, DnsResourceRecordType.PTR, newPtrRecord.RDATA);
-                    if (!_dnsWebService._dnsServer.AuthZoneManager.AddRecord(newPtrZoneName, newPtrRecord))
-                        throw new DnsWebServiceException("Cannot add PTR record: record already exists.");
+                    ReplacePtrRecord(newPtrZoneName, newPtrRecord, oldPtrZoneName, oldPtrName, oldPtrZoneName is null ? null : new DnsPTRRecordData(domain));
 
                     if (oldPtrZoneName is not null)
                         _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(oldPtrZoneName);
