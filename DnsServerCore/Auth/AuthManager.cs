@@ -1439,6 +1439,20 @@ namespace DnsServerCore.Auth
                 foreach (UserSession session in GetSessions(deletedUser))
                     DeleteSession(session.Token);
 
+                if (_staticSessions is not null)
+                {
+                    List<string> staticTokens = new List<string>();
+
+                    foreach (KeyValuePair<string, UserSession> staticSession in _staticSessions)
+                    {
+                        if (staticSession.Value.User.Equals(deletedUser))
+                            staticTokens.Add(staticSession.Key);
+                    }
+
+                    foreach (string staticToken in staticTokens)
+                        _staticSessions.Remove(staticToken);
+                }
+
                 //delete all permissions
                 foreach (KeyValuePair<PermissionSection, Permission> permission in _permissions)
                 {
