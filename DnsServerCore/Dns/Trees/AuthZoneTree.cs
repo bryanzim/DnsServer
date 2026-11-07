@@ -887,74 +887,73 @@ namespace DnsServerCore.Dns.Trees
         {
             byte[] key = ConvertToByteKey(domain);
 
-            AuthZoneNode authZoneNode = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
-            if (authZoneNode is not null)
-            {
-                //zone exists
-                ApexZone apexZone = authZoneNode.ApexZone;
-                SubDomainZone parentSideZone = authZoneNode.ParentSideZone;
-
-                if ((apexZone is not null) && (parentSideZone is not null))
-                {
-                    //found ambiguity between apex zone and sub domain zone
-                    if (!apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        //zone name does not match with apex zone and thus not match with closest authority node
-                        //find the closest authority zone for given zone name
-                        if (!TryGet(zoneName, out _, out Node closestNodeForZoneName))
-                            throw new InvalidOperationException();
-
-                        closestAuthorityNode = closestNodeForZoneName;
-                    }
-                }
-            }
-
-            Node previousNode = GetPreviousSubDomainZoneNode(key, currentNode, closestAuthorityNode.Depth);
-            if (previousNode is not null)
-            {
-                AuthZone authZone = GetAuthZoneFromNode(previousNode, zoneName);
-                if (authZone is not null)
-                    return authZone;
-            }
-
-            return null;
+            _ = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
+            return FindAdjacentSubDomainZone(zoneName, key, currentNode, closestAuthorityNode, false);
         }
 
         public AuthZone FindNextSubDomainZone(string zoneName, string domain)
         {
             byte[] key = ConvertToByteKey(domain);
 
-            AuthZoneNode authZoneNode = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
-            if (authZoneNode is not null)
+            _ = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
+            return FindAdjacentSubDomainZone(zoneName, key, currentNode, closestAuthorityNode, true);
+        }
+
+        private AuthZone FindAdjacentSubDomainZone(string zoneName, byte[] key, Node currentNode, Node closestAuthorityNode, bool findNext)
+        {
+            //a name that now belongs to a child zone still sits in the tree; keep walking until the neighbor belongs to this zone
+            AnchorWalkToZone(zoneName, ref closestAuthorityNode);
+
+            byte[] currentKey = key;
+
+            while (true)
             {
-                //zone exists
-                ApexZone apexZone = authZoneNode.ApexZone;
-                SubDomainZone parentSideZone = authZoneNode.ParentSideZone;
+                Node adjacentNode = findNext ? GetNextSubDomainZoneNode(currentKey, currentNode, closestAuthorityNode.Depth) : GetPreviousSubDomainZoneNode(currentKey, currentNode, closestAuthorityNode.Depth);
+                if ((adjacentNode is null) || ReferenceEquals(adjacentNode, currentNode))
+                    return null;
 
-                if ((apexZone is not null) && (parentSideZone is not null))
+                AuthZone authZone = GetAuthZoneFromNode(adjacentNode, zoneName);
+                if (authZone is null)
+                    return null;
+
+                if (BelongsToZone(authZone, zoneName))
+                    return authZone;
+
+                NodeValue value = adjacentNode.Value;
+                if (value is null)
+                    return null;
+
+                currentNode = adjacentNode;
+                currentKey = value.Key;
+            }
+        }
+
+        private void AnchorWalkToZone(string zoneName, ref Node closestAuthorityNode)
+        {
+            if (closestAuthorityNode is not null)
+            {
+                NodeValue value = closestAuthorityNode.Value;
+                if ((value is not null) && (value.Value is AuthZoneNode authZoneNode))
                 {
-                    //found ambiguity between apex zone and sub domain zone
-                    if (!apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        //zone name does not match with apex zone and thus not match with closest authority node
-                        //find the closest authority zone for given zone name
-                        if (!TryGet(zoneName, out _, out Node closestNodeForZoneName))
-                            throw new InvalidOperationException();
-
-                        closestAuthorityNode = closestNodeForZoneName;
-                    }
+                    ApexZone apexZone = authZoneNode.ApexZone;
+                    if ((apexZone is not null) && apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
+                        return;
                 }
             }
 
-            Node nextNode = GetNextSubDomainZoneNode(key, currentNode, closestAuthorityNode.Depth);
-            if (nextNode is not null)
-            {
-                AuthZone authZone = GetAuthZoneFromNode(nextNode, zoneName);
-                if (authZone is not null)
-                    return authZone;
-            }
+            if (!TryGet(zoneName, out _, out Node zoneNode))
+                throw new InvalidOperationException();
 
-            return null;
+            closestAuthorityNode = zoneNode;
+        }
+
+        private static bool BelongsToZone(AuthZone authZone, string zoneName)
+        {
+            if (authZone is not SubDomainZone subDomainZone)
+                return true;
+
+            ApexZone authoritativeZone = subDomainZone.AuthoritativeZone;
+            return (authoritativeZone is null) || authoritativeZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase);
         }
 
         public bool SubDomainExistsFor(string zoneName, string domain)

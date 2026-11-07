@@ -689,7 +689,7 @@ namespace DnsServerCore.Dns.Zones
                 StartRecordExpiryTimer(minExpiryTtl);
         }
 
-        internal void PublishRemovedRecords(IReadOnlyList<DnsResourceRecord> deletedRecords)
+        internal virtual void PublishRemovedRecords(IReadOnlyList<DnsResourceRecord> deletedRecords)
         {
             if ((deletedRecords is null) || (deletedRecords.Count == 0))
                 return;
