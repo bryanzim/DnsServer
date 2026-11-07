@@ -67,6 +67,7 @@ namespace DnsServerCore.Dns.Zones
         bool _validationFailed;
 
         bool _resync;
+        bool _memberProvisionPending;
 
         #endregion
 
@@ -155,7 +156,7 @@ namespace DnsServerCore.Dns.Zones
 
                     if (string.IsNullOrEmpty(primaryZoneTransferTsigKeyName))
                         soaResponse = await dnsClient.RawResolveAsync(soaRequest);
-                    else if ((secondaryZone._dnsServer.TsigKeys is not null) && secondaryZone._dnsServer.TsigKeys.TryGetValue(primaryZoneTransferTsigKeyName, out TsigKey key))
+                    else if ((secondaryZone._dnsServer.TsigKeys is not null) && secondaryZone._dnsServer.TsigKeys.TryGetValue(NormalizeZoneTransferTsigKeyName(primaryZoneTransferTsigKeyName), out TsigKey key))
                         soaResponse = await dnsClient.TsigResolveAsync(soaRequest, key, REFRESH_TSIG_FUDGE);
                     else
                         throw new DnsServerException("No such TSIG key was found configured: " + primaryZoneTransferTsigKeyName);
@@ -284,7 +285,7 @@ namespace DnsServerCore.Dns.Zones
 
                         TsigKey key = null;
 
-                        if (!string.IsNullOrEmpty(primaryZoneTransferTsigKeyName) && ((_dnsServer.TsigKeys is null) || !_dnsServer.TsigKeys.TryGetValue(primaryZoneTransferTsigKeyName, out key)))
+                        if (!string.IsNullOrEmpty(primaryZoneTransferTsigKeyName) && ((_dnsServer.TsigKeys is null) || !_dnsServer.TsigKeys.TryGetValue(NormalizeZoneTransferTsigKeyName(primaryZoneTransferTsigKeyName), out key)))
                         {
                             _dnsServer.LogManager.Write("DNS Server does not have TSIG key '" + primaryZoneTransferTsigKeyName + "' configured for refreshing " + GetZoneTypeName() + " zone: " + ToString());
 
@@ -303,13 +304,24 @@ namespace DnsServerCore.Dns.Zones
                             _syncFailed = false;
                             _expiry = DateTime.UtcNow.AddSeconds(result.Item2);
                             _isExpired = false;
-                            _resync = false;
                             _dnsServer.AuthZoneManager.SaveZoneFile(_name);
 
-                            if (_validationFailed)
-                                ResetRefreshTimer(Math.Max(latestSoa.Retry, _dnsServer.AuthZoneManager.MinSoaRetry) * 1000); //zone validation failed, set timer for retry
+                            if (_memberProvisionPending)
+                            {
+                                //a catalog member was not created; transfer again so it can be provisioned
+                                _memberProvisionPending = false;
+                                _resync = true;
+                                ResetRefreshTimer(Math.Max(latestSoa.Retry, _dnsServer.AuthZoneManager.MinSoaRetry) * 1000);
+                            }
                             else
-                                ResetRefreshTimer(Math.Max(latestSoa.Refresh, _dnsServer.AuthZoneManager.MinSoaRefresh) * 1000); //zone refreshed; set timer for refresh
+                            {
+                                _resync = false;
+
+                                if (_validationFailed)
+                                    ResetRefreshTimer(Math.Max(latestSoa.Retry, _dnsServer.AuthZoneManager.MinSoaRetry) * 1000); //zone validation failed, set timer for retry
+                                else
+                                    ResetRefreshTimer(Math.Max(latestSoa.Refresh, _dnsServer.AuthZoneManager.MinSoaRefresh) * 1000); //zone refreshed; set timer for refresh
+                            }
 
                             return;
                         }
@@ -439,6 +451,9 @@ namespace DnsServerCore.Dns.Zones
                     {
                         _dnsServer.LogManager.Write("DNS Server successfully checked for '" + ToString() + "' " + GetZoneTypeName() + " zone update from: " + soaResponse.Metadata.NameServer.ToString());
 
+                        if (validateZone && _validationFailed)
+                            await ValidateZoneAsync(); //the transferred zone is already current, so a failed check has to be retried here
+
                         if (soaResponse.EDNS is not null)
                         {
                             //RFC 7314 EDNS EXPIRE option support
@@ -448,6 +463,7 @@ namespace DnsServerCore.Dns.Zones
                                 {
                                     if (option.Data is EDnsExpireOptionData expireOptionData && (expireOptionData.Expire is not null))
                                     {
+                                        //RFC 7314: a refresh that does not change the serial keeps the longer remaining expiry
                                         uint ednsExpire = Math.Min(expireOptionData.Expire.Value, receivedSoa.Expire);
                                         uint expire = Math.Max(ednsExpire, CurrentExpireValue);
 
@@ -600,6 +616,7 @@ namespace DnsServerCore.Dns.Zones
                                 {
                                     if (option.Data is EDnsExpireOptionData expireOptionData && (expireOptionData.Expire is not null))
                                     {
+                                        //RFC 7314: an up-to-date IXFR keeps the longer remaining expiry
                                         uint ednsExpire = Math.Min(expireOptionData.Expire.Value, xfrSoa.Expire);
                                         uint expire = Math.Max(ednsExpire, CurrentExpireValue);
 
@@ -623,22 +640,28 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
-        private async Task ValidateZoneAsync(CancellationToken cancellationToken = default)
+        private Task ValidateZoneAsync(CancellationToken cancellationToken = default)
         {
+            if (cancellationToken.IsCancellationRequested)
+                return Task.FromCanceled(cancellationToken);
+
             try
             {
-                DirectDnsClient dnsClient = new DirectDnsClient(_dnsServer);
-                dnsClient.DnssecValidation = true;
-                dnsClient.Timeout = 10000;
+                //read the transferred zone directly; a query would miss it while the secondary is still inactive
+                List<DnsZONEMDRecordData> zoneMdList = new List<DnsZONEMDRecordData>();
 
-                DnsDatagram zoneMdResponse = await dnsClient.ResolveAsync(_name, DnsResourceRecordType.ZONEMD, cancellationToken);
-                IReadOnlyList<DnsZONEMDRecordData> zoneMdList = DnsClient.ParseResponseZONEMD(zoneMdResponse);
+                foreach (DnsResourceRecord record in GetRecords(DnsResourceRecordType.ZONEMD))
+                {
+                    if (record.RDATA is DnsZONEMDRecordData zoneMd)
+                        zoneMdList.Add(zoneMd);
+                }
+
                 if (zoneMdList.Count == 0)
                 {
                     //ZONEMD RRSet does not exists; digest verification cannot occur
                     _validationFailed = false;
                     _dnsServer.LogManager.Write("ZONEMD validation cannot occur for the " + GetZoneTypeName() + " zone '" + ToString() + "': ZONEMD RRset does not exists in the zone.");
-                    return;
+                    return Task.CompletedTask;
                 }
 
                 for (int i = 0; i < zoneMdList.Count; i++)
@@ -655,18 +678,22 @@ namespace DnsServerCore.Dns.Zones
                         {
                             _validationFailed = true;
                             _dnsServer.LogManager.Write("ZONEMD validation failed for the " + GetZoneTypeName() + " zone '" + ToString() + "': ZONEMD RRset contains more than one RR with the same Scheme and Hash Algorithm.");
-                            return;
+                            return Task.CompletedTask;
                         }
                     }
                 }
 
-                DnsDatagram soaResponse = await dnsClient.ResolveAsync(_name, DnsResourceRecordType.SOA, cancellationToken);
-                DnsSOARecordData soa = DnsClient.ParseResponseSOA(soaResponse);
+                DnsSOARecordData soa = null;
+
+                IReadOnlyList<DnsResourceRecord> soaRecords = GetRecords(DnsResourceRecordType.SOA);
+                if (soaRecords.Count == 1)
+                    soa = soaRecords[0].RDATA as DnsSOARecordData;
+
                 if (soa is null)
                 {
                     _validationFailed = true;
                     _dnsServer.LogManager.Write("ZONEMD validation failed for the " + GetZoneTypeName() + " zone '" + ToString() + "': failed to find SOA record.");
-                    return;
+                    return Task.CompletedTask;
                 }
 
                 using MemoryStream hashStream = new MemoryStream(4096);
@@ -733,7 +760,7 @@ namespace DnsServerCore.Dns.Zones
                         //validation successfull
                         _validationFailed = false;
                         _dnsServer.LogManager.Write("ZONEMD validation was completed successfully for the " + GetZoneTypeName() + " zone: " + ToString());
-                        return;
+                        return Task.CompletedTask;
                     }
                 }
 
@@ -747,6 +774,8 @@ namespace DnsServerCore.Dns.Zones
                 _validationFailed = true;
                 _dnsServer.LogManager.Write("ZONEMD validation failed for the " + GetZoneTypeName() + " zone '" + ToString() + "'.", ex);
             }
+
+            return Task.CompletedTask;
         }
 
         private void SerializeZoneTo(MemoryStream hashStream)
@@ -765,12 +794,7 @@ namespace DnsServerCore.Dns.Zones
                     switch (record.Type)
                     {
                         case DnsResourceRecordType.NS:
-                            records.Add(record);
-
-                            IReadOnlyList<DnsResourceRecord> glueRecords = record.GetAuthNSRecordInfo().GlueRecords;
-                            if (glueRecords is not null)
-                                records.AddRange(glueRecords);
-
+                            records.Add(record); //out-of-zone glue is not zone data and must not be hashed
                             break;
 
                         case DnsResourceRecordType.RRSIG:
@@ -825,7 +849,27 @@ namespace DnsServerCore.Dns.Zones
                     //serialize current RRSet records
                     List<CanonicallySerializedResourceRecord> serializedResourceRecords = new List<CanonicallySerializedResourceRecord>(rrSet.Value.Count);
 
+                    List<DnsResourceRecord> uniqueRecords = new List<DnsResourceRecord>(rrSet.Value.Count);
+
                     foreach (DnsResourceRecord record in rrSet.Value)
+                    {
+                        //RFC 8976: equal owner, class, type, and RDATA are one instance even when the TTL differs
+                        bool duplicateRData = false;
+
+                        foreach (DnsResourceRecord existingRecord in uniqueRecords)
+                        {
+                            if (record.RDATA.Equals(existingRecord.RDATA))
+                            {
+                                duplicateRData = true;
+                                break;
+                            }
+                        }
+
+                        if (!duplicateRData)
+                            uniqueRecords.Add(record);
+                    }
+
+                    foreach (DnsResourceRecord record in uniqueRecords)
                         serializedResourceRecords.Add(CanonicallySerializedResourceRecord.Create(record.Name, record.Type, record.Class, record.OriginalTtlValue, record.RDATA, rrBuffer));
 
                     //Canonical RR Ordering by sorting RDATA portion of the canonical form of each RR
@@ -873,6 +917,11 @@ namespace DnsServerCore.Dns.Zones
                 _refreshTimerTriggered = true;
                 _refreshTimer?.Change(refreshInterval, Timeout.Infinite);
             }
+        }
+
+        protected void RequestMemberProvisionRetry()
+        {
+            _memberProvisionPending = true;
         }
 
         public void TriggerResync()
@@ -1036,6 +1085,16 @@ namespace DnsServerCore.Dns.Zones
                         throw new NotSupportedException("Zone transfer protocol is not supported: XFR-over-" + value.ToString().ToUpper());
                 }
             }
+        }
+
+        static string NormalizeZoneTransferTsigKeyName(string keyName)
+        {
+            keyName = keyName.TrimEnd('.').ToLowerInvariant();
+
+            if (DnsClient.IsDomainNameUnicode(keyName))
+                keyName = DnsClient.ConvertDomainNameToAscii(keyName);
+
+            return keyName;
         }
 
         public string PrimaryZoneTransferTsigKeyName

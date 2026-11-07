@@ -105,15 +105,17 @@ namespace GeoDistance
             EDnsClientSubnetOptionData requestECS = request.GetEDnsClientSubnetOption();
             if (requestECS is not null)
             {
-                if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(requestECS.Address, out IspResponse? csIsp) && (csIsp.Network is not null))
-                    scopePrefixLength = (byte)csIsp.Network.PrefixLength;
-                else if ((_maxMind.AsnReader is not null) && _maxMind.AsnReader.TryAsn(requestECS.Address, out AsnResponse? csAsn) && (csAsn.Network is not null))
-                    scopePrefixLength = (byte)csAsn.Network.PrefixLength;
-                else
-                    scopePrefixLength = requestECS.SourcePrefixLength;
-
                 if (_maxMind.CityReader.TryCity(requestECS.Address, out CityResponse? csResponse) && csResponse.Location.HasCoordinates)
+                {
                     location = csResponse.Location;
+
+                    if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(requestECS.Address, out IspResponse? csIsp) && (csIsp.Network is not null))
+                        scopePrefixLength = (byte)Math.Min(csIsp.Network.PrefixLength, requestECS.SourcePrefixLength);
+                    else if ((_maxMind.AsnReader is not null) && _maxMind.AsnReader.TryAsn(requestECS.Address, out AsnResponse? csAsn) && (csAsn.Network is not null))
+                        scopePrefixLength = (byte)Math.Min(csAsn.Network.PrefixLength, requestECS.SourcePrefixLength);
+                    else
+                        scopePrefixLength = requestECS.SourcePrefixLength;
+                }
             }
 
             if ((location is null) && _maxMind.CityReader.TryCity(remoteEP.Address, out CityResponse? response) && response.Location.HasCoordinates)

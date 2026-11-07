@@ -924,8 +924,8 @@ namespace DnsServerCore.Dns.Zones
                     while (true)
                     {
                         currentOwnerName = AuthZoneManager.GetParentZone(currentOwnerName);
-                        if (currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
-                            break;
+                        if ((currentOwnerName is null) || currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
+                            break; //GetParentZone returns null for the root
 
                         //add partial NSEC3 record for ENT
                         AuthZone entZone = new PrimarySubDomainZone(null, currentOwnerName); //dummy empty non-terminal (ENT) sub domain object
@@ -1936,6 +1936,179 @@ namespace DnsServerCore.Dns.Zones
             return rrsigRecords;
         }
 
+        internal override bool CanCommitZoneChange()
+        {
+            if (_dnssecStatus == AuthZoneDnssecStatus.Unsigned)
+                return true;
+
+            if (_dnssecPrivateKeys is null)
+                return false;
+
+            lock (_dnssecPrivateKeys)
+            {
+                foreach (KeyValuePair<ushort, DnssecPrivateKey> privateKeyEntry in _dnssecPrivateKeys)
+                {
+                    DnssecPrivateKey privateKey = privateKeyEntry.Value;
+                    if (privateKey.KeyType != DnssecPrivateKeyType.ZoneSigningKey)
+                        continue;
+
+                    switch (privateKey.State)
+                    {
+                        case DnssecPrivateKeyState.Ready:
+                        case DnssecPrivateKeyState.Active:
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        internal override void PublishRemovedRecords(IReadOnlyList<DnsResourceRecord> deletedRecords)
+        {
+            base.PublishRemovedRecords(deletedRecords);
+
+            try
+            {
+                if (DropDnssecProofsForRemovedNames(deletedRecords))
+                {
+                    TriggerNotify();
+                    SaveZoneFile();
+                }
+            }
+            catch (Exception ex)
+            {
+                _dnsServer.LogManager.Write(ex);
+                SaveZoneFile();
+            }
+        }
+
+        private bool DropDnssecProofsForRemovedNames(IReadOnlyList<DnsResourceRecord> deletedRecords)
+        {
+            if ((_dnssecStatus == AuthZoneDnssecStatus.Unsigned) || !CanCommitZoneChange())
+                return false;
+
+            if (GetRecords(DnsResourceRecordType.SOA).Count == 0)
+                return false;
+
+            List<string> names = GetRemovedNamesDeepestFirst(_name, deletedRecords);
+            if (names is null)
+                return false;
+
+            lock (_dnssecUpdateLock)
+            {
+                foreach (string name in names)
+                {
+                    if (_dnssecStatus == AuthZoneDnssecStatus.SignedWithNSEC)
+                        DropNsecProof(name);
+                    else
+                        DropNsec3Proof(name);
+                }
+            }
+
+            return true;
+        }
+
+        private static List<string> GetRemovedNamesDeepestFirst(string zoneName, IReadOnlyList<DnsResourceRecord> deletedRecords)
+        {
+            if ((deletedRecords is null) || (deletedRecords.Count == 0))
+                return null;
+
+            HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (DnsResourceRecord deletedRecord in deletedRecords)
+            {
+                if (!deletedRecord.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
+                    names.Add(deletedRecord.Name);
+            }
+
+            if (names.Count == 0)
+                return null;
+
+            string[] seed = new string[names.Count];
+            names.CopyTo(seed);
+
+            foreach (string name in seed)
+            {
+                string parent = AuthZoneManager.GetParentZone(name);
+
+                while ((parent is not null) && !parent.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!names.Add(parent))
+                        break;
+
+                    parent = AuthZoneManager.GetParentZone(parent);
+                }
+            }
+
+            List<string> ordered = new List<string>(names);
+            ordered.Sort(delegate (string x, string y)
+            {
+                return DnsRRSIGRecordData.GetLabelCount(y).CompareTo(DnsRRSIGRecordData.GetLabelCount(x));
+            });
+
+            return ordered;
+        }
+
+        private void DropNsecProof(string domain)
+        {
+            //the moved name stays in the tree for the child zone, so the usual empty-name removal must not run against it
+            AuthZone owner = _dnsServer.AuthZoneManager.GetAuthZone(_name, domain);
+            if (owner is not null)
+            {
+                UpdateNSecRRSetFor(owner);
+                return;
+            }
+
+            uint ttl = GetZoneSoaMinimum();
+            AuthZone nextZone = _dnsServer.AuthZoneManager.FindNextSubDomainZone(_name, domain);
+            string nextName = nextZone is null ? _name : nextZone.Name;
+            DnsResourceRecord removedNsec = new DnsResourceRecord(domain, DnsResourceRecordType.NSEC, DnsClass.IN, ttl, new DnsNSECRecordData(nextName, new List<DnsResourceRecordType>() { DnsResourceRecordType.NSEC }));
+
+            RelinkPreviousNSecRRSetFor(removedNsec, ttl, true);
+        }
+
+        private void DropNsec3Proof(string domain)
+        {
+            if (!_entries.ContainsKey(DnsResourceRecordType.NSEC3PARAM))
+                return;
+
+            AuthZone owner = _dnsServer.AuthZoneManager.GetAuthZone(_name, domain);
+            if (owner is not null)
+            {
+                UpdateNSec3RRSetFor(owner);
+                return;
+            }
+
+            if (_dnsServer.AuthZoneManager.SubDomainExistsFor(_name, domain))
+                return;
+
+            uint ttl = GetZoneSoaMinimum();
+            PrimarySubDomainZone removedName = new PrimarySubDomainZone(this, domain);
+            IReadOnlyList<DnsResourceRecord> nsec3Records = GetUpdatedNSec3RRSetFor(removedName, ttl, true);
+            if (nsec3Records.Count == 0)
+                return;
+
+            DnsResourceRecord nsec3Record = nsec3Records[0];
+            AuthZone nsec3Zone = _dnsServer.AuthZoneManager.GetAuthZone(_name, nsec3Record.Name);
+            if (nsec3Zone is null)
+                return;
+
+            IReadOnlyList<DnsResourceRecord> deletedNSec3Records = nsec3Zone.RemoveNSec3RecordsWithRRSig();
+            if (deletedNSec3Records.Count > 0)
+                CommitAndIncrementSerial(deletedNSec3Records);
+
+            if (nsec3Zone is SubDomainZone nsec3SubDomainZone)
+            {
+                if (nsec3Zone.IsEmpty)
+                    _dnsServer.AuthZoneManager.RemoveSubDomainZone(nsec3Zone.Name);
+                else
+                    nsec3SubDomainZone.AutoUpdateState();
+            }
+
+            RelinkPreviousNSec3RRSet(nsec3Record, ttl, true);
+        }
+
         internal void UpdateDnssecRecordsFor(AuthZone zone, DnsResourceRecordType type)
         {
             //lock to sync this call to prevent inconsistent NSEC/NSEC3 updates
@@ -1996,8 +2169,8 @@ namespace DnsServerCore.Dns.Zones
                         while (true)
                         {
                             currentOwnerName = AuthZoneManager.GetParentZone(currentOwnerName);
-                            if (currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
-                                break;
+                            if ((currentOwnerName is null) || currentOwnerName.Equals(_name, StringComparison.OrdinalIgnoreCase))
+                                break; //GetParentZone returns null for the root
 
                             //update NSEC3 rrset for current owner name
                             AuthZone entZone = _dnsServer.AuthZoneManager.GetAuthZone(_name, currentOwnerName);

@@ -97,11 +97,8 @@ namespace Dns64
             if (request.DnssecOk)
                 return response;
 
-            switch (response.RCODE)
-            {
-                case DnsResponseCode.NxDomain:
-                    return response;
-            }
+            if (response.RCODE != DnsResponseCode.NoError)
+                return response;
 
             DnsQuestionRecord question = request.Question[0];
             if (question.Type != DnsResourceRecordType.AAAA)
@@ -174,7 +171,8 @@ namespace Dns64
             if (!synthesizeAAAA)
                 return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, response.RCODE, response.Question, newAnswer, response.Authority, response.Additional) { Tag = response.Tag };
 
-            DnsDatagram newResponse = await _dnsServer.DirectQueryAsync(new DnsQuestionRecord(question.Name, DnsResourceRecordType.A, DnsClass.IN), 2000);
+            DnsDatagram aRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(question.Name, DnsResourceRecordType.A, DnsClass.IN)]);
+            DnsDatagram newResponse = await _dnsServer.DirectQueryAsync(aRequest, remoteEP, 2000);
 
             uint soaTtl;
             {
@@ -184,6 +182,8 @@ namespace Dns64
                 else
                     soaTtl = 600;
             }
+
+            bool synthesizedAAAA = false;
 
             foreach (DnsResourceRecord answer in newResponse.Answer)
             {
@@ -209,9 +209,29 @@ namespace Dns64
                 IPAddress ipv6Address = ipv4Address.MapToIPv6(dns64Prefix);
 
                 newAnswer.Add(new DnsResourceRecord(answer.Name, DnsResourceRecordType.AAAA, answer.Class, Math.Min(answer.TTL, soaTtl), new DnsAAAARecordData(ipv6Address)));
+                synthesizedAAAA = true;
             }
 
-            return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, newResponse.RCODE, response.Question, newAnswer, newResponse.Authority, newResponse.Additional) { Tag = response.Tag };
+            if (!synthesizedAAAA)
+            {
+                //an AAAA NODATA must stay NODATA; an excluded AAAA answer is still replaced below
+                bool originalHadAAAA = false;
+
+                foreach (DnsResourceRecord originalAnswer in response.Answer)
+                {
+                    if (originalAnswer.Type == DnsResourceRecordType.AAAA)
+                    {
+                        originalHadAAAA = true;
+                        break;
+                    }
+                }
+
+                if (!originalHadAAAA)
+                    return response;
+            }
+
+            //RFC 6147 section 5.5: a synthesized AAAA is not DNSSEC secure, so the AD bit from the NODATA answer must not be copied
+            return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, newResponse.RCODE, response.Question, newAnswer, newResponse.Authority, newResponse.Additional) { Tag = response.Tag };
         }
 
         public Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed)
@@ -249,11 +269,8 @@ namespace Dns64
 
             foreach (KeyValuePair<NetworkAddress, NetworkAddress> dns64PrefixEntry in group.Dns64PrefixMap)
             {
-                if ((dns64PrefixEntry.Value is not null) && dns64PrefixEntry.Value.Contains(ipv6Address))
-                {
+                if ((dns64PrefixEntry.Value is not null) && dns64PrefixEntry.Value.Contains(ipv6Address) && ((dns64Prefix is null) || (dns64PrefixEntry.Value.PrefixLength > dns64Prefix.PrefixLength)))
                     dns64Prefix = dns64PrefixEntry.Value;
-                    break;
-                }
             }
 
             if (dns64Prefix is null)

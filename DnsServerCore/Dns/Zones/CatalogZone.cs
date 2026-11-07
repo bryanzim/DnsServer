@@ -184,6 +184,40 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
+        protected override void OnRecordsExpired()
+        {
+            List<string> removedMembers = new List<string>();
+
+            _membersIndexLock.EnterReadLock();
+            try
+            {
+                foreach (KeyValuePair<string, string> member in _membersIndex)
+                {
+                    IReadOnlyList<DnsResourceRecord> ptrRecords = _dnsServer.AuthZoneManager.GetRecords(_name, member.Value, DnsResourceRecordType.PTR);
+                    if (ptrRecords.Count == 0)
+                        removedMembers.Add(member.Key);
+                }
+            }
+            finally
+            {
+                _membersIndexLock.ExitReadLock();
+            }
+
+            if (removedMembers.Count == 0)
+                return;
+
+            _membersIndexLock.EnterWriteLock();
+            try
+            {
+                foreach (string removedMember in removedMembers)
+                    _membersIndex.Remove(removedMember);
+            }
+            finally
+            {
+                _membersIndexLock.ExitWriteLock();
+            }
+        }
+
         public IReadOnlyCollection<string> GetAllMemberZoneNames()
         {
             _membersIndexLock.EnterReadLock();

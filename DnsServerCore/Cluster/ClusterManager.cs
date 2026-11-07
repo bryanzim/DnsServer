@@ -1,4 +1,4 @@
-﻿/*
+/*
 Technitium DNS Server
 Copyright (C) 2026  Shreyas Zare (shreyas@technitium.com)
 
@@ -54,6 +54,7 @@ namespace DnsServerCore.Cluster
         readonly DnsWebService _dnsWebService;
 
         string _clusterDomain;
+        bool _serverDomainRenamed;
         ushort _heartbeatRefreshIntervalSeconds;
         ushort _heartbeatRetryIntervalSeconds;
         ushort _configRefreshIntervalSeconds;
@@ -266,6 +267,7 @@ namespace DnsServerCore.Cluster
             try
             {
                 _configRefreshTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                _configRefreshTimerTriggered = false;
             }
             catch (ObjectDisposedException)
             { }
@@ -318,6 +320,7 @@ namespace DnsServerCore.Cluster
         private void UnloadAndDeleteConfigFile()
         {
             StopConfigRefreshTimer();
+            _configRefreshIncludeZones = null;
 
             DisposeAllNodes(); //dispose existing nodes, if any
 
@@ -325,6 +328,7 @@ namespace DnsServerCore.Cluster
             {
                 //unload
                 _clusterDomain = null;
+                _serverDomainRenamed = false;
                 _configLastSynced = default;
                 _clusterNodes = null;
 
@@ -360,12 +364,16 @@ namespace DnsServerCore.Cluster
             switch (version)
             {
                 case 1:
+                case 2:
                     _clusterDomain = bR.ReadString();
                     _heartbeatRefreshIntervalSeconds = bR.ReadUInt16();
                     _heartbeatRetryIntervalSeconds = bR.ReadUInt16();
                     _configRefreshIntervalSeconds = bR.ReadUInt16();
                     _configRetryIntervalSeconds = bR.ReadUInt16();
                     _configLastSynced = s.ReadDateTime();
+
+                    // version 1 did not record this and always removed a matching suffix
+                    _serverDomainRenamed = (version == 1) || bR.ReadBoolean();
 
                     Dictionary<int, ClusterNode> clusterNodes = null;
                     int count = bR.ReadByte();
@@ -394,7 +402,7 @@ namespace DnsServerCore.Cluster
             BinaryWriter bW = new BinaryWriter(s);
 
             bW.Write(Encoding.ASCII.GetBytes("CL")); //format
-            bW.Write((byte)1); //version
+            bW.Write((byte)2); //version
 
             bW.Write(_clusterDomain);
             bW.Write(_heartbeatRefreshIntervalSeconds);
@@ -402,6 +410,7 @@ namespace DnsServerCore.Cluster
             bW.Write(_configRefreshIntervalSeconds);
             bW.Write(_configRetryIntervalSeconds);
             s.WriteDateTime(_configLastSynced);
+            bW.Write(_serverDomainRenamed);
 
             IReadOnlyDictionary<int, ClusterNode> clusterNodes = _clusterNodes;
             if (clusterNodes is null)
@@ -495,12 +504,12 @@ namespace DnsServerCore.Cluster
             }
 
             //finalize
-            if (_dnsWebService.DnsServer.ServerDomain.EndsWith("." + _clusterDomain, StringComparison.OrdinalIgnoreCase))
+            if (_serverDomainRenamed && _dnsWebService.DnsServer.ServerDomain.EndsWith("." + _clusterDomain, StringComparison.OrdinalIgnoreCase))
                 _dnsWebService.DnsServer.ServerDomain = _dnsWebService.DnsServer.ServerDomain.Substring(0, _dnsWebService.DnsServer.ServerDomain.Length - (_clusterDomain.Length + 1));
 
-            //save all changes
-            _dnsWebService.DnsServer.SaveConfigFile();
-            _dnsWebService.AuthManager.SaveConfigFile();
+            //save the restored server name and the removed cluster token before the cluster file is deleted
+            _dnsWebService.DnsServer.SaveConfigFile(true);
+            _dnsWebService.AuthManager.SaveConfigFile(true);
 
             UnloadAndDeleteConfigFile();
         }
@@ -524,6 +533,7 @@ namespace DnsServerCore.Cluster
 
             //create self node
             string serverDomain = _dnsWebService.DnsServer.ServerDomain;
+            _serverDomainRenamed = false;
             if (!serverDomain.EndsWith("." + clusterDomain, StringComparison.OrdinalIgnoreCase))
             {
                 int x = serverDomain.IndexOf('.');
@@ -531,6 +541,8 @@ namespace DnsServerCore.Cluster
                     serverDomain = serverDomain + "." + clusterDomain;
                 else
                     serverDomain = string.Concat(serverDomain.AsSpan(0, x), ".", clusterDomain);
+
+                _serverDomainRenamed = true;
             }
 
             Uri primaryNodeUrl = new Uri($"https://{serverDomain}:{_dnsWebService.WebServiceTlsPort}/");
@@ -832,6 +844,14 @@ namespace DnsServerCore.Cluster
             }
 
             bool secondaryNodeDomainChanged = !secondaryNode.Name.Equals(secondaryNodeUrl.Host, StringComparison.OrdinalIgnoreCase);
+
+            string secondaryNodeDomain = secondaryNodeUrl.Host.ToLowerInvariant();
+
+            if (!secondaryNodeDomain.EndsWith("." + _clusterDomain, StringComparison.OrdinalIgnoreCase))
+                throw new DnsServerException("Failed to update Secondary node: the Secondary node domain name must be a subdomain of the Cluster domain name.");
+
+            //reject an invalid URL before the node's zone records are removed
+            secondaryNode.ValidateNodeUpdate(secondaryNodeUrl, secondaryNodeIpAddresses);
 
             //find existing record TTL values
             FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
@@ -1374,6 +1394,7 @@ namespace DnsServerCore.Cluster
 
                 //create self node
                 string serverDomain = _dnsWebService.DnsServer.ServerDomain;
+                _serverDomainRenamed = false;
                 if (!serverDomain.EndsWith("." + primaryNodeClusterInfo.ClusterDomain, StringComparison.OrdinalIgnoreCase))
                 {
                     int x = serverDomain.IndexOf('.');
@@ -1381,6 +1402,8 @@ namespace DnsServerCore.Cluster
                         serverDomain = serverDomain + "." + primaryNodeClusterInfo.ClusterDomain;
                     else
                         serverDomain = string.Concat(serverDomain.AsSpan(0, x), ".", primaryNodeClusterInfo.ClusterDomain);
+
+                    _serverDomainRenamed = true;
                 }
 
                 Uri secondaryNodeUrl = new Uri($"https://{serverDomain}:{_dnsWebService.WebServiceTlsPort}/");
@@ -1532,11 +1555,34 @@ namespace DnsServerCore.Cluster
             if (primaryNode.State == ClusterNodeState.Self)
                 throw new DnsServerException("Failed to update Primary node: the specified node is the self node and cannot be updated this way.");
 
+            ClusterNode formerPrimaryNode = null;
+
             if (primaryNode.Type == ClusterNodeType.Secondary)
+                formerPrimaryNode = GetPrimaryNode();
+
+            //validate before removing the current primary so a rejected update leaves the cluster unchanged
+            foreach (KeyValuePair<int, ClusterNode> clusterNode in _clusterNodes)
+            {
+                if (clusterNode.Key == primaryNode.Id)
+                    continue; //skip self
+
+                if ((formerPrimaryNode is not null) && (clusterNode.Key == formerPrimaryNode.Id))
+                    continue; //this node is removed by the promotion
+
+                if (clusterNode.Value.Name.Equals(primaryNodeUrl.Host, StringComparison.OrdinalIgnoreCase))
+                    throw new DnsServerException("Failed to update Primary node: the Primary node's domain name already exists in the Cluster. Please try again after changing the Primary DNS Server's domain name.");
+            }
+
+            //get cluster secondary catalog zone
+            string clusterCatalogDomain = "cluster-catalog." + _clusterDomain;
+
+            AuthZoneInfo clusterSecondaryCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(clusterCatalogDomain);
+            if (clusterSecondaryCatalogZoneInfo is null)
+                throw new DnsServerException($"Failed to update Primary node: the Cluster Secondary Catalog zone '{clusterCatalogDomain}' does not exists.");
+
+            if (formerPrimaryNode is not null)
             {
                 //secondary node was promoted to primary node
-                ClusterNode formerPrimaryNode = GetPrimaryNode();
-
                 //dispose former primary node immediately to stop heartbeat
                 formerPrimaryNode.Dispose();
 
@@ -1561,23 +1607,6 @@ namespace DnsServerCore.Cluster
                 //ensure to save changes
                 SaveConfigFile();
             }
-
-            //validate for duplicate names
-            foreach (KeyValuePair<int, ClusterNode> clusterNode in _clusterNodes)
-            {
-                if (clusterNode.Key == primaryNode.Id)
-                    continue; //skip self
-
-                if (clusterNode.Value.Name.Equals(primaryNodeUrl.Host, StringComparison.OrdinalIgnoreCase))
-                    throw new DnsServerException("Failed to update Primary node: the Primary node's domain name already exists in the Cluster. Please try again after changing the Primary DNS Server's domain name.");
-            }
-
-            //get cluster secondary catalog zone
-            string clusterCatalogDomain = "cluster-catalog." + _clusterDomain;
-
-            AuthZoneInfo clusterSecondaryCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(clusterCatalogDomain);
-            if (clusterSecondaryCatalogZoneInfo is null)
-                throw new DnsServerException($"Failed to update Primary node: the Cluster Secondary Catalog zone '{clusterCatalogDomain}' does not exists.");
 
             //update primary node
             primaryNode.UpdateNode(primaryNodeUrl, primaryNodeIpAddresses);
@@ -1699,7 +1728,7 @@ namespace DnsServerCore.Cluster
             }
             finally
             {
-                if (success)
+                if (success || removedFromCluster)
                 {
                     _configRefreshTimerTriggered = false;
                     _configRefreshIncludeZones = null;
@@ -1867,6 +1896,7 @@ namespace DnsServerCore.Cluster
 
             List<ClusterNode> clusterNodesToAdd = new List<ClusterNode>();
             List<ClusterNode> clusterNodesToRemove = new List<ClusterNode>();
+            bool saveConfig = false;
 
             foreach (ClusterInfo.ClusterNodeInfo clusterNodeInfo in primaryNodeClusterInfo.ClusterNodes)
             {
@@ -1876,7 +1906,8 @@ namespace DnsServerCore.Cluster
                         continue; //skip self node
 
                     //update existing cluster node
-                    existingClusterNode.UpdateNode(clusterNodeInfo);
+                    if (existingClusterNode.UpdateNode(clusterNodeInfo))
+                        saveConfig = true;
                 }
                 else
                 {
@@ -1901,8 +1932,6 @@ namespace DnsServerCore.Cluster
                 if (!found)
                     clusterNodesToRemove.Add(existingClusterNode.Value);
             }
-
-            bool saveConfig = false;
 
             if ((clusterNodesToAdd.Count > 0) || (clusterNodesToRemove.Count > 0))
             {
@@ -2001,83 +2030,119 @@ namespace DnsServerCore.Cluster
             if (clusterZoneInfo is null)
                 throw new DnsServerException("Failed to promote to Primary node: the Cluster Secondary zone does not exist.");
 
-            //stop cluster config refresh timer
+            //stop cluster config refresh timer; restart it if promotion does not complete
             StopConfigRefreshTimer();
 
-            //resync config and delete current primary node from the cluster immediately
-            ClusterNode existingPrimaryNode = GetPrimaryNode();
+            bool promoted = false;
+            bool primaryStateSaved = false;
+            bool heartbeatStopped = false;
+            bool promotedSelf = false;
+            ClusterNode existingPrimaryNode = null;
+            IReadOnlyDictionary<int, ClusterNode> previousClusterNodes = null;
 
-            if (!forceDeletePrimary)
+            try
             {
-                //resync complete config from current primary node to ensure all data is synced
-                _configLastSynced = DateTime.UnixEpoch; //to ensure complete config resync
-                await existingPrimaryNode.SyncConfigAsync();
+                //resync config from the current primary, then promote locally before deleting it
+                existingPrimaryNode = GetPrimaryNode();
 
-                //delete current cluster primary node
-                await existingPrimaryNode.DeleteClusterAsync(true);
+                if (!forceDeletePrimary)
+                {
+                    //resync complete config from current primary node to ensure all data is synced
+                    _configLastSynced = DateTime.UnixEpoch; //to ensure complete config resync
+                    await existingPrimaryNode.SyncConfigAsync();
+                }
+
+                //stop heartbeats before local promotion; keep the client until the new primary state is saved
+                existingPrimaryNode.StopHeartbeat();
+                heartbeatStopped = true;
+
+                //remove primary node from cluster nodes
+                IReadOnlyDictionary<int, ClusterNode> existingClusterNodes = _clusterNodes;
+                Dictionary<int, ClusterNode> updatedClusterNodes = new Dictionary<int, ClusterNode>(existingClusterNodes.Count - 1);
+
+                foreach (KeyValuePair<int, ClusterNode> existingClusterNode in existingClusterNodes)
+                {
+                    if (existingClusterNode.Key == existingPrimaryNode.Id)
+                        continue;
+
+                    updatedClusterNodes[existingClusterNode.Key] = existingClusterNode.Value;
+                }
+
+                //update cluster nodes
+                previousClusterNodes = existingClusterNodes;
+                _clusterNodes = updatedClusterNodes;
+
+                //promote self node to primary immediately
+                selfNewPrimaryNode.PromoteToPrimaryNode();
+                promotedSelf = true;
+
+                //convert cluster secondary catalog zone to catalog zone along with all its member zones
+                if (clusterCatalogZoneInfo.Type == AuthZoneType.SecondaryCatalog)
+                    clusterCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.ConvertZoneTypeTo(clusterCatalogZoneInfo.Name, AuthZoneType.Catalog);
+
+                //get converted primary cluster zone info
+                clusterZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(_clusterDomain);
+                if (clusterZoneInfo is null)
+                    throw new DnsServerException("Failed to promote to Primary node: the Cluster Primary zone does not exist.");
+
+                //sign cluster zone in case when DNSSEC private keys were not available during ConvertZoneTypeTo() operation
+                if (clusterZoneInfo.ApexZone.DnssecStatus == AuthZoneDnssecStatus.Unsigned)
+                {
+                    DnssecPrivateKey kskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.KeySigningKey);
+                    DnssecPrivateKey zskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.ZoneSigningKey);
+                    zskPrivateKey.RolloverDays = 90;
+
+                    _dnsWebService.DnsServer.AuthZoneManager.SignPrimaryZone(clusterZoneInfo.Name, kskPrivateKey, zskPrivateKey, 3600, false);
+                }
+
+                //find existing record TTL values
+                FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
+
+                //remove old primary node records from cluster primary zone and save zone file
+                if (existingPrimaryNode is not null)
+                    RemoveClusterPrimaryZoneRecordsFor(existingPrimaryNode);
+
+                //update cluster primary zone for new primary node
+                AddClusterPrimaryZoneRecordsFor(selfNewPrimaryNode, nsTtl, aTtl, _dnsWebService.WebServiceTlsCertificate);
+
+                //update cluster catalog zone ACLs, TSIG key name and save zone file
+                UpdateClusterCatalogZoneOptions(clusterCatalogZoneInfo);
+
+                //save all changes before removing the old primary, so a later failure does not leave the cluster without one
+                SaveConfigFile(true);
+                primaryStateSaved = true;
+
+                if (!forceDeletePrimary)
+                    await existingPrimaryNode.DeleteClusterAsync(true);
+
+                existingPrimaryNode.Dispose();
+
+                //notify all secondary nodes as a primary node immediately
+                TriggerNotifyAllSecondaryNodes(0);
+
+                //trigger NS and SOA update for member zones
+                TriggerRecordUpdateForClusterCatalogMemberZones();
+
+                promoted = true;
             }
-
-            //dispose primary node immediately to stop heartbeat
-            existingPrimaryNode.Dispose();
-
-            //remove primary node from cluster nodes
-            IReadOnlyDictionary<int, ClusterNode> existingClusterNodes = _clusterNodes;
-            Dictionary<int, ClusterNode> updatedClusterNodes = new Dictionary<int, ClusterNode>(existingClusterNodes.Count - 1);
-
-            foreach (KeyValuePair<int, ClusterNode> existingClusterNode in existingClusterNodes)
+            finally
             {
-                if (existingClusterNode.Key == existingPrimaryNode.Id)
-                    continue;
+                if (!promoted && !primaryStateSaved && ClusterInitialized)
+                {
+                    if (promotedSelf)
+                    {
+                        selfNewPrimaryNode.RevertToSecondaryNode();
 
-                updatedClusterNodes[existingClusterNode.Key] = existingClusterNode.Value;
+                        if (previousClusterNodes is not null)
+                            _clusterNodes = previousClusterNodes;
+                    }
+
+                    if (heartbeatStopped)
+                        existingPrimaryNode.UpdateHeartbeatTimer();
+
+                    UpdateConfigRefreshTimer(_configRefreshIntervalSeconds * 1000);
+                }
             }
-
-            //update cluster nodes
-            _clusterNodes = updatedClusterNodes;
-
-            //promote self node to primary immediately
-            selfNewPrimaryNode.PromoteToPrimaryNode();
-
-            //convert cluster secondary catalog zone to catalog zone along with all its member zones
-            if (clusterCatalogZoneInfo.Type == AuthZoneType.SecondaryCatalog)
-                clusterCatalogZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.ConvertZoneTypeTo(clusterCatalogZoneInfo.Name, AuthZoneType.Catalog);
-
-            //get converted primary cluster zone info
-            clusterZoneInfo = _dnsWebService.DnsServer.AuthZoneManager.GetAuthZoneInfo(_clusterDomain);
-            if (clusterZoneInfo is null)
-                throw new DnsServerException("Failed to promote to Primary node: the Cluster Primary zone does not exist.");
-
-            //sign cluster zone in case when DNSSEC private keys were not available during ConvertZoneTypeTo() operation
-            if (clusterZoneInfo.ApexZone.DnssecStatus == AuthZoneDnssecStatus.Unsigned)
-            {
-                DnssecPrivateKey kskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.KeySigningKey);
-                DnssecPrivateKey zskPrivateKey = DnssecPrivateKey.Create(DnssecAlgorithm.ECDSAP256SHA256, DnssecPrivateKeyType.ZoneSigningKey);
-                zskPrivateKey.RolloverDays = 90;
-
-                _dnsWebService.DnsServer.AuthZoneManager.SignPrimaryZone(clusterZoneInfo.Name, kskPrivateKey, zskPrivateKey, 3600, false);
-            }
-
-            //find existing record TTL values
-            FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
-
-            //remove old primary node records from cluster primary zone and save zone file
-            if (existingPrimaryNode is not null)
-                RemoveClusterPrimaryZoneRecordsFor(existingPrimaryNode);
-
-            //update cluster primary zone for new primary node
-            AddClusterPrimaryZoneRecordsFor(selfNewPrimaryNode, nsTtl, aTtl, _dnsWebService.WebServiceTlsCertificate);
-
-            //update cluster catalog zone ACLs, TSIG key name and save zone file
-            UpdateClusterCatalogZoneOptions(clusterCatalogZoneInfo);
-
-            //save all changes immediately before sending notify
-            SaveConfigFile(true);
-
-            //notify all secondary nodes as a primary node immediately
-            TriggerNotifyAllSecondaryNodes(0);
-
-            //trigger NS and SOA update for member zones
-            TriggerRecordUpdateForClusterCatalogMemberZones();
         }
 
         #endregion
@@ -2141,6 +2206,9 @@ namespace DnsServerCore.Cluster
 
         public ClusterNode UpdateSelfNodeIPAddresses(IReadOnlyList<IPAddress> ipAddresses)
         {
+            if (ipAddresses.Count > 10)
+                throw new ArgumentException("Cluster node cannot have more than 10 IP addresses.", nameof(ipAddresses));
+
             ClusterNode selfNode = GetSelfNode();
 
             switch (selfNode.Type)
@@ -2200,6 +2268,10 @@ namespace DnsServerCore.Cluster
             switch (selfNode.Type)
             {
                 case ClusterNodeType.Primary:
+                    Uri newNodeUrl = new Uri($"https://{_dnsWebService.DnsServer.ServerDomain}:{_dnsWebService.WebServiceTlsPort}/");
+                    if (newNodeUrl.OriginalString.Length > 255)
+                        throw new ArgumentException("Cluster node URL length must be less than 255 bytes.", nameof(newNodeUrl));
+
                     //find existing record TTL values
                     FindExistingRecordTtlValues(out uint nsTtl, out uint aTtl);
 

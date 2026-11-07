@@ -871,10 +871,10 @@ namespace DnsServerCore.Dns
                 for (int day = 0; day < days; day++) //days
                 {
                     StatCounter dailyStatCounter = LoadDailyStats(lastMonthDateTime.AddDays(day));
-                    monthlyStatCounter.Merge(dailyStatCounter, true);
+                    monthlyStatCounter.Merge(dailyStatCounter);
                 }
 
-                totalStatCounter.Merge(monthlyStatCounter, true);
+                totalStatCounter.Merge(monthlyStatCounter);
 
                 totalQueriesPerInterval[month] = monthlyStatCounter.TotalQueries;
 
@@ -1285,7 +1285,7 @@ namespace DnsServerCore.Dns
                 labels[day] = label;
 
                 StatCounter dailyStatCounter = LoadDailyStats(lastDayDateTime);
-                totalStatCounter.Merge(dailyStatCounter, true);
+                totalStatCounter.Merge(dailyStatCounter);
 
                 totalQueriesPerInterval[day] = dailyStatCounter.TotalQueries;
 
@@ -1456,10 +1456,10 @@ namespace DnsServerCore.Dns
                 for (int day = 0; day < days; day++) //days
                 {
                     StatCounter dailyStatCounter = LoadDailyStats(lastMonthDateTime.AddDays(day));
-                    monthlyStatCounter.Merge(dailyStatCounter, true);
+                    monthlyStatCounter.Merge(dailyStatCounter);
                 }
 
-                totalStatCounter.Merge(monthlyStatCounter, true);
+                totalStatCounter.Merge(monthlyStatCounter);
             }
 
             switch (type)
@@ -1599,7 +1599,7 @@ namespace DnsServerCore.Dns
                 DateTime lastDayDateTime = startDate.AddDays(day);
 
                 StatCounter dailyStatCounter = LoadDailyStats(lastDayDateTime);
-                totalStatCounter.Merge(dailyStatCounter, true);
+                totalStatCounter.Merge(dailyStatCounter);
             }
 
             switch (type)
@@ -1641,7 +1641,7 @@ namespace DnsServerCore.Dns
 
                 StatCounter statCounter = _lastHourStatCounters[lastDateTime.Minute];
                 if (statCounter is not null)
-                    totalStatCounter.Merge(statCounter, false, true);
+                    totalStatCounter.Merge(statCounter, true);
             }
 
             return totalStatCounter.GetClientSubnetStats(ipv4Prefixes, ipv6Prefixes);
@@ -2250,10 +2250,12 @@ namespace DnsServerCore.Dns
                 _protocolTypes.GetOrAdd(protocol, GetNewCounter).Increment();
             }
 
-            public void Merge(StatCounter statCounter, bool isDailyStatCounter = false, bool skipLock = false)
+            public void Merge(StatCounter statCounter, bool skipLock = false)
             {
                 if (!skipLock && (!_locked || !statCounter._locked))
                     throw new DnsServerException("StatCounter must be locked.");
+
+                long sourceTotalClients = statCounter.TotalClients;
 
                 _totalQueries += statCounter._totalQueries;
                 _totalNoError += statCounter._totalNoError;
@@ -2287,9 +2289,9 @@ namespace DnsServerCore.Dns
                 }
 
                 _totalClients = _clientIpAddressesUdpTcp.Count;
-                _totalClientsDailyStatsSummation += statCounter._totalClients;
+                _totalClientsDailyStatsSummation += sourceTotalClients;
 
-                if (isDailyStatCounter && (statCounter._totalClients > statCounter._clientIpAddressesUdpTcp.Count))
+                if (sourceTotalClients > statCounter._clientIpAddressesUdpTcp.Count)
                     _truncationFoundDuringMerge = true;
             }
 
@@ -2480,7 +2482,7 @@ namespace DnsServerCore.Dns
                     TotalBlocked = _totalBlocked,
                     TotalDropped = _totalDropped,
 
-                    TotalClients = _totalClients
+                    TotalClients = TotalClients
                 };
             }
 

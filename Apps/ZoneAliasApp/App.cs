@@ -25,6 +25,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using TechnitiumLibrary;
 using TechnitiumLibrary.Net.Dns;
+using TechnitiumLibrary.Net.Dns.EDnsOptions;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
 namespace ZoneAlias
@@ -86,29 +87,178 @@ namespace ZoneAlias
             return false;
         }
 
+        private static string AliasName(string name, string zone, string alias)
+        {
+            if (string.IsNullOrEmpty(name))
+                return null;
+
+            int j = name.LastIndexOf(zone, StringComparison.OrdinalIgnoreCase);
+            bool atLabelBoundary = (j == 0) || ((j > 0) && (name[j - 1] == '.'));
+            bool isSuffix = (j > -1) && ((j + zone.Length) == name.Length);
+
+            if (!(atLabelBoundary && isSuffix))
+                return null;
+
+            if (j == 0)
+                return alias;
+
+            return string.Concat(name.AsSpan(0, j), alias);
+        }
+
+        private static DnsResourceRecordData AliasRecordData(DnsResourceRecord record, string zone, string alias)
+        {
+            switch (record.Type)
+            {
+                case DnsResourceRecordType.CNAME:
+                    {
+                        string domain = AliasName((record.RDATA as DnsCNAMERecordData).Domain, zone, alias);
+                        if (domain is not null)
+                            return new DnsCNAMERecordData(domain);
+                    }
+                    break;
+
+                case DnsResourceRecordType.DNAME:
+                    {
+                        string domain = AliasName((record.RDATA as DnsDNAMERecordData).Domain, zone, alias);
+                        if (domain is not null)
+                            return new DnsDNAMERecordData(domain);
+                    }
+                    break;
+
+                case DnsResourceRecordType.NS:
+                    {
+                        string nameServer = AliasName((record.RDATA as DnsNSRecordData).NameServer, zone, alias);
+                        if (nameServer is not null)
+                            return new DnsNSRecordData(nameServer);
+                    }
+                    break;
+
+                case DnsResourceRecordType.MX:
+                    {
+                        DnsMXRecordData mx = record.RDATA as DnsMXRecordData;
+                        string exchange = AliasName(mx.Exchange, zone, alias);
+                        if (exchange is not null)
+                            return new DnsMXRecordData(mx.Preference, exchange);
+                    }
+                    break;
+
+                case DnsResourceRecordType.SRV:
+                    {
+                        DnsSRVRecordData srv = record.RDATA as DnsSRVRecordData;
+                        string target = AliasName(srv.Target, zone, alias);
+                        if (target is not null)
+                            return new DnsSRVRecordData(srv.Priority, srv.Weight, srv.Port, target);
+                    }
+                    break;
+
+                case DnsResourceRecordType.PTR:
+                    {
+                        string domain = AliasName((record.RDATA as DnsPTRRecordData).Domain, zone, alias);
+                        if (domain is not null)
+                            return new DnsPTRRecordData(domain);
+                    }
+                    break;
+
+                case DnsResourceRecordType.ANAME:
+                case DnsResourceRecordType.ALIAS:
+                    {
+                        string domain = AliasName((record.RDATA as DnsANAMERecordData).Domain, zone, alias);
+                        if (domain is not null)
+                        {
+                            if (record.Type == DnsResourceRecordType.ALIAS)
+                                return new DnsALIASRecordData((record.RDATA as DnsALIASRecordData).Type, domain);
+
+                            return new DnsANAMERecordData(domain);
+                        }
+                    }
+                    break;
+
+                case DnsResourceRecordType.SOA:
+                    {
+                        DnsSOARecordData soa = record.RDATA as DnsSOARecordData;
+                        string primaryNameServer = AliasName(soa.PrimaryNameServer, zone, alias) ?? soa.PrimaryNameServer;
+                        string responsiblePerson = AliasName(soa.ResponsiblePerson, zone, alias) ?? soa.ResponsiblePerson;
+
+                        if (!primaryNameServer.Equals(soa.PrimaryNameServer, StringComparison.OrdinalIgnoreCase) || !responsiblePerson.Equals(soa.ResponsiblePerson, StringComparison.OrdinalIgnoreCase))
+                            return new DnsSOARecordData(primaryNameServer, responsiblePerson, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, soa.Minimum);
+                    }
+                    break;
+
+                case DnsResourceRecordType.NAPTR:
+                    {
+                        DnsNAPTRRecordData naptr = record.RDATA as DnsNAPTRRecordData;
+                        string replacement = AliasName(naptr.Replacement, zone, alias);
+                        if (replacement is not null)
+                            return new DnsNAPTRRecordData(naptr.Order, naptr.Preference, naptr.Flags, naptr.Services, naptr.Regexp, replacement);
+                    }
+                    break;
+
+                case DnsResourceRecordType.RP:
+                    {
+                        DnsRPRecordData rp = record.RDATA as DnsRPRecordData;
+                        string mailbox = AliasName(rp.Mailbox, zone, alias) ?? rp.Mailbox;
+                        string txtDomain = AliasName(rp.TxtDomain, zone, alias) ?? rp.TxtDomain;
+
+                        if (!mailbox.Equals(rp.Mailbox, StringComparison.OrdinalIgnoreCase) || !txtDomain.Equals(rp.TxtDomain, StringComparison.OrdinalIgnoreCase))
+                            return new DnsRPRecordData(mailbox, txtDomain);
+                    }
+                    break;
+
+                case DnsResourceRecordType.SVCB:
+                case DnsResourceRecordType.HTTPS:
+                    {
+                        DnsSVCBRecordData svcb = record.RDATA as DnsSVCBRecordData;
+                        if (svcb is null)
+                            break;
+
+                        string targetName = AliasName(svcb.TargetName, zone, alias);
+                        if (targetName is not null)
+                            return new DnsSVCBRecordData(svcb.SvcPriority, targetName, svcb.SvcParams);
+                    }
+                    break;
+            }
+
+            return record.RDATA;
+        }
+
         private static IReadOnlyList<DnsResourceRecord> ConvertRecords(IReadOnlyList<DnsResourceRecord> records, string zone, string alias)
         {
             if (records.Count == 0)
                 return records;
 
-            DnsResourceRecord[] newRecords = new DnsResourceRecord[records.Count];
-            int j;
+            List<DnsResourceRecord> newRecords = new List<DnsResourceRecord>(records.Count);
+            bool changed = false;
 
             for (int i = 0; i < records.Count; i++)
             {
                 DnsResourceRecord record = records[i];
 
-                j = record.Name.LastIndexOf(zone, StringComparison.OrdinalIgnoreCase);
-                bool atLabelBoundary = (j == 0) || ((j > 0) && (record.Name[j - 1] == '.'));
-                bool isSuffix = (j > -1) && ((j + zone.Length) == record.Name.Length);
+                switch (record.Type)
+                {
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.NSEC:
+                    case DnsResourceRecordType.NSEC3:
+                        // the signed data still names the source zone, so a validator would treat the alias as bogus
+                        changed = true;
+                        continue;
+                }
 
-                if (atLabelBoundary && isSuffix && (j == 0))
-                    newRecords[i] = new DnsResourceRecord(alias, record.Type, record.Class, record.TTL, record.RDATA);
-                else if (atLabelBoundary && isSuffix)
-                    newRecords[i] = new DnsResourceRecord(string.Concat(record.Name.AsSpan(0, j), alias), record.Type, record.Class, record.TTL, record.RDATA);
+                string name = AliasName(record.Name, zone, alias) ?? record.Name;
+                DnsResourceRecordData rdata = AliasRecordData(record, zone, alias);
+
+                if (name.Equals(record.Name, StringComparison.Ordinal) && ReferenceEquals(rdata, record.RDATA))
+                {
+                    newRecords.Add(record);
+                }
                 else
-                    newRecords[i] = record;
+                {
+                    changed = true;
+                    newRecords.Add(new DnsResourceRecord(name, record.Type, record.Class, record.TTL, rdata));
+                }
             }
+
+            if (!changed)
+                return records;
 
             return newRecords;
         }
@@ -174,9 +324,30 @@ namespace ZoneAlias
 
             DnsQuestionRecord newQuestion = new DnsQuestionRecord(newQname, question.Type, question.Class);
 
+            ushort udpPayloadSize = ushort.MinValue;
+            EDnsHeaderFlags ednsFlags = EDnsHeaderFlags.None;
+            IReadOnlyList<EDnsOption> options = null;
+
+            if (request.EDNS is not null)
+            {
+                udpPayloadSize = request.EDNS.UdpPayloadSize < 512 ? (ushort)512 : request.EDNS.UdpPayloadSize;
+                ednsFlags = request.EDNS.Flags;
+            }
+
+            EDnsClientSubnetOptionData requestECS = request.GetEDnsClientSubnetOption();
+            if (requestECS is not null)
+            {
+                options = [new EDnsOption(EDnsOptionCode.EDNS_CLIENT_SUBNET, requestECS)];
+
+                if (udpPayloadSize < 512)
+                    udpPayloadSize = 512;
+            }
+
+            DnsDatagram aliasRequest = new DnsDatagram(request.Identifier, false, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, request.CheckingDisabled, DnsResponseCode.NoError, [newQuestion], null, null, null, udpPayloadSize, ednsFlags, options);
+
             try
             {
-                DnsDatagram response = await _dnsServer.DirectQueryAsync(newQuestion);
+                DnsDatagram response = await _dnsServer.DirectQueryAsync(aliasRequest, remoteEP);
 
                 IReadOnlyList<DnsResourceRecord> newAnswer = ConvertRecords(response.Answer, zone, alias);
                 IReadOnlyList<DnsResourceRecord> newAuthority = ConvertRecords(response.Authority, zone, alias);

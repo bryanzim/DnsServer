@@ -556,6 +556,9 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
+        protected virtual void OnRecordsExpired()
+        { }
+
         private void RecordExpiryTimerCallback(object state)
         {
             _recordExpiryTimerRunning = false;
@@ -594,7 +597,10 @@ namespace DnsServerCore.Dns.Zones
                 }
 
                 if (recordsDeleted)
+                {
+                    OnRecordsExpired();
                     _dnsServer.AuthZoneManager.SaveZoneFile(_name);
+                }
             }
             catch (Exception ex)
             {
@@ -624,6 +630,78 @@ namespace DnsServerCore.Dns.Zones
         #endregion
 
         #region versioning
+
+        private bool IsGlueRecordStillServed(DnsResourceRecord glueRecord)
+        {
+            foreach (AuthZone zone in _dnsServer.AuthZoneManager.GetApexZoneWithSubDomainZones(_name))
+            {
+                foreach (DnsResourceRecord nsRecord in zone.GetRecords(DnsResourceRecordType.NS))
+                {
+                    IReadOnlyList<DnsResourceRecord> glueRecords = nsRecord.GetAuthNSRecordInfo().GlueRecords;
+                    if (glueRecords is null)
+                        continue;
+
+                    foreach (DnsResourceRecord servedGlueRecord in glueRecords)
+                    {
+                        if (servedGlueRecord.Equals(glueRecord))
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        internal virtual bool CanCommitZoneChange()
+        {
+            return _dnssecStatus == AuthZoneDnssecStatus.Unsigned;
+        }
+
+        internal void SaveZoneFile()
+        {
+            _dnsServer.AuthZoneManager.SaveZoneFile(_name);
+        }
+
+        internal void ScheduleAdoptedRecordExpiry(IReadOnlyList<DnsResourceRecord> records)
+        {
+            if ((records is null) || (records.Count == 0))
+                return;
+
+            uint minExpiryTtl = 0u;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                GenericRecordInfo recordInfo = record.GetAuthGenericRecordInfo();
+                if (recordInfo.ExpiryTtl == 0u)
+                    continue;
+
+                uint pendingExpiryTtl = recordInfo.GetPendingExpiryTtl();
+                if (pendingExpiryTtl == 0u)
+                    pendingExpiryTtl = 10;
+
+                if (minExpiryTtl == 0u)
+                    minExpiryTtl = pendingExpiryTtl;
+                else
+                    minExpiryTtl = Math.Min(minExpiryTtl, pendingExpiryTtl);
+            }
+
+            if (minExpiryTtl > 0u)
+                StartRecordExpiryTimer(minExpiryTtl);
+        }
+
+        internal virtual void PublishRemovedRecords(IReadOnlyList<DnsResourceRecord> deletedRecords)
+        {
+            if ((deletedRecords is null) || (deletedRecords.Count == 0))
+                return;
+
+            if ((GetRecords(DnsResourceRecordType.SOA).Count > 0) && CanCommitZoneChange())
+            {
+                CommitAndIncrementSerial(deletedRecords);
+                TriggerNotify();
+            }
+
+            SaveZoneFile();
+        }
 
         internal virtual void CommitAndIncrementSerial(IReadOnlyList<DnsResourceRecord> deletedRecords = null, IReadOnlyList<DnsResourceRecord> addedRecords = null)
         {
@@ -711,7 +789,13 @@ namespace DnsServerCore.Dns.Zones
                         {
                             IReadOnlyList<DnsResourceRecord> glueRecords = deletedRecord.GetAuthNSRecordInfo().GlueRecords;
                             if (glueRecords is not null)
-                                _zoneHistory.AddRange(glueRecords);
+                            {
+                                foreach (DnsResourceRecord glueRecord in glueRecords)
+                                {
+                                    if (!IsGlueRecordStillServed(glueRecord))
+                                        _zoneHistory.Add(glueRecord);
+                                }
+                            }
                         }
                     }
                 }

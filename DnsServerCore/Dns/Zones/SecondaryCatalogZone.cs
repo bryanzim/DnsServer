@@ -73,7 +73,7 @@ namespace DnsServerCore.Dns.Zones
 
         readonly static NetworkAccessControl _allowZoneNameServersAndUseSpecifiedNetworkACL = new NetworkAccessControl(IPAddress.Parse("224.0.0.0"), 32);
 
-        Dictionary<string, string> _membersIndex = new Dictionary<string, string>();
+        Dictionary<string, string> _membersIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         #endregion
 
@@ -108,7 +108,7 @@ namespace DnsServerCore.Dns.Zones
 
         internal void BuildMembersIndex()
         {
-            Dictionary<string, string> membersIndex = new Dictionary<string, string>();
+            Dictionary<string, string> membersIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (KeyValuePair<string, string> memberEntry in EnumerateCatalogMemberZones(_dnsServer))
                 membersIndex.TryAdd(memberEntry.Key.ToLowerInvariant(), memberEntry.Value);
@@ -135,10 +135,10 @@ namespace DnsServerCore.Dns.Zones
                 return;
             }
 
-            Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>();
+            Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (KeyValuePair<string, string> memberEntry in EnumerateCatalogMemberZones(_dnsServer))
-                updatedMembersIndex.TryAdd(memberEntry.Key, memberEntry.Value);
+                updatedMembersIndex.TryAdd(memberEntry.Key.ToLowerInvariant(), memberEntry.Value);
 
             Dictionary<string, object> membersToRemove = new Dictionary<string, object>();
             Dictionary<string, string> membersToAdd = new Dictionary<string, string>();
@@ -163,8 +163,8 @@ namespace DnsServerCore.Dns.Zones
                 if (_membersIndex.TryGetValue(updatedMemberEntry.Key, out _))
                 {
                     ApexZone apexZone = _dnsServer.AuthZoneManager.GetApexZone(updatedMemberEntry.Key);
-                    if (apexZone is not null)
-                        continue; //zone already exists; do nothing
+                    if ((apexZone is not null) && _name.Equals(apexZone.CatalogZoneName, StringComparison.OrdinalIgnoreCase))
+                        continue; //this catalog already provisioned the member
                 }
 
                 //member was added to catalog zone; provision zone
@@ -201,6 +201,7 @@ namespace DnsServerCore.Dns.Zones
             bool isAddHistoryRecord = false;
             bool updateGlobalAllowQueryProperty = false;
             bool updateGlobalAllowTransferAndTsigKeyNamesProperties = false;
+            bool updateGlobalPrimariesProperty = false;
             Dictionary<string, object> membersToRemove = new Dictionary<string, object>();
             Dictionary<string, string> membersToAdd = new Dictionary<string, string>();
             Dictionary<string, string> membersToUpdate = new Dictionary<string, string>();
@@ -211,12 +212,13 @@ namespace DnsServerCore.Dns.Zones
                 DnsResourceRecord historyRecord = historyRecords[i];
                 if (historyRecord.Type == DnsResourceRecordType.SOA)
                 {
-                    isAddHistoryRecord = true; //removed records completed
+                    //the first deleted SOA is skipped, so each following SOA switches between the add and delete sections
+                    isAddHistoryRecord = !isAddHistoryRecord;
                     continue;
                 }
 
-                if (historyRecord.Name.Length == _name.Length)
-                    continue; //skip apex records
+                if (!historyRecord.Name.EndsWith("." + _name, StringComparison.OrdinalIgnoreCase))
+                    continue; //skip the apex and out-of-zone glue carried in the difference
 
                 string subdomain = historyRecord.Name.Substring(0, historyRecord.Name.Length - _name.Length - 1).ToLowerInvariant();
                 string[] labels = subdomain.Split('.');
@@ -237,6 +239,10 @@ namespace DnsServerCore.Dns.Zones
                                 case "transfer-tsig-key-names":
                                     updateGlobalAllowTransferAndTsigKeyNamesProperties = true;
                                     break;
+
+                                case "primaries":
+                                    updateGlobalPrimariesProperty = true;
+                                    break;
                             }
                         }
                         break;
@@ -252,12 +258,21 @@ namespace DnsServerCore.Dns.Zones
                                 {
                                     string memberZoneDomain = subdomain + "." + _name;
 
-                                    membersToAdd.TryAdd(memberZoneName, memberZoneDomain);
-                                    membersToUpdate.TryAdd(memberZoneName, memberZoneDomain);
+                                    //a later difference in this transfer wins, so an add followed by a delete does not recreate the member
+                                    //a new label is a new membership, so the existing zone is removed and provisioned again
+                                    if (_membersIndex.TryGetValue(memberZoneName, out string existingMemberZoneDomain) && !existingMemberZoneDomain.Equals(memberZoneDomain, StringComparison.OrdinalIgnoreCase))
+                                        membersToRemove[memberZoneName] = null;
+                                    else
+                                        membersToRemove.Remove(memberZoneName);
+
+                                    membersToAdd[memberZoneName] = memberZoneDomain;
+                                    membersToUpdate[memberZoneName] = memberZoneDomain;
                                 }
                                 else
                                 {
-                                    membersToRemove.TryAdd(memberZoneName, null);
+                                    membersToAdd.Remove(memberZoneName);
+                                    membersToUpdate.Remove(memberZoneName);
+                                    membersToRemove[memberZoneName] = null;
                                 }
                             }
                         }
@@ -270,7 +285,7 @@ namespace DnsServerCore.Dns.Zones
                                     string memberZoneDomain = labels[1] + "." + labels[0] + "." + _name;
                                     DnsResourceRecord prevHistoryRecord = historyRecords[i - 1];
 
-                                    if (prevHistoryRecord.Name.EndsWith(memberZoneDomain, StringComparison.OrdinalIgnoreCase))
+                                    if (prevHistoryRecord.Name.Equals(memberZoneDomain, StringComparison.OrdinalIgnoreCase) || prevHistoryRecord.Name.EndsWith("." + memberZoneDomain, StringComparison.OrdinalIgnoreCase))
                                         break; //skip since its same member zone's custom property
 
                                     IReadOnlyList<DnsResourceRecord> ptrRecords = _dnsServer.AuthZoneManager.GetRecords(_name, memberZoneDomain, DnsResourceRecordType.PTR);
@@ -292,6 +307,15 @@ namespace DnsServerCore.Dns.Zones
             if (updateGlobalAllowTransferAndTsigKeyNamesProperties)
                 UpdateGlobalAllowTransferAndTsigKeyNamesProperties();
 
+            if (updateGlobalPrimariesProperty)
+            {
+                foreach (KeyValuePair<string, string> memberEntry in _membersIndex)
+                {
+                    if (!membersToRemove.ContainsKey(memberEntry.Key))
+                        membersToUpdate.TryAdd(memberEntry.Key, memberEntry.Value);
+                }
+            }
+
             if ((membersToRemove.Count > 0) || (membersToAdd.Count > 0))
                 await AddAndRemoveMemberZonesAsync(membersToRemove, membersToAdd);
 
@@ -301,13 +325,19 @@ namespace DnsServerCore.Dns.Zones
             if ((membersToRemove.Count > 0) || (membersToAdd.Count > 0))
             {
                 //update members index
-                Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>(_membersIndex);
+                Dictionary<string, string> updatedMembersIndex = new Dictionary<string, string>(_membersIndex, StringComparer.OrdinalIgnoreCase);
 
                 foreach (KeyValuePair<string, object> removedMember in membersToRemove)
                     updatedMembersIndex.Remove(removedMember.Key);
 
                 foreach (KeyValuePair<string, string> addedMember in membersToAdd)
-                    updatedMembersIndex.TryAdd(addedMember.Key, addedMember.Value);
+                {
+                    ApexZone apexZone = _dnsServer.AuthZoneManager.GetApexZone(addedMember.Key);
+                    if ((apexZone is null) || !_name.Equals(apexZone.CatalogZoneName, StringComparison.OrdinalIgnoreCase))
+                        continue; //create failed or the name belongs to another zone; the retry will provision it
+
+                    updatedMembersIndex[addedMember.Key] = addedMember.Value; //replace a label kept from before this transfer
+                }
 
                 _membersIndex = updatedMembersIndex;
             }
@@ -365,7 +395,7 @@ namespace DnsServerCore.Dns.Zones
 
                                             primaryNameServerAddresses = primaryNameServerAddressesList;
                                             primaryZoneTransferProtocol = DnsTransportProtocol.Tcp;
-                                            primaryZoneTransferTsigKeyName = primaries[0].Item2;
+                                            primaryZoneTransferTsigKeyName = SelectCatalogPrimaryTsigKeyName(primaries);
                                             overrideCatalogPrimaryNameServers = true;
 
                                             foreach (Tuple<IPAddress, string> primaryNameServer in primaries)
@@ -518,6 +548,12 @@ namespace DnsServerCore.Dns.Zones
             //wait for all zones to be added
             foreach (Task task in tasks)
                 await task;
+
+            foreach (KeyValuePair<string, string> addMember in membersToAdd)
+            {
+                if (_dnsServer.AuthZoneManager.GetApexZone(addMember.Key) is null)
+                    RequestMemberProvisionRetry();
+            }
         }
 
         private void UpdateGlobalAllowQueryProperty()
@@ -673,7 +709,7 @@ namespace DnsServerCore.Dns.Zones
                             if (primaries.Count > 0)
                             {
                                 List<NameServerAddress> primaryNameServerAddresses = new List<NameServerAddress>();
-                                string primaryZoneTransferTsigKeyName = primaries[0].Item2;
+                                string primaryZoneTransferTsigKeyName = SelectCatalogPrimaryTsigKeyName(primaries);
 
                                 foreach (Tuple<IPAddress, string> primaryNameServer in primaries)
                                 {
@@ -735,13 +771,18 @@ namespace DnsServerCore.Dns.Zones
             }
         }
 
+        internal void NotifyMemberZoneRemoved(AuthZoneInfo zoneInfo)
+        {
+            ZoneRemoved?.Invoke(this, new SecondaryCatalogEventArgs(zoneInfo));
+        }
+
         private void DeleteMemberZone(ApexZone apexZone)
         {
             AuthZoneInfo zoneInfo = new AuthZoneInfo(apexZone);
 
             if (_dnsServer.AuthZoneManager.DeleteZone(zoneInfo, true))
             {
-                ZoneRemoved?.Invoke(this, new SecondaryCatalogEventArgs(zoneInfo));
+                NotifyMemberZoneRemoved(zoneInfo);
 
                 _dnsServer.LogManager.Write(apexZone.GetZoneTypeName() + " zone '" + apexZone.ToString() + "' was removed via Secondary Catalog zone '" + ToString() + "' sucessfully.");
             }
@@ -779,6 +820,18 @@ namespace DnsServerCore.Dns.Zones
                 return Enum.Parse<AuthZoneType>((records[0].RDATA as DnsTXTRecordData).GetText(), true);
 
             return AuthZoneType.Primary;
+        }
+
+        private static string SelectCatalogPrimaryTsigKeyName(List<Tuple<IPAddress, string>> primaries)
+        {
+            //an unkeyed address is listed before keyed ones; a null key must not hide a TSIG primary
+            foreach (Tuple<IPAddress, string> primary in primaries)
+            {
+                if (primary.Item2 is not null)
+                    return primary.Item2;
+            }
+
+            return null;
         }
 
         private List<Tuple<IPAddress, string>> GetPrimariesProperty(string memberZoneDomain)

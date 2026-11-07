@@ -754,11 +754,12 @@ namespace DnsServerCore.Auth
                     switch (permission.Key)
                     {
                         case PermissionSection.Zones:
-                            //sync user and group permissions as-is for zones section
+                            //sync user and group permissions as-is for zones section, including each zone
                             Permission zonesPermission = _permissions[PermissionSection.Zones];
 
                             zonesPermission.SyncPermissions(permission.Value.UserPermissions);
                             zonesPermission.SyncPermissions(permission.Value.GroupPermissions);
+                            zonesPermission.SyncSubItemPermissions(permission.Value.SubItemPermissions);
                             break;
 
                         default:
@@ -783,6 +784,7 @@ namespace DnsServerCore.Auth
                     switch (existingSession.Value.Type)
                     {
                         case UserSessionType.ApiToken:
+                        case UserSessionType.ClusterApiToken:
                             if (!sessions.ContainsKey(existingSession.Key))
                                 _sessions.TryRemove(existingSession);
 
@@ -1010,16 +1012,19 @@ namespace DnsServerCore.Auth
                         if (!_ldapAllowSignup)
                             throw new DnsWebServiceException("LDAP authentication succeeded for '" + username + "' but new user sign up is disabled. Please contact your administrator.");
 
-                        if (_ldapAllowSignupOnlyForMappedUsers && (_ldapGroupMap is not null))
+                        if (_ldapAllowSignupOnlyForMappedUsers)
                         {
                             bool hasMappedGroup = false;
 
-                            foreach (string remoteGroup in authInfo.Groups)
+                            if (_ldapGroupMap is not null)
                             {
-                                if (_ldapGroupMap.ContainsKey(remoteGroup))
+                                foreach (string remoteGroup in authInfo.Groups)
                                 {
-                                    hasMappedGroup = true;
-                                    break;
+                                    if (_ldapGroupMap.TryGetValue(remoteGroup, out string localGroupName) && (GetGroup(localGroupName) is not null))
+                                    {
+                                        hasMappedGroup = true;
+                                        break;
+                                    }
                                 }
                             }
 
@@ -1074,6 +1079,10 @@ namespace DnsServerCore.Auth
                 throw new InvalidOperationException();
             }
 
+            string ldapDisplayName = null;
+            Dictionary<string, Group> ldapGroups = null;
+            bool applyLdapProfile = false;
+
             switch (user.Type)
             {
                 case UserType.RemoteSSO:
@@ -1091,10 +1100,10 @@ namespace DnsServerCore.Auth
                         LdapAuthProvider ldapProvider = new LdapAuthProvider(_dnsWebService.DnsServer, _ldapServer, _ldapPort, _ldapSslOption, _ldapIgnoreSslErrors, _ldapBindUsername, _ldapBindPassword, _ldapSearchBase, _ldapUserSearchFilter, _ldapGroupAttribute);
                         LdapAuthProvider.AuthInfo authInfo = await ldapProvider.AuthenticateAsync(username, password);
 
-                        //sync display name
-                        user.DisplayName = authInfo.DisplayName;
+                        //hold the directory profile until the second factor succeeds
+                        applyLdapProfile = true;
+                        ldapDisplayName = authInfo.DisplayName;
 
-                        //sync group memberships
                         if (_ldapGroupMap is not null)
                         {
                             Dictionary<string, Group> groups = new Dictionary<string, Group>(4);
@@ -1112,7 +1121,7 @@ namespace DnsServerCore.Auth
                             Group everyone = GetGroup(Group.EVERYONE);
                             groups[everyone.Name.ToLowerInvariant()] = everyone;
 
-                            user.SyncGroups(groups);
+                            ldapGroups = groups;
                         }
                     }
                     catch (LdapAuthFailedException ex)
@@ -1149,10 +1158,18 @@ namespace DnsServerCore.Auth
                     await ThrowAuthFailedExceptionAsync("Invalid time-based one-time password (TOTP) was attempted for user: " + username);
             }
 
-            ResetFailedLoginAttempts(network);
-
             if (user.Disabled)
                 throw new DnsWebServiceException("User account is disabled. Please contact your administrator.");
+
+            if (applyLdapProfile)
+            {
+                user.DisplayName = ldapDisplayName;
+
+                if (ldapGroups is not null)
+                    user.SyncGroups(ldapGroups);
+            }
+
+            ResetFailedLoginAttempts(network);
 
             return user;
 
@@ -1318,6 +1335,15 @@ namespace DnsServerCore.Auth
 
             username = username.ToLowerInvariant();
 
+            if (ssoIdentifier is not null)
+            {
+                foreach (KeyValuePair<string, User> existingUser in _users)
+                {
+                    if (ssoIdentifier.Equals(existingUser.Value.SsoIdentifier, StringComparison.Ordinal) && (existingUser.Value.Type == UserType.RemoteSSO))
+                        throw new DnsWebServiceException("SSO user already exists: " + ssoIdentifier);
+                }
+            }
+
             User user = User.CreateSsoUser(displayName, username, ssoIdentifier);
 
             if (_users.TryAdd(username, user))
@@ -1433,6 +1459,20 @@ namespace DnsServerCore.Auth
                 //delete all sessions
                 foreach (UserSession session in GetSessions(deletedUser))
                     DeleteSession(session.Token);
+
+                if (_staticSessions is not null)
+                {
+                    List<string> staticTokens = new List<string>();
+
+                    foreach (KeyValuePair<string, UserSession> staticSession in _staticSessions)
+                    {
+                        if (staticSession.Value.User.Equals(deletedUser))
+                            staticTokens.Add(staticSession.Key);
+                    }
+
+                    foreach (string staticToken in staticTokens)
+                        _staticSessions.Remove(staticToken);
+                }
 
                 //delete all permissions
                 foreach (KeyValuePair<PermissionSection, Permission> permission in _permissions)

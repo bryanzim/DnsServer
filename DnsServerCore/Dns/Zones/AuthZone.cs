@@ -371,6 +371,7 @@ namespace DnsServerCore.Dns.Zones
                     else
                     {
                         DnsResourceRecord updatedExistingRecord = new DnsResourceRecord(existingRecord.Name, existingRecord.Type, existingRecord.Class, record.OriginalTtlValue, existingRecord.RDATA);
+                        updatedExistingRecord.CopyRecordInfoFrom(existingRecord);
                         updatedRecords.Add(updatedExistingRecord);
 
                         added.Add(updatedExistingRecord);
@@ -824,10 +825,15 @@ namespace DnsServerCore.Dns.Zones
             switch (type)
             {
                 case DnsResourceRecordType.CNAME:
-                case DnsResourceRecordType.DNAME:
                 case DnsResourceRecordType.APP:
                     if ((!_entries.IsEmpty) && !_entries.ContainsKey(type))
                         throw new InvalidOperationException($"Cannot add record: {type} record already exists for the same name.");
+
+                    break;
+
+                case DnsResourceRecordType.DNAME:
+                    if (_entries.ContainsKey(DnsResourceRecordType.CNAME))
+                        throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
 
                     break;
 
@@ -911,6 +917,15 @@ namespace DnsServerCore.Dns.Zones
                             case DnsResourceRecordType.APP:
                                 //skip records
                                 continue;
+
+                            case DnsResourceRecordType.RRSIG:
+                            case DnsResourceRecordType.NSEC:
+                            case DnsResourceRecordType.NSEC3:
+                                if (!dnssecOk)
+                                    continue;
+
+                                records.AddRange(entry.Value);
+                                break;
 
                             default:
                                 records.AddRange(entry.Value);

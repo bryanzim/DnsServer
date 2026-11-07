@@ -72,30 +72,34 @@ namespace GeoContinent
 
         internal static bool TryMatchGroup(JsonElement jsonAppRecordData, long? asn, string? continentCode, out JsonElement jsonContinent)
         {
-            foreach (KeyValuePair<string, List<string>> group in _groups!)
+            if (asn is not null)
             {
-                if (jsonAppRecordData.TryGetProperty(group.Key, out jsonContinent))
+                string asnName = "AS" + asn;
+
+                foreach (KeyValuePair<string, List<string>> group in _groups!)
                 {
-                    List<string> groupEntries = group.Value;
+                    if (!jsonAppRecordData.TryGetProperty(group.Key, out jsonContinent))
+                        continue;
 
-                    if (asn is not null)
+                    foreach (string groupEntry in group.Value)
                     {
-                        string asnName = "AS" + asn;
-
-                        foreach (string groupEntry in groupEntries)
-                        {
-                            if (groupEntry.Equals(asnName, StringComparison.Ordinal))
-                                return true; //found ASN match
-                        }
+                        if (groupEntry.Equals(asnName, StringComparison.Ordinal))
+                            return true; //found ASN match
                     }
+                }
+            }
 
-                    if (continentCode is not null)
+            if (continentCode is not null)
+            {
+                foreach (KeyValuePair<string, List<string>> group in _groups!)
+                {
+                    if (!jsonAppRecordData.TryGetProperty(group.Key, out jsonContinent))
+                        continue;
+
+                    foreach (string groupEntry in group.Value)
                     {
-                        foreach (string groupEntry in groupEntries)
-                        {
-                            if (groupEntry.Equals(continentCode, StringComparison.Ordinal))
-                                return true; //found continent code match
-                        }
+                        if (groupEntry.Equals(continentCode, StringComparison.Ordinal))
+                            return true; //found continent code match
                     }
                 }
             }
@@ -113,7 +117,20 @@ namespace GeoContinent
             _dnsServer = dnsServer;
             _maxMind = MaxMind.Create(dnsServer);
 
-            if (string.IsNullOrWhiteSpace(config) || config.StartsWith('#') || !config.TrimStart().StartsWith('{'))
+            static bool IsJsonObjectConfig(string config)
+            {
+                try
+                {
+                    using JsonDocument jsonDocument = JsonDocument.Parse(config, _jsonParseOptions);
+                    return jsonDocument.RootElement.ValueKind == JsonValueKind.Object;
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(config) || config.StartsWith('#') || !IsJsonObjectConfig(config))
             {
                 //save default config into file
                 config = "{\r\n    \"groups\": {\r\n        \"custom-group\": [\r\n            \"AS\",\r\n            \"AF\",\r\n            \"AS1234\"\r\n        ]\r\n    }\r\n}\r\n";
@@ -175,6 +192,7 @@ namespace GeoContinent
                         JsonElement jsonContinent = default;
 
                         byte scopePrefixLength = 0;
+                        bool ecsClientLocated = false;
                         EDnsClientSubnetOptionData requestECS = request.GetEDnsClientSubnetOption();
                         if (requestECS is not null)
                         {
@@ -182,12 +200,12 @@ namespace GeoContinent
 
                             if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(requestECS.Address, out IspResponse? csIsp) && (csIsp.Network is not null))
                             {
-                                scopePrefixLength = (byte)csIsp.Network.PrefixLength;
+                                scopePrefixLength = (byte)Math.Min(csIsp.Network.PrefixLength, requestECS.SourcePrefixLength);
                                 asn = csIsp.AutonomousSystemNumber;
                             }
                             else if ((_maxMind.AsnReader is not null) && _maxMind.AsnReader.TryAsn(requestECS.Address, out AsnResponse? csAsn) && (csAsn.Network is not null))
                             {
-                                scopePrefixLength = (byte)csAsn.Network.PrefixLength;
+                                scopePrefixLength = (byte)Math.Min(csAsn.Network.PrefixLength, requestECS.SourcePrefixLength);
                                 asn = csAsn.AutonomousSystemNumber;
                             }
                             else
@@ -199,12 +217,16 @@ namespace GeoContinent
                             {
                                 if (_maxMind.CountryReader.TryCountry(requestECS.Address, out CountryResponse? csResponse) && (csResponse.Continent.Code is not null))
                                 {
+                                    ecsClientLocated = true;
+
                                     if (!jsonAppRecordData.TryGetProperty(csResponse.Continent.Code, out jsonContinent))
                                         if (!TryMatchGroup(jsonAppRecordData, asn, csResponse.Continent.Code, out jsonContinent))
                                             jsonAppRecordData.TryGetProperty("default", out jsonContinent);
                                 }
                                 else if (asn is not null)
                                 {
+                                    ecsClientLocated = true;
+
                                     if (!TryMatchGroup(jsonAppRecordData, asn, null, out jsonContinent))
                                         jsonAppRecordData.TryGetProperty("default", out jsonContinent);
                                 }
@@ -213,6 +235,11 @@ namespace GeoContinent
 
                         if (jsonContinent.ValueKind == JsonValueKind.Undefined)
                         {
+                            if ((requestECS is not null) && ecsClientLocated)
+                                return Task.FromResult<DnsDatagram?>(null);
+
+                            scopePrefixLength = 0; //this answer is chosen from the resolver, not the ECS client
+
                             long? asn = null;
 
                             if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(remoteEP.Address, out IspResponse? csIsp) && (csIsp.Network is not null))

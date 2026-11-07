@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using DnsServerCore.ApplicationCommon;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -87,16 +88,10 @@ namespace DnsRebindingProtection
             switch (record.Type)
             {
                 case DnsResourceRecordType.A:
-                    if (IsPrivateDomain(record.Name))
-                        return false;
-
                     address = (record.RDATA as DnsARecordData).Address;
                     break;
 
                 case DnsResourceRecordType.AAAA:
-                    if (IsPrivateDomain(record.Name))
-                        return false;
-
                     address = (record.RDATA as DnsAAAARecordData).Address;
                     break;
 
@@ -158,7 +153,7 @@ namespace DnsRebindingProtection
 
             _enableProtection = jsonConfig.GetPropertyValue("enableProtection", true);
             _privateNetworks = new HashSet<NetworkAddress>(jsonConfig.ReadArray("privateNetworks", NetworkAddress.Parse));
-            _privateDomains = new HashSet<string>(jsonConfig.ReadArray("privateDomains"));
+            _privateDomains = new HashSet<string>(jsonConfig.ReadArray("privateDomains"), StringComparer.OrdinalIgnoreCase);
 
             if (jsonConfig.TryReadArray("bypassNetworks", NetworkAddress.Parse, out NetworkAddress[] bypassNetworks))
             {
@@ -183,6 +178,9 @@ namespace DnsRebindingProtection
             if ((response.Tag is not null) && (response.Tag is DnsServerResponseType responseType) && (responseType == DnsServerResponseType.Blocked))
                 return Task.FromResult(response); //allow blocked responses
 
+            if ((request.Question.Count > 0) && IsPrivateDomain(request.Question[0].Name))
+                return Task.FromResult(response); //the name that was queried is allowed to resolve privately
+
             IPAddress remoteIP = remoteEP.Address;
 
             foreach (NetworkAddress network in _bypassNetworks)
@@ -191,8 +189,12 @@ namespace DnsRebindingProtection
                     return Task.FromResult(response);
             }
 
-            if (TryDetectRebinding(response.Answer, out List<DnsResourceRecord> protectedAnswer))
-                return Task.FromResult(response.Clone(protectedAnswer));
+            bool answerChanged = TryDetectRebinding(response.Answer, out List<DnsResourceRecord> protectedAnswer);
+            List<DnsResourceRecord> protectedAdditional = null;
+            bool additionalChanged = (response.Additional is not null) && TryDetectRebinding(response.Additional, out protectedAdditional);
+
+            if (answerChanged || additionalChanged)
+                return Task.FromResult(response.Clone(answerChanged ? protectedAnswer : response.Answer, response.Authority, additionalChanged ? protectedAdditional : response.Additional));
 
             return Task.FromResult(response);
         }

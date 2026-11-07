@@ -119,7 +119,7 @@ namespace NxDomainOverride
             {
                 Set set = new Set(jsonSet);
 
-                return new Tuple<string, Set>(set.Name, set);
+                return new Tuple<string, Set>(set.Name.ToLowerInvariant(), set);
             });
 
             return Task.CompletedTask;
@@ -161,7 +161,7 @@ namespace NxDomainOverride
 
                 default:
                     //NO DATA response
-                    return Task.FromResult(new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, response.Answer, response.Authority, response.Additional) { Tag = response.Tag });
+                    return Task.FromResult(new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, response.Answer, response.Authority, response.Additional) { Tag = response.Tag });
             }
 
             List<DnsResourceRecord> newAnswer = new List<DnsResourceRecord>();
@@ -169,7 +169,7 @@ namespace NxDomainOverride
 
             foreach (string setName in setNames)
             {
-                if (_sets.TryGetValue(setName, out Set set))
+                if (_sets.TryGetValue(setName.ToLowerInvariant(), out Set set))
                 {
                     switch (question.Type)
                     {
@@ -195,7 +195,13 @@ namespace NxDomainOverride
                 }
             }
 
-            return Task.FromResult(new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, newAnswer) { Tag = response.Tag });
+            if (newAnswer.Count == response.Answer.Count)
+            {
+                //no address for this family; keep the SOA so the empty NOERROR can be cached as NODATA
+                return Task.FromResult(new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, response.Answer, response.Authority, response.Additional) { Tag = response.Tag });
+            }
+
+            return Task.FromResult(new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, newAnswer) { Tag = response.Tag });
         }
 
         #endregion

@@ -102,10 +102,10 @@ namespace LogExporter
             if (_config is null)
                 throw new DnsClientException("Invalid application configuration.");
 
-            if (_config.FileTarget!.Enabled)
+            if (_config.FileTarget?.Enabled == true)
             {
                 _exportManager.RemoveStrategy(typeof(FileExportStrategy));
-                string logFilePath = _config.FileTarget!.Path;
+                string logFilePath = _config.FileTarget.Path;
 
                 if (!Path.IsPathRooted(logFilePath))
                     logFilePath = Path.GetFullPath(Path.Combine(_dnsServer!.ApplicationFolder, logFilePath));
@@ -117,7 +117,7 @@ namespace LogExporter
                 _exportManager.RemoveStrategy(typeof(FileExportStrategy));
             }
 
-            if (_config.HttpTarget!.Enabled)
+            if (_config.HttpTarget?.Enabled == true)
             {
                 _exportManager.RemoveStrategy(typeof(HttpExportStrategy));
                 _exportManager.AddStrategy(new HttpExportStrategy(_dnsServer, _config.HttpTarget.Endpoint, _config.HttpTarget.Headers));
@@ -127,7 +127,7 @@ namespace LogExporter
                 _exportManager.RemoveStrategy(typeof(HttpExportStrategy));
             }
 
-            if (_config.SyslogTarget!.Enabled)
+            if (_config.SyslogTarget?.Enabled == true)
             {
                 _exportManager.RemoveStrategy(typeof(SyslogExportStrategy));
                 _exportManager.AddStrategy(new SyslogExportStrategy(_config.SyslogTarget.Address, _config.SyslogTarget.Port, _config.SyslogTarget.Protocol));
@@ -164,10 +164,10 @@ namespace LogExporter
 
         private async Task ExportLogsAsync()
         {
+            List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
+
             try
             {
-                List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
-
                 while (true)
                 {
                     while (logs.Count < BULK_INSERT_COUNT && _queuedLogs.TryDequeue(out LogEntry? log))
@@ -186,6 +186,9 @@ namespace LogExporter
             catch (Exception ex)
             {
                 _dnsServer?.WriteLog(ex);
+
+                foreach (LogEntry log in logs)
+                    _queuedLogs.Enqueue(log);
             }
         }
 

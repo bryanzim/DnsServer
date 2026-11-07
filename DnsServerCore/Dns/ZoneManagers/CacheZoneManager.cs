@@ -52,6 +52,7 @@ namespace DnsServerCore.Dns.ZoneManagers
         readonly DnsServer _dnsServer;
 
         readonly CacheZoneTree _root = new CacheZoneTree();
+        readonly Lock _cacheUpdateLock = new Lock(); //orders GetOrAdd with removal so an empty instance cannot delete its replacement
 
         uint _serveStaleResetTtl = SERVE_STALE_RESET_TTL;
         long _maximumEntries;
@@ -133,8 +134,11 @@ namespace DnsServerCore.Dns.ZoneManagers
                                 CacheZone zone = CacheZone.ReadFrom(bR, serveStale);
                                 if (!zone.IsEmpty)
                                 {
-                                    if (_root.TryAdd(zone.Name, zone))
-                                        addedEntries += zone.TotalEntries;
+                                    lock (_cacheUpdateLock)
+                                    {
+                                        if (_root.TryAdd(zone.Name, zone))
+                                            addedEntries += zone.TotalEntries;
+                                    }
                                 }
                             }
                         }
@@ -239,8 +243,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 DnsResourceRecord resourceRecord = resourceRecords[0];
 
-                if (SetRecordsOnLiveZone(resourceRecord.Name, 1, resourceRecords, _dnsServer.ServeStale))
-                    Interlocked.Increment(ref _totalEntries);
+                int entriesDelta = SetRecordsOnLiveZone(resourceRecord.Name, 1, resourceRecords, _dnsServer.ServeStale);
+                if (entriesDelta != 0)
+                    Interlocked.Add(ref _totalEntries, entriesDelta);
             }
             else
             {
@@ -271,12 +276,11 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> groupedRecords in groupedByTypeRecords.Value)
                     {
-                        if (SetRecordsOnLiveZone(groupedByTypeRecords.Key, groupedByTypeRecords.Value.Count, groupedRecords.Value, serveStale))
-                            addedEntries++;
+                        addedEntries += SetRecordsOnLiveZone(groupedByTypeRecords.Key, groupedByTypeRecords.Value.Count, groupedRecords.Value, serveStale);
                     }
                 }
 
-                if (addedEntries > 0)
+                if (addedEntries != 0)
                     Interlocked.Add(ref _totalEntries, addedEntries);
             }
         }
@@ -284,6 +288,28 @@ namespace DnsServerCore.Dns.ZoneManagers
         #endregion
 
         #region private
+
+        private static bool IsAuthenticData(IReadOnlyList<DnsResourceRecord> records)
+        {
+            if ((records is null) || (records.Count == 0))
+                return false;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (record.DnssecStatus != DnssecStatus.Secure)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsAuthenticResponse(IReadOnlyList<DnsResourceRecord> answer, IReadOnlyList<DnsResourceRecord> authority)
+        {
+            if ((answer is not null) && (answer.Count > 0))
+                return IsAuthenticData(answer);
+
+            return IsAuthenticData(authority);
+        }
 
         private void CacheMaintenanceTimerCallback(object state)
         {
@@ -432,6 +458,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             if (DnsClient.IsDomainNameValid(result))
             {
                 DnsResourceRecord cnameRR = new DnsResourceRecord(question.Name, DnsResourceRecordType.CNAME, question.Class, dnameRR.TTL, new DnsCNAMERecordData(result));
+
+                //the synthesized CNAME is authentic when the DNAME is; a new record otherwise stays Unknown and clears AD
+                new DnsDatagram(0, true, DnsOpcode.StandardQuery, false, false, false, false, false, false, DnsResponseCode.NoError, null, [cnameRR]).SetDnssecStatusForAllRecords(dnameRR.DnssecStatus);
 
                 List<DnsResourceRecord> list = new List<DnsResourceRecord>(5)
                 {
@@ -624,22 +653,25 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private bool SetRecordsOnLiveZone(string name, int capacity, IReadOnlyList<DnsResourceRecord> records, bool serveStale)
+        private int SetRecordsOnLiveZone(string name, int capacity, IReadOnlyList<DnsResourceRecord> records, bool serveStale)
         {
             while (true)
             {
-                CacheZone zone = _root.GetOrAdd(name, delegate (string key)
+                lock (_cacheUpdateLock)
                 {
-                    return new CacheZone(key, capacity);
-                });
+                    CacheZone zone = _root.GetOrAdd(name, delegate (string key)
+                    {
+                        return new CacheZone(key, capacity);
+                    });
 
-                lock (zone)
-                {
-                    //an eviction may have removed this instance after GetOrAdd returned it; write only into the live zone
-                    if (!_root.TryGet(name, out CacheZone live) || !ReferenceEquals(live, zone))
-                        continue;
+                    lock (zone)
+                    {
+                        //an eviction may have removed this instance after GetOrAdd returned it; write only into the live zone
+                        if (!_root.TryGet(name, out CacheZone live) || !ReferenceEquals(live, zone))
+                            continue;
 
-                    return zone.SetRecords(records, serveStale);
+                        return zone.SetRecords(records, serveStale);
+                    }
                 }
             }
         }
@@ -649,9 +681,10 @@ namespace DnsServerCore.Dns.ZoneManagers
             if (!zone.IsEmpty)
                 return;
 
-            lock (zone)
+            lock (_cacheUpdateLock)
             {
-                if (zone.IsEmpty)
+                //removal is by name; drop the node only when this empty instance is still the one in the tree
+                if (zone.IsEmpty && _root.TryGet(zone.Name, out CacheZone live) && ReferenceEquals(live, zone))
                     _root.TryRemove(zone.Name, out _);
             }
         }
@@ -774,7 +807,10 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         public override void Flush()
         {
-            _root.Clear();
+            lock (_cacheUpdateLock)
+            {
+                _root.Clear();
+            }
 
             long totalEntries = Volatile.Read(ref _totalEntries);
             totalEntries = Interlocked.Add(ref _totalEntries, -totalEntries);
@@ -784,7 +820,15 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         public bool DeleteZone(string domain)
         {
-            if (_root.TryRemoveTree(domain, out _, out int removedEntries))
+            bool removed;
+            int removedEntries;
+
+            lock (_cacheUpdateLock)
+            {
+                removed = _root.TryRemoveTree(domain, out _, out removedEntries);
+            }
+
+            if (removed)
             {
                 if (removedEntries > 0)
                 {
@@ -989,17 +1033,14 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                         if (dnssecOk)
                         {
-                            bool authenticData;
+                            bool authenticData = false;
 
-                            switch (dnsSpecialCacheRecord.Type)
+                            if (dnsSpecialCacheRecord.Type == DnsSpecialCacheRecordType.NegativeCache)
                             {
-                                case DnsSpecialCacheRecordType.NegativeCache:
-                                    authenticData = true;
-                                    break;
-
-                                default:
-                                    authenticData = false;
-                                    break;
+                                if (request.CheckingDisabled)
+                                    authenticData = IsAuthenticResponse(dnsSpecialCacheRecord.OriginalAnswer, dnsSpecialCacheRecord.OriginalAuthority);
+                                else
+                                    authenticData = IsAuthenticResponse(dnsSpecialCacheRecord.Answer, dnsSpecialCacheRecord.Authority);
                             }
 
                             if (request.CheckingDisabled)
@@ -1122,7 +1163,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                     }
 
-                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && (answer.Count > 0) && (answer[0].DnssecStatus == DnssecStatus.Secure), request.CheckingDisabled, DnsResponseCode.NoError, request.Question, answer, authority, additional, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
+                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && IsAuthenticData(answer), request.CheckingDisabled, DnsResponseCode.NoError, request.Question, answer, authority, additional, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
                 }
             }
 
@@ -1178,7 +1219,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                             options = [new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, new EDnsExtendedDnsErrorOptionData(EDnsExtendedDnsErrorCode.StaleAnswer, record.Name.ToLowerInvariant() + " " + record.Type.ToString() + " " + record.Class.ToString()))];
                     }
 
-                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && (answer.Count > 0) && (answer[0].DnssecStatus == DnssecStatus.Secure), request.CheckingDisabled, rCode, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
+                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, dnssecOk && IsAuthenticData(answer), request.CheckingDisabled, rCode, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _dnsServer.UdpPayloadSize, ednsFlags, options);
                 }
             }
 
@@ -1217,7 +1258,7 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                                 IReadOnlyList<DnsResourceRecord> additional = GetAdditionalRecords(closestAuthority, serveStale, true, eDnsClientSubnet, advancedForwardingClientSubnet);
 
-                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, closestAuthority[0].DnssecStatus == DnssecStatus.Secure, request.CheckingDisabled, DnsResponseCode.NoError, request.Question, null, closestAuthority, additional);
+                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, IsAuthenticData(closestAuthority), request.CheckingDisabled, DnsResponseCode.NoError, request.Question, null, closestAuthority, additional);
                             }
                         }
                         else

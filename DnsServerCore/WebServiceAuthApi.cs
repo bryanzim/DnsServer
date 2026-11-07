@@ -569,6 +569,7 @@ namespace DnsServerCore
 
                     string displayName = principal.FindFirst("name")?.Value
                         ?? principal.FindFirst(ClaimTypes.Name)?.Value
+                        ?? principal.FindFirst("given_name")?.Value
                         ?? principal.FindFirst(ClaimTypes.GivenName)?.Value;
 
                     List<string> remoteGroups = new List<string>();
@@ -688,8 +689,8 @@ namespace DnsServerCore
                             }
                         }
 
-                        //sync display name
-                        if (!user.DisplayName.Equals(displayName, StringComparison.Ordinal))
+                        //sync display name only when the provider sent one
+                        if (!string.IsNullOrWhiteSpace(displayName) && !user.DisplayName.Equals(displayName, StringComparison.Ordinal))
                             user.DisplayName = displayName;
                     }
 
@@ -1042,10 +1043,11 @@ namespace DnsServerCore
             public void DeleteSession(HttpContext context, bool isAdminContext)
             {
                 UserSession session = context.GetCurrentSession();
+                User sessionUser = _dnsWebService.GetSessionUser(context);
 
                 if (isAdminContext)
                 {
-                    if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, session.User, PermissionFlag.Delete))
+                    if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Delete))
                         throw new DnsWebServiceException("Access was denied.");
                 }
 
@@ -1087,7 +1089,7 @@ namespace DnsServerCore
 
                 UserSession deletedSession = _dnsWebService._authManager.DeleteSession(sessionToDelete.Token);
 
-                _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + session.User.Username + "] User session [" + strPartialToken + "] was deleted successfully for user: " + deletedSession.User.Username);
+                _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] User session [" + strPartialToken + "] was deleted successfully for user: " + deletedSession.User.Username);
 
                 _dnsWebService._authManager.SaveConfigFile();
 
@@ -1543,7 +1545,18 @@ namespace DnsServerCore
                         }
 
                         if (group.Name.Equals("administrators", StringComparison.OrdinalIgnoreCase))
+                        {
                             users[sessionUser.Username] = sessionUser; //ensure current admin user is member of administrators group to avoid self lockout
+
+                            if (_dnsWebService._clusterManager.ClusterInitialized)
+                            {
+                                foreach (UserSession userSession in _dnsWebService._authManager.Sessions)
+                                {
+                                    if (userSession.Type == UserSessionType.ClusterApiToken)
+                                        users[userSession.User.Username] = userSession.User;
+                                }
+                            }
+                        }
 
                         _dnsWebService._authManager.SyncGroupMembers(group, users);
                     }
@@ -1780,9 +1793,14 @@ namespace DnsServerCore
                     switch (section)
                     {
                         case PermissionSection.Zones:
-                            //ensure DNS administrators group always has all permissions
+                            //ensure DNS administrators group always has all permissions; cluster zones stay view-only
                             Group dnsAdmins = _dnsWebService._authManager.GetGroup(Group.DNS_ADMINISTRATORS);
-                            groupPermissions[dnsAdmins] = PermissionFlag.ViewModifyDelete;
+                            PermissionFlag dnsAdminPermission = PermissionFlag.ViewModifyDelete;
+
+                            if ((strSubItem is not null) && _dnsWebService._clusterManager.ClusterInitialized && (_dnsWebService._clusterManager.IsClusterPrimaryZone(strSubItem) || _dnsWebService._clusterManager.IsClusterCatalogZone(strSubItem)))
+                                dnsAdminPermission = PermissionFlag.View;
+
+                            groupPermissions[dnsAdmins] = dnsAdminPermission;
                             break;
 
                         case PermissionSection.DhcpServer:
@@ -1939,7 +1957,7 @@ namespace DnsServerCore
                 if (session.Type != UserSessionType.ClusterApiToken)
                     throw new DnsWebServiceException("Access was denied.");
 
-                User sessionUser = session.User;
+                User sessionUser = _dnsWebService.GetSessionUser(context);
 
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Modify))
                     throw new DnsWebServiceException("Access was denied.");
@@ -1995,7 +2013,7 @@ namespace DnsServerCore
                 if (session.Type != UserSessionType.ClusterApiToken)
                     throw new DnsWebServiceException("Access was denied.");
 
-                User sessionUser = session.User;
+                User sessionUser = _dnsWebService.GetSessionUser(context);
 
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Administration, sessionUser, PermissionFlag.Modify))
                     throw new DnsWebServiceException("Access was denied.");

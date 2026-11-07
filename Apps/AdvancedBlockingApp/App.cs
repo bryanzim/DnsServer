@@ -622,7 +622,7 @@ namespace AdvancedBlocking
 
                 DnsResourceRecord[] answer = [new DnsResourceRecord(question.Name, DnsResourceRecordType.TXT, question.Class, _blockingAnswerTtl, new DnsTXTRecordData(blockingReport))];
 
-                return Task.FromResult<DnsDatagram?>(new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NoError, request.Question, answer));
+                return Task.FromResult<DnsDatagram?>(new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, false, false, DnsResponseCode.NoError, request.Question, answer));
             }
             else
             {
@@ -695,7 +695,11 @@ namespace AdvancedBlocking
                             if (blockedDomain is null)
                                 blockedDomain = question.Name;
 
-                            answer = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _soaRecord)];
+                            if (question.Name.Equals(blockedDomain, StringComparison.OrdinalIgnoreCase))
+                                answer = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _soaRecord)];
+                            else
+                                authority = [new DnsResourceRecord(blockedDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _soaRecord)];
+
                             break;
 
                         default:
@@ -707,7 +711,7 @@ namespace AdvancedBlocking
                     }
                 }
 
-                return Task.FromResult<DnsDatagram?>(new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, !group.AllowTxtBlockingReport, false, false, rcode, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _dnsServer!.UdpPayloadSize, EDnsHeaderFlags.None, options));
+                return Task.FromResult<DnsDatagram?>(new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, false, false, rcode, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _dnsServer!.UdpPayloadSize, EDnsHeaderFlags.None, options));
             }
         }
 
@@ -1376,7 +1380,7 @@ namespace AdvancedBlocking
                 return word;
             }
 
-            private Queue<string> ReadListFile()
+            private Queue<string>? ReadListFile()
             {
                 Queue<string> domains = new Queue<string>();
 
@@ -1410,9 +1414,11 @@ namespace AdvancedBlocking
 
                             firstWord = PopWord(ref line);
 
+                            List<string> hostnames = new List<string>();
+
                             if (line.Length == 0)
                             {
-                                hostname = firstWord;
+                                hostnames.Add(firstWord);
                             }
                             else
                             {
@@ -1420,43 +1426,56 @@ namespace AdvancedBlocking
 
                                 if ((secondWord.Length == 0) || secondWord.StartsWith('#'))
                                 {
-                                    hostname = firstWord;
+                                    hostnames.Add(firstWord);
                                 }
                                 else
                                 {
                                     if (!IPAddress.TryParse(firstWord, out _))
                                         continue; //first word must be an IP address for using second word as hostname as per hosts file format
 
-                                    hostname = secondWord;
+                                    hostnames.Add(secondWord);
+
+                                    while (line.Length > 0)
+                                    {
+                                        string extraWord = PopWord(ref line);
+
+                                        if ((extraWord.Length == 0) || extraWord.StartsWith('#'))
+                                            break;
+
+                                        hostnames.Add(extraWord);
+                                    }
                                 }
                             }
 
-                            hostname = hostname.Trim('.').ToLowerInvariant();
-
-                            switch (hostname)
+                            foreach (string rawHostname in hostnames)
                             {
-                                case "":
-                                case "localhost":
-                                case "localhost.localdomain":
-                                case "local":
-                                case "broadcasthost":
-                                case "ip6-localhost":
-                                case "ip6-loopback":
-                                case "ip6-localnet":
-                                case "ip6-mcastprefix":
-                                case "ip6-allnodes":
-                                case "ip6-allrouters":
-                                case "ip6-allhosts":
-                                    continue; //skip these hostnames
+                                hostname = rawHostname.Trim('.').ToLowerInvariant();
+
+                                switch (hostname)
+                                {
+                                    case "":
+                                    case "localhost":
+                                    case "localhost.localdomain":
+                                    case "local":
+                                    case "broadcasthost":
+                                    case "ip6-localhost":
+                                    case "ip6-loopback":
+                                    case "ip6-localnet":
+                                    case "ip6-mcastprefix":
+                                    case "ip6-allnodes":
+                                    case "ip6-allrouters":
+                                    case "ip6-allhosts":
+                                        continue; //skip these hostnames
+                                }
+
+                                if (!DnsClient.IsDomainNameValid(hostname))
+                                    continue;
+
+                                if (IPAddress.TryParse(hostname, out _))
+                                    continue; //skip line when hostname is IP address
+
+                                domains.Enqueue(hostname);
                             }
-
-                            if (!DnsClient.IsDomainNameValid(hostname))
-                                continue;
-
-                            if (IPAddress.TryParse(hostname, out _))
-                                continue; //skip line when hostname is IP address
-
-                            domains.Enqueue(hostname);
                         }
                     }
 
@@ -1465,6 +1484,7 @@ namespace AdvancedBlocking
                 catch (Exception ex)
                 {
                     _dnsServer.WriteLog("Advanced Blocking app failed to read " + (_isAllowList ? "allow" : "block") + " list from: " + _listUrl.AbsoluteUri, ex);
+                    return null;
                 }
 
                 return domains;
@@ -1476,7 +1496,10 @@ namespace AdvancedBlocking
 
             protected override void LoadListZone()
             {
-                Queue<string> listQueue = ReadListFile();
+                Queue<string>? listQueue = ReadListFile();
+                if (listQueue is null)
+                    return;
+
                 HashSet<string> listZone = new HashSet<string>(listQueue.Count);
 
                 while (listQueue.Count > 0)
@@ -1515,7 +1538,7 @@ namespace AdvancedBlocking
 
             #region private
 
-            private Queue<string> ReadRegexListFile()
+            private Queue<string>? ReadRegexListFile()
             {
                 Queue<string> regices = new Queue<string>();
 
@@ -1553,6 +1576,7 @@ namespace AdvancedBlocking
                 catch (Exception ex)
                 {
                     _dnsServer.WriteLog("Advanced Blocking app failed to read regex " + (_isAllowList ? "allow" : "block") + " list from: " + _listUrl.AbsoluteUri, ex);
+                    return null;
                 }
 
                 return regices;
@@ -1564,7 +1588,10 @@ namespace AdvancedBlocking
 
             protected override void LoadListZone()
             {
-                Queue<string> regexPatterns = ReadRegexListFile();
+                Queue<string>? regexPatterns = ReadRegexListFile();
+                if (regexPatterns is null)
+                    return;
+
                 List<Regex> regexListZone = new List<Regex>(regexPatterns.Count);
 
                 while (regexPatterns.Count > 0)
@@ -1613,7 +1640,72 @@ namespace AdvancedBlocking
 
             #region private
 
-            private void ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains)
+            private static bool IsDnsAdblockRule(string options)
+            {
+                if (options.Length == 0)
+                    return true;
+
+                if (!options.StartsWith('$'))
+                    return false;
+
+                bool appliesToDns = false;
+                bool hasContentType = false;
+
+                foreach (string rawOption in options.Substring(1).Split(','))
+                {
+                    string option = rawOption.Trim();
+                    int valueIndex = option.IndexOf('=');
+                    if (valueIndex > -1)
+                        option = option.Substring(0, valueIndex);
+
+                    if (option.Length == 0)
+                        continue;
+
+                    switch (option.ToLowerInvariant())
+                    {
+                        case "doc":
+                        case "document":
+                        case "all":
+                            appliesToDns = true;
+                            break;
+
+                        case "~doc":
+                        case "~document":
+                            return false;
+
+                        case "third-party":
+                        case "~third-party":
+                        case "3p":
+                        case "~3p":
+                        case "first-party":
+                        case "~first-party":
+                        case "1p":
+                        case "~1p":
+                        case "match-case":
+                        case "important":
+                        case "domain":
+                        case "from":
+                        case "to":
+                        case "denyallow":
+                        case "badfilter":
+                        case "dnstype":
+                        case "dnsrewrite":
+                        case "client":
+                        case "ctag":
+                            break;
+
+                        default:
+                            if (!option.StartsWith('~'))
+                                hasContentType = true;
+
+                            break;
+                    }
+                }
+
+                return appliesToDns || !hasContentType;
+            }
+
+            private bool ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains)
             {
                 allowedDomains = new Queue<string>();
                 blockedDomains = new Queue<string>();
@@ -1651,12 +1743,16 @@ namespace AdvancedBlocking
                                     string domain = line.Substring(2, i - 2);
                                     string options = line.Substring(i + 1);
 
-                                    if (((options.Length == 0) || (options.StartsWith('$') && (options.Contains("doc") || options.Contains("all")))) && DnsClient.IsDomainNameValid(domain))
+                                    domain = domain.ToLowerInvariant();
+
+                                    if (IsDnsAdblockRule(options) && DnsClient.IsDomainNameValid(domain))
                                         blockedDomains.Enqueue(domain);
                                 }
                                 else
                                 {
                                     string domain = line.Substring(2);
+
+                                    domain = domain.ToLowerInvariant();
 
                                     if (DnsClient.IsDomainNameValid(domain))
                                         blockedDomains.Enqueue(domain);
@@ -1670,12 +1766,16 @@ namespace AdvancedBlocking
                                     string domain = line.Substring(4, i - 4);
                                     string options = line.Substring(i + 1);
 
-                                    if (((options.Length == 0) || (options.StartsWith('$') && (options.Contains("doc") || options.Contains("all")))) && DnsClient.IsDomainNameValid(domain))
+                                    domain = domain.ToLowerInvariant();
+
+                                    if (IsDnsAdblockRule(options) && DnsClient.IsDomainNameValid(domain))
                                         allowedDomains.Enqueue(domain);
                                 }
                                 else
                                 {
                                     string domain = line.Substring(4);
+
+                                    domain = domain.ToLowerInvariant();
 
                                     if (DnsClient.IsDomainNameValid(domain))
                                         allowedDomains.Enqueue(domain);
@@ -1685,10 +1785,12 @@ namespace AdvancedBlocking
                     }
 
                     _dnsServer.WriteLog("Advanced Blocking app read adblock list file (" + (allowedDomains.Count + blockedDomains.Count) + " domains) from: " + _listUrl.AbsoluteUri);
+                    return true;
                 }
                 catch (Exception ex)
                 {
                     _dnsServer.WriteLog("Advanced Blocking app failed to read adblock list from: " + _listUrl.AbsoluteUri, ex);
+                    return false;
                 }
             }
 
@@ -1698,7 +1800,8 @@ namespace AdvancedBlocking
 
             protected override void LoadListZone()
             {
-                ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains);
+                if (!ReadAdblockListFile(out Queue<string> allowedDomains, out Queue<string> blockedDomains))
+                    return;
 
                 HashSet<string> allowedListZone = new HashSet<string>(allowedDomains.Count);
                 HashSet<string> blockedListZone = new HashSet<string>(blockedDomains.Count);

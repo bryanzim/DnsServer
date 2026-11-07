@@ -327,48 +327,57 @@ namespace DnsServerCore.Dhcp
             {
                 case DhcpMessageType.Discover:
                     {
-                        Scope scope = FindScope(request, remoteEP.Address, ipPacketInformation);
-                        if (scope == null)
-                            return null; //no scope available; do nothing
-
-                        if ((request.ServerHostName != null) && (request.ServerHostName != scope.ServerHostName))
-                            return null; //discard request; since this request is for another server with the specified server host name
-
-                        if ((request.BootFileName != null) && (request.BootFileName != scope.BootFileName))
-                            return null; //discard request; since this request wants boot file not available on this server
-
-                        if (scope.OfferDelayTime > 0)
-                            await Task.Delay(scope.OfferDelayTime); //delay sending offer
-
-                        Lease offer = await scope.GetOfferAsync(request);
-                        if (offer == null)
-                            return null; //no offer available, do nothing
-
-                        IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
-                        string reservedLeaseHostName = null;
-
-                        if (!string.IsNullOrWhiteSpace(scope.DomainName))
+                        foreach (Scope scope in FindScopesForDiscover(request, remoteEP.Address, ipPacketInformation))
                         {
-                            //get override host name from reserved lease
-                            Lease reservedLease = scope.GetReservedLease(request);
-                            if (reservedLease is not null)
-                                reservedLeaseHostName = reservedLease.HostName;
+                            if ((request.ServerHostName != null) && (request.ServerHostName != scope.ServerHostName))
+                                continue; //this request is for another server with the specified server host name
+
+                            if ((request.BootFileName != null) && (request.BootFileName != scope.BootFileName))
+                                continue; //this request wants a boot file not available on this scope
+
+                            if (scope.OfferDelayTime > 0)
+                                await Task.Delay(scope.OfferDelayTime); //delay sending offer
+
+                            Lease offer = await scope.GetOfferAsync(request);
+                            if (offer == null)
+                                continue; //this pool is full; try the next scope on the same interface
+
+                            IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
+                            string reservedLeaseHostName = null;
+
+                            if (!string.IsNullOrWhiteSpace(scope.DomainName))
+                            {
+                                //get override host name from reserved lease
+                                Lease reservedLease = scope.GetReservedLease(request);
+                                if (reservedLease is not null)
+                                    reservedLeaseHostName = reservedLease.HostName;
+                            }
+
+                            List<DhcpOption> options = await scope.GetOptionsAsync(request, serverIdentifierAddress, reservedLeaseHostName, _dnsServer);
+                            if (options is null)
+                                continue;
+
+                            //log ip offer
+                            _log.Write(remoteEP, "DHCP Server offered IP address [" + offer.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope: " + scope.Name);
+
+                            return DhcpMessage.CreateReply(request, offer.Address, scope.ServerAddress ?? serverIdentifierAddress, scope.ServerHostName, scope.BootFileName, options);
                         }
 
-                        List<DhcpOption> options = await scope.GetOptionsAsync(request, serverIdentifierAddress, reservedLeaseHostName, _dnsServer);
-                        if (options is null)
-                            return null;
-
-                        //log ip offer
-                        _log.Write(remoteEP, "DHCP Server offered IP address [" + offer.Address.ToString() + "] to " + request.GetClientFullIdentifier() + " for scope: " + scope.Name);
-
-                        return DhcpMessage.CreateReply(request, offer.Address, scope.ServerAddress ?? serverIdentifierAddress, scope.ServerHostName, scope.BootFileName, options);
+                        return null; //no scope could offer an address
                     }
 
                 case DhcpMessageType.Request:
                     {
                         //request ip address lease or extend existing lease
-                        Scope scope = FindScope(request, remoteEP.Address, ipPacketInformation);
+                        //selecting and init-reboot must use the scope that holds the lease, not the first scope on the interface
+                        Scope scope;
+
+                        if (request.ServerIdentifier is not null)
+                            scope = FindScopeForSelection(request, remoteEP.Address, ipPacketInformation);
+                        else if ((request.RequestedIpAddress is not null) && request.ClientIpAddress.Equals(IPAddress.Any))
+                            scope = FindScopeForInitReboot(request, remoteEP.Address, ipPacketInformation);
+                        else
+                            scope = FindScope(request, remoteEP.Address, ipPacketInformation);
                         if (scope == null)
                             return null; //no scope available; do nothing
 
@@ -428,35 +437,6 @@ namespace DnsServerCore.Dhcp
                                 }
                             }
 
-                            if ((leaseOffer.Type == LeaseType.Dynamic) && (scope.IsAddressExcluded(leaseOffer.Address) || scope.IsAddressReserved(leaseOffer.Address)))
-                            {
-                                //client ip is excluded/reserved for dynamic allocations
-                                scope.ReleaseLease(leaseOffer);
-                                //send nak
-                                return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
-                            }
-
-                            Lease reservedLease = scope.GetReservedLease(request);
-                            if (reservedLease == null)
-                            {
-                                if (leaseOffer.Type == LeaseType.Reserved)
-                                {
-                                    //client's reserved lease has been removed so release the current lease and send NAK to allow it to get new allocation
-                                    scope.ReleaseLease(leaseOffer);
-                                    //send nak
-                                    return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
-                                }
-                            }
-                            else
-                            {
-                                if (!reservedLease.Address.Equals(leaseOffer.Address))
-                                {
-                                    //client has a new reserved lease so release the current lease and send NAK to allow it to get new allocation
-                                    scope.ReleaseLease(leaseOffer);
-                                    //send nak
-                                    return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
-                                }
-                            }
                         }
                         else
                         {
@@ -484,12 +464,53 @@ namespace DnsServerCore.Dhcp
                             }
                         }
 
+                        if ((leaseOffer.Type == LeaseType.Dynamic) && (scope.IsAddressExcluded(leaseOffer.Address) || scope.IsAddressReserved(leaseOffer.Address)))
+                        {
+                            //client ip is excluded/reserved for dynamic allocations
+                            scope.ReleaseLease(leaseOffer);
+                            scope.RemoveOffer(leaseOffer);
+                            //send nak
+                            return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                        }
+
+                        if ((leaseOffer.Type == LeaseType.Dynamic) && scope.BlockLocallyAdministeredMacAddress(request))
+                        {
+                            //a renew never asks for a new offer, so drop the dynamic lease here
+                            scope.ReleaseLease(leaseOffer);
+                            scope.RemoveOffer(leaseOffer);
+                            //send nak
+                            return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                        }
+
+                        Lease reservedLease = scope.GetReservedLease(request);
+                        if (reservedLease == null)
+                        {
+                            if (leaseOffer.Type == LeaseType.Reserved)
+                            {
+                                //client's reserved lease has been removed so release the current lease and send NAK to allow it to get new allocation
+                                scope.ReleaseLease(leaseOffer);
+                                scope.RemoveOffer(leaseOffer);
+                                //send nak
+                                return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                            }
+                        }
+                        else
+                        {
+                            if (!reservedLease.Address.Equals(leaseOffer.Address))
+                            {
+                                //client has a new reserved lease so release the current lease and send NAK to allow it to get new allocation
+                                scope.ReleaseLease(leaseOffer);
+                                scope.RemoveOffer(leaseOffer);
+                                //send nak
+                                return DhcpMessage.CreateReply(request, IPAddress.Any, IPAddress.Any, null, null, new DhcpOption[] { new DhcpMessageTypeOption(DhcpMessageType.Nak), new ServerIdentifierOption(serverIdentifierAddress), DhcpOption.CreateEndOption() });
+                            }
+                        }
+
                         string reservedLeaseHostName = null;
 
                         if (!string.IsNullOrWhiteSpace(scope.DomainName))
                         {
                             //get override host name from reserved lease
-                            Lease reservedLease = scope.GetReservedLease(request);
                             if (reservedLease is not null)
                                 reservedLeaseHostName = reservedLease.HostName;
                         }
@@ -499,7 +520,16 @@ namespace DnsServerCore.Dhcp
                             return null;
 
                         //update lease hostname
-                        if (string.IsNullOrWhiteSpace(scope.DomainName))
+                        bool clientNoDnsUpdate = (request.ClientFullyQualifiedDomainName is not null) && request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.NoDnsUpdate);
+
+                        if (clientNoDnsUpdate && string.IsNullOrWhiteSpace(reservedLeaseHostName))
+                        {
+                            if (!string.IsNullOrWhiteSpace(leaseOffer.HostName))
+                                RemoveDnsEntries(scope, leaseOffer);
+
+                            leaseOffer.SetHostName(null);
+                        }
+                        else if (string.IsNullOrWhiteSpace(scope.DomainName))
                         {
                             leaseOffer.SetHostName(request.HostName?.HostName);
                         }
@@ -553,7 +583,7 @@ namespace DnsServerCore.Dhcp
                         if ((request.ServerIdentifier == null) || (request.RequestedIpAddress == null))
                             return null; //client MUST include these option; do nothing
 
-                        Scope scope = FindScope(request, remoteEP.Address, ipPacketInformation);
+                        Scope scope = FindScopeForDecline(request, remoteEP.Address, ipPacketInformation);
                         if (scope == null)
                             return null; //no scope available; do nothing
 
@@ -569,8 +599,8 @@ namespace DnsServerCore.Dhcp
                         if (!lease.Address.Equals(request.RequestedIpAddress.Address))
                             return null; //the client's notion of its IP address is not correct; do nothing
 
-                        //remove lease since the IP address is used by someone else
-                        scope.ReleaseLease(lease);
+                        //remove the offer and the lease; the address is already in use
+                        scope.DeclineLease(lease);
 
                         //log issue
                         _log.Write(remoteEP, "DHCP Server received DECLINE message for scope '" + scope.Name + "': " + lease.GetClientInfo() + " detected that IP address [" + lease.Address + "] is already in use.");
@@ -649,7 +679,9 @@ namespace DnsServerCore.Dhcp
                                     clientDomainName = GetSanitizedHostName(request.HostName.HostName) + "." + scope.DomainName;
                             }
 
-                            if (!string.IsNullOrWhiteSpace(clientDomainName))
+                            bool clientNoDnsUpdate = (request.ClientFullyQualifiedDomainName is not null) && request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.NoDnsUpdate);
+
+                            if (!string.IsNullOrWhiteSpace(clientDomainName) && !clientNoDnsUpdate && scope.IsAddressInRange(request.ClientIpAddress))
                                 AddDnsEntries(scope, clientDomainName, request.ClientIpAddress, false);
                         }
 
@@ -659,6 +691,217 @@ namespace DnsServerCore.Dhcp
                 default:
                     return null;
             }
+        }
+
+        private List<Scope> FindScopesForDiscover(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            List<Scope> scopes = new List<Scope>();
+
+            if (request.RelayAgentIpAddress.Equals(IPAddress.Any))
+            {
+                if (request.ClientIpAddress.Equals(IPAddress.Any) || remoteAddress.Equals(IPAddress.Any))
+                {
+                    if (!ipPacketInformation.Address.Equals(IPAddress.Broadcast))
+                        return scopes; //message destination address must be broadcast address
+
+                    Scope reservedScope = null;
+
+                    foreach (KeyValuePair<string, Scope> entry in _scopes)
+                    {
+                        Scope scope = entry.Value;
+
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && (scope.InterfaceIndex == ipPacketInformation.Interface))
+                        {
+                            if (scope.GetReservedLease(request) != null)
+                            {
+                                reservedScope = scope;
+                                break;
+                            }
+
+                            if (!scope.AllowOnlyReservedLeases)
+                                scopes.Add(scope);
+                        }
+                    }
+
+                    if (reservedScope is not null)
+                    {
+                        scopes.Clear();
+                        scopes.Add(reservedScope);
+                    }
+
+                    return scopes;
+                }
+
+                Scope unicastScope = FindScope(request, remoteAddress, ipPacketInformation);
+                if (unicastScope is not null)
+                    scopes.Add(unicastScope);
+
+                return scopes;
+            }
+            else
+            {
+                Scope selectedScope = null;
+
+                foreach (KeyValuePair<string, Scope> entry in _scopes)
+                {
+                    Scope scope = entry.Value;
+
+                    if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.InterfaceAddress.Equals(IPAddress.Any) && scope.IsAddressInNetwork(request.RelayAgentIpAddress))
+                    {
+                        if (scope.GetReservedLease(request) != null)
+                        {
+                            selectedScope = scope;
+                            break;
+                        }
+
+                        if (!request.ClientIpAddress.Equals(IPAddress.Any) && scope.IsAddressInRange(request.ClientIpAddress))
+                        {
+                            selectedScope = scope;
+                            break;
+                        }
+
+                        if (!scope.AllowOnlyReservedLeases)
+                            scopes.Add(scope);
+                    }
+                }
+
+                if (selectedScope is not null)
+                {
+                    scopes.Clear();
+                    scopes.Add(selectedScope);
+                }
+
+                return scopes;
+            }
+        }
+
+        private Scope FindScopeForInitReboot(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            if (request.RequestedIpAddress is null)
+                return null;
+
+            List<Scope> scopes = FindMatchingScopes(request, remoteAddress, ipPacketInformation);
+            Scope differentAddress = null;
+            Scope networkMatch = null;
+
+            foreach (Scope scope in scopes)
+            {
+                Lease lease = scope.GetExistingLeaseOrOffer(request);
+                if ((lease is not null) && (lease.Address is not null))
+                {
+                    if (lease.Address.Equals(request.RequestedIpAddress.Address))
+                        return scope;
+
+                    differentAddress ??= scope;
+                    continue;
+                }
+
+                if ((networkMatch is null) && scope.IsAddressInNetwork(request.RequestedIpAddress.Address))
+                    networkMatch = scope;
+            }
+
+            if (differentAddress is not null)
+                return differentAddress; //this client has a lease for another address; caller sends NAK
+
+            if (networkMatch is not null)
+                return networkMatch; //address is on one of our subnets, but this server has no lease; caller stays silent
+
+            if (scopes.Count == 0)
+                return null;
+
+            return scopes[0]; //address is on none of our subnets; caller sends NAK
+        }
+
+        private Scope FindScopeForDecline(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            if ((request.ServerIdentifier is null) || (request.RequestedIpAddress is null))
+                return null;
+
+            foreach (Scope scope in FindMatchingScopes(request, remoteAddress, ipPacketInformation))
+            {
+                IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
+
+                if (!request.ServerIdentifier.Address.Equals(serverIdentifierAddress))
+                    continue;
+
+                Lease lease = scope.GetExistingLeaseOrOffer(request);
+                if ((lease is not null) && (lease.Address is not null) && lease.Address.Equals(request.RequestedIpAddress.Address))
+                    return scope;
+            }
+
+            return null;
+        }
+
+        private Scope FindScopeForSelection(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            if ((request.ServerIdentifier is null) || (request.RequestedIpAddress is null))
+                return null;
+
+            Scope identifierMatch = null;
+
+            foreach (Scope scope in FindMatchingScopes(request, remoteAddress, ipPacketInformation))
+            {
+                IPAddress serverIdentifierAddress = scope.InterfaceAddress.Equals(IPAddress.Any) ? ipPacketInformation.Address : scope.InterfaceAddress;
+
+                if (!request.ServerIdentifier.Address.Equals(serverIdentifierAddress))
+                    continue;
+
+                Lease offer = scope.GetExistingLeaseOrOffer(request);
+                if ((offer is not null) && (offer.Address is not null) && offer.Address.Equals(request.RequestedIpAddress.Address))
+                    return scope; //this scope made the offer the client selected
+
+                identifierMatch ??= scope;
+            }
+
+            //the client selected this server, but no scope has that offer; caller sends NAK
+            return identifierMatch;
+        }
+
+        private List<Scope> FindMatchingScopes(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
+        {
+            List<Scope> scopes = new List<Scope>();
+
+            if (request.RelayAgentIpAddress.Equals(IPAddress.Any))
+            {
+                if (request.ClientIpAddress.Equals(IPAddress.Any) || remoteAddress.Equals(IPAddress.Any))
+                {
+                    if (!ipPacketInformation.Address.Equals(IPAddress.Broadcast))
+                        return scopes;
+
+                    foreach (KeyValuePair<string, Scope> entry in _scopes)
+                    {
+                        Scope scope = entry.Value;
+
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && (scope.InterfaceIndex == ipPacketInformation.Interface))
+                            scopes.Add(scope);
+                    }
+                }
+                else
+                {
+                    if ((request.DhcpMessageType?.Type != DhcpMessageType.Decline) && !remoteAddress.Equals(request.ClientIpAddress))
+                        return scopes;
+
+                    foreach (KeyValuePair<string, Scope> entry in _scopes)
+                    {
+                        Scope scope = entry.Value;
+
+                        if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.IsAddressInRange(request.ClientIpAddress))
+                            scopes.Add(scope);
+                    }
+                }
+            }
+            else
+            {
+                foreach (KeyValuePair<string, Scope> entry in _scopes)
+                {
+                    Scope scope = entry.Value;
+
+                    if (scope.Enabled && (scope.InterfaceAddress is not null) && scope.InterfaceAddress.Equals(IPAddress.Any) && scope.IsAddressInNetwork(request.RelayAgentIpAddress))
+                        scopes.Add(scope);
+                }
+            }
+
+            return scopes;
         }
 
         private Scope FindScope(DhcpMessage request, IPAddress remoteAddress, IPPacketInformation ipPacketInformation)
@@ -806,8 +1049,21 @@ namespace DnsServerCore.Dhcp
                     reservedLeaseHostName = GetReservedLeaseFqdn(reservedLeaseHostName, scope.DomainName);
                 }
 
-                if (force || !scope.HasReservedLeaseHostName(lease)) //remove DNS entries only if reserved lease has no hostname or if forced
+                string reservedHostName = scope.GetReservedLeaseHostName(lease);
+                string reservedFqdn = null;
+
+                if (!string.IsNullOrWhiteSpace(reservedHostName))
+                    reservedFqdn = GetReservedLeaseFqdn(reservedHostName, scope.DomainName);
+
+                if (force || (reservedFqdn is null))
+                {
                     RemoveDnsEntries(scope, reservedLeaseHostName, lease.Address);
+                }
+                else if (!string.IsNullOrWhiteSpace(reservedLeaseHostName) && !reservedLeaseHostName.Equals(reservedFqdn, StringComparison.OrdinalIgnoreCase))
+                {
+                    //the reservation keeps its own name; drop a different name this client published
+                    RemoveDnsEntries(scope, reservedLeaseHostName, lease.Address);
+                }
             }
             else
             {
@@ -832,11 +1088,52 @@ namespace DnsServerCore.Dhcp
             if (!domain.EndsWith("." + scope.DomainName, StringComparison.OrdinalIgnoreCase))
                 return; //domain does not end with scope domain name
 
+            string zoneName = null;
+            bool addedAddressRecord = false;
+            DnsResourceRecord addedAddress = null;
+            bool replacedAddressRecord = false;
+            IReadOnlyList<DnsResourceRecord> previousAddressRecords = null;
+            string reverseZoneName = null;
+            bool addedPtrRecord = false;
+            DnsResourceRecord addedPtr = null;
+            bool replacedPtrRecord = false;
+            IReadOnlyList<DnsResourceRecord> previousPtrRecords = null;
+
+            void RollbackAddedAddress()
+            {
+                try
+                {
+                    if ((zoneName is not null) && addedAddressRecord && (addedAddress is not null))
+                        _dnsServer.AuthZoneManager.DeleteRecord(zoneName, addedAddress.Name, addedAddress.Type, addedAddress.RDATA);
+                    else if ((zoneName is not null) && replacedAddressRecord && (previousAddressRecords is not null) && (previousAddressRecords.Count > 0))
+                        _dnsServer.AuthZoneManager.SetRecords(zoneName, previousAddressRecords);
+                }
+                catch (Exception ex)
+                {
+                    _log.Write(ex);
+                }
+
+                try
+                {
+                    if ((reverseZoneName is not null) && addedPtrRecord && (addedPtr is not null))
+                        _dnsServer.AuthZoneManager.DeleteRecord(reverseZoneName, addedPtr.Name, addedPtr.Type, addedPtr.RDATA);
+                    else if ((reverseZoneName is not null) && replacedPtrRecord && (previousPtrRecords is not null) && (previousPtrRecords.Count > 0))
+                        _dnsServer.AuthZoneManager.SetRecords(reverseZoneName, previousPtrRecords);
+                }
+                catch (Exception ex)
+                {
+                    _log.Write(ex);
+                }
+
+                addedAddressRecord = false;
+                replacedAddressRecord = false;
+                addedPtrRecord = false;
+                replacedPtrRecord = false;
+            }
+
             try
             {
-                string zoneName = null;
                 string reverseDomain = Zone.GetReverseZone(address, 32);
-                string reverseZoneName = null;
 
                 //update forward zone
                 AuthZoneInfo zoneInfo = _dnsServer.AuthZoneManager.FindAuthZoneInfo(scope.DomainName);
@@ -912,6 +1209,18 @@ namespace DnsServerCore.Dhcp
                     aRecordInfo.Comments = $"Via '{scope.Name}' DHCP scope";
 
                     _dnsServer.AuthZoneManager.SetRecord(zoneName, aRecord);
+
+                    if (existingARecords.Count == 0)
+                    {
+                        addedAddressRecord = true;
+                        addedAddress = aRecord;
+                    }
+                    else
+                    {
+                        replacedAddressRecord = true;
+                        previousAddressRecords = existingARecords;
+                    }
+
                     _log.Write("DHCP Server updated DNS A record '" + domain + "' with IP address [" + address.ToString() + "].");
                 }
                 else
@@ -938,6 +1247,7 @@ namespace DnsServerCore.Dhcp
                     if (reverseZoneInfo is null)
                     {
                         _log.Write("DHCP Server failed to create DNS primary zone '" + reverseZone + "'.");
+                        RollbackAddedAddress();
                         return;
                     }
 
@@ -961,6 +1271,7 @@ namespace DnsServerCore.Dhcp
                     if (reverseZoneInfo is null)
                     {
                         _log.Write("DHCP Server failed to create DNS primary zone '" + reverseZone + "'.");
+                        RollbackAddedAddress();
                         return;
                     }
 
@@ -985,6 +1296,18 @@ namespace DnsServerCore.Dhcp
                     ptrRecordInfo.Comments = $"Via '{scope.Name}' DHCP scope";
 
                     _dnsServer.AuthZoneManager.SetRecord(reverseZoneName, ptrRecord);
+
+                    if (existingPtrRecords.Count == 0)
+                    {
+                        addedPtrRecord = true;
+                        addedPtr = ptrRecord;
+                    }
+                    else
+                    {
+                        replacedPtrRecord = true;
+                        previousPtrRecords = existingPtrRecords;
+                    }
+
                     _log.Write("DHCP Server updated DNS PTR record '" + reverseDomain + "' with domain name '" + domain + "'.");
                 }
                 else
@@ -1010,6 +1333,7 @@ namespace DnsServerCore.Dhcp
             }
             catch (Exception ex)
             {
+                RollbackAddedAddress();
                 _log.Write(ex);
             }
         }
@@ -1516,6 +1840,28 @@ namespace DnsServerCore.Dhcp
                 UnloadScope(scope, true);
                 DeleteScopeFile(scope.Name);
             }
+        }
+
+        public async Task RebindScopeAsync(Scope scope, IPAddress previousInterface, int previousIndex)
+        {
+            if (!scope.Enabled || (previousInterface is null))
+                return;
+
+            bool found = scope.FindInterface();
+
+            if (found && previousInterface.Equals(scope.InterfaceAddress) && (previousIndex == scope.InterfaceIndex))
+                return; //the new network still uses the bound interface
+
+            if (!previousInterface.Equals(IPAddress.Any))
+                UnbindUdpListener(new IPEndPoint(previousInterface, 67));
+
+            UnbindUdpListener(_dhcpDefaultEP);
+
+            if (found && await ActivateScopeAsync(scope, false, false))
+                return;
+
+            scope.SetEnabled(false);
+            _log.Write("DHCP Server deactivated scope '" + scope.Name + "' because its network no longer matches a static interface.");
         }
 
         public async Task<bool> EnableScopeAsync(string name, bool throwException = false)

@@ -52,10 +52,7 @@ namespace GeoCountry
 
             string mmIspFile = Path.Combine(dnsServer.ApplicationFolder, "GeoIP2-ISP.mmdb");
             if (File.Exists(mmIspFile))
-            {
                 _mmIspReader = new DatabaseReader(mmIspFile);
-                return;
-            }
 
             string mmAsnFile = Path.Combine(dnsServer.ApplicationFolder, "GeoLite2-ASN.mmdb");
             if (File.Exists(mmAsnFile))

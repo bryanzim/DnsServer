@@ -94,7 +94,7 @@ namespace QueryLogsSqlite
                             int recordsToRemove = totalRecords - _maxLogRecords;
                             if (recordsToRemove > 0)
                             {
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, null);
                                 doVacuum = true;
                             }
                         }
@@ -102,24 +102,25 @@ namespace QueryLogsSqlite
                         if (_maxLogDays > 0)
                         {
                             int recordsToRemove;
+                            DateTime cutoff = DateTime.UtcNow.AddDays(_maxLogDays * -1);
 
                             await using (SqliteCommand command = connection.CreateCommand())
                             {
                                 command.CommandText = "SELECT Count(*) FROM dns_logs WHERE timestamp < @timestamp;";
 
-                                command.Parameters.AddWithValue("@timestamp", DateTime.UtcNow.AddDays(_maxLogDays * -1));
+                                command.Parameters.AddWithValue("@timestamp", cutoff);
 
                                 recordsToRemove = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             if (recordsToRemove > 0)
                             {
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, cutoff);
                                 doVacuum = true;
                             }
                         }
 
-                        async Task BatchRemove(int recordsToRemove)
+                        async Task BatchRemove(int recordsToRemove, DateTime? cutoff)
                         {
                             int batchToRemove;
 
@@ -129,7 +130,13 @@ namespace QueryLogsSqlite
 
                                 await using (SqliteCommand command = connection.CreateCommand())
                                 {
-                                    command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs ORDER BY dlid LIMIT {batchToRemove});";
+                                    if (cutoff is null)
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs ORDER BY timestamp, dlid LIMIT {batchToRemove});";
+                                    else
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT dlid FROM dns_logs WHERE timestamp < @timestamp ORDER BY timestamp, dlid LIMIT {batchToRemove});";
+
+                                    if (cutoff is not null)
+                                        command.Parameters.AddWithValue("@timestamp", cutoff.Value);
 
                                     await command.ExecuteNonQueryAsync();
                                 }
@@ -228,10 +235,12 @@ namespace QueryLogsSqlite
                         if (logs.Count < 1)
                             continue;
 
-                        await BulkInsertLogsAsync(logs);
-
-                        logs.Clear();
+                        if (await BulkInsertLogsAsync(logs))
+                            logs.Clear();
                     }
+
+                    if (!_disposed && (logs.Count > 0))
+                        await BulkInsertLogsAsync(logs);
                 }
                 catch (Exception ex)
                 {
@@ -252,7 +261,7 @@ namespace QueryLogsSqlite
             _channel?.Writer.TryComplete();
         }
 
-        private async Task BulkInsertLogsAsync(List<LogEntry> logs)
+        private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs)
         {
             try
             {
@@ -347,12 +356,14 @@ namespace QueryLogsSqlite
                         }
                     }
                 }
+                return true;
             }
             catch (Exception ex)
             {
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
+                return false;
             }
         }
 
@@ -546,7 +557,12 @@ CREATE TABLE IF NOT EXISTS dns_logs
 
             if (!jsonConfig.TryGetProperty("maxLogRecords", out _))
             {
-                config = config.Replace("\"sqliteDbPath\"", "\"maxLogRecords\": 0,\r\n  \"useInMemoryDb\": false,\r\n  \"sqliteDbPath\"");
+                string maxLogRecordsConfig = "\"maxLogRecords\": 0,\r\n  ";
+
+                if (!jsonConfig.TryGetProperty("useInMemoryDb", out _))
+                    maxLogRecordsConfig += "\"useInMemoryDb\": false,\r\n  ";
+
+                config = config.Replace("\"sqliteDbPath\"", maxLogRecordsConfig + "\"sqliteDbPath\"");
 
                 await File.WriteAllTextAsync(Path.Combine(dnsServer.ApplicationFolder, "dnsApp.config"), config);
             }
@@ -606,8 +622,8 @@ CREATE TABLE IF NOT EXISTS dns_logs
             {
                 if (qname.Contains('*'))
                 {
-                    whereClause += "qname like @qname AND ";
-                    qname = qname.Replace("*", "%");
+                    whereClause += "qname like @qname escape '!' AND ";
+                    qname = qname.Replace("!", "!!", StringComparison.Ordinal).Replace("%", "!%", StringComparison.Ordinal).Replace("_", "!_", StringComparison.Ordinal).Replace("*", "%", StringComparison.Ordinal);
                 }
                 else
                 {
@@ -665,12 +681,17 @@ CREATE TABLE IF NOT EXISTS dns_logs
                     totalEntries = Convert.ToInt64(await command.ExecuteScalarAsync());
                 }
 
+                if (entriesPerPage < 1)
+                    entriesPerPage = 25;
+
                 long totalPages = (totalEntries / entriesPerPage) + (totalEntries % entriesPerPage > 0 ? 1 : 0);
 
                 if (totalPages < 1)
                     pageNumber = 1;
                 else if ((pageNumber > totalPages) || (pageNumber < 0))
                     pageNumber = totalPages;
+                else if (pageNumber < 1)
+                    pageNumber = 1;
 
                 long offset = (pageNumber - 1) * entriesPerPage;
 

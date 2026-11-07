@@ -65,6 +65,11 @@ namespace Failover
                     {
                         HealthCheckResponse healthCheckResponse = await _healthCheck.IsHealthyAsync(_address, healthCheckUrl);
 
+                        if (_healthCheck.IsAddressUnderMaintenance(_address))
+                            healthCheckResponse = new HealthCheckResponse(HealthStatus.Maintenance);
+                        else if (healthCheckResponse.Status == HealthStatus.Maintenance)
+                            healthCheckResponse = new HealthCheckResponse(HealthStatus.Unknown);
+
                         bool statusChanged = false;
                         bool maintenance = false;
 
@@ -141,10 +146,6 @@ namespace Failover
 
                         _lastHealthCheckResponse = new HealthCheckResponse(HealthStatus.Failed, ex.ToString(), ex);
                     }
-                    else
-                    {
-                        _lastHealthCheckResponse = null;
-                    }
                 }
                 finally
                 {
@@ -181,6 +182,7 @@ namespace Failover
                     else
                     {
                         HealthCheckResponse healthCheckResponse = await _healthCheck.IsHealthyAsync(_domain, _type, healthCheckUrl);
+                        healthCheckResponse = await _healthCheck.ApplyDomainMaintenanceAsync(_domain, _type, healthCheckResponse);
 
                         bool statusChanged = false;
                         bool maintenance = false;
@@ -258,10 +260,6 @@ namespace Failover
 
                         _lastHealthCheckResponse = new HealthCheckResponse(HealthStatus.Failed, ex.ToString(), ex);
                     }
-                    else
-                    {
-                        _lastHealthCheckResponse = null;
-                    }
                 }
                 finally
                 {
@@ -314,6 +312,28 @@ namespace Failover
         public void SetUnderMaintenance()
         {
             _lastHealthCheckResponse = new HealthCheckResponse(HealthStatus.Maintenance);
+        }
+
+        public void ApplyMaintenance(bool underMaintenance)
+        {
+            if (underMaintenance)
+            {
+                SetUnderMaintenance();
+                return;
+            }
+
+            if ((_lastHealthCheckResponse is not null) && (_lastHealthCheckResponse.Status == HealthStatus.Maintenance))
+                _lastHealthCheckResponse = null;
+        }
+
+        public void RequestCheck()
+        {
+            try
+            {
+                _healthCheckTimer?.Change(0, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            { }
         }
 
         #endregion

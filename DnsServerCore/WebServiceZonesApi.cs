@@ -99,6 +99,64 @@ namespace DnsServerCore
 
             #region private
 
+            private DnsResourceRecord RemoveMatchingPtrRecord(string zoneName, string ptrName, DnsResourceRecordData ptrData)
+            {
+                IReadOnlyList<DnsResourceRecord> records = _dnsWebService._dnsServer.AuthZoneManager.GetRecords(zoneName, ptrName, DnsResourceRecordType.PTR);
+
+                foreach (DnsResourceRecord record in records)
+                {
+                    if (!record.RDATA.Equals(ptrData))
+                        continue;
+
+                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecord(zoneName, record.Name, DnsResourceRecordType.PTR, record.RDATA);
+                    return record;
+                }
+
+                return null;
+            }
+
+            private static void RestorePtrRecord(AuthZoneManager authZoneManager, string zoneName, DnsResourceRecord record)
+            {
+                if (record is null)
+                    return;
+
+                try
+                {
+                    authZoneManager.AddRecord(zoneName, record);
+                }
+                catch
+                { }
+            }
+
+            private void ReplacePtrRecord(string zoneName, DnsResourceRecord ptrRecord, string oldZoneName, string oldPtrName, DnsResourceRecordData oldPtrData)
+            {
+                AuthZoneManager authZoneManager = _dnsWebService._dnsServer.AuthZoneManager;
+                DnsResourceRecord removedRecord = RemoveMatchingPtrRecord(zoneName, ptrRecord.Name, ptrRecord.RDATA);
+                DnsResourceRecord removedOldRecord = null;
+
+                if (oldZoneName is not null)
+                {
+                    bool sameRecord = oldZoneName.Equals(zoneName, StringComparison.OrdinalIgnoreCase) && oldPtrName.Equals(ptrRecord.Name, StringComparison.OrdinalIgnoreCase) && oldPtrData.Equals(ptrRecord.RDATA);
+                    if (!sameRecord)
+                        removedOldRecord = RemoveMatchingPtrRecord(oldZoneName, oldPtrName, oldPtrData);
+                }
+
+                try
+                {
+                    if (!authZoneManager.AddRecord(zoneName, ptrRecord))
+                        throw new DnsWebServiceException("Cannot add PTR record: record already exists.");
+                }
+                catch
+                {
+                    RestorePtrRecord(authZoneManager, zoneName, removedRecord);
+
+                    if (oldZoneName is not null)
+                        RestorePtrRecord(authZoneManager, oldZoneName, removedOldRecord);
+
+                    throw;
+                }
+            }
+
             private static Dictionary<DnsSvcParamKey, DnsSvcParamValue> ParseSvcParams(string strSvcParams)
             {
                 string[] strSvcParamsParts = strSvcParams.Split('|');
@@ -1927,6 +1985,9 @@ namespace DnsServerCore
 
                     //import records
                     _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, importRecords, false, false, false);
+
+                    if ((type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.CatalogZoneName))
+                        _dnsWebService._clusterManager.UpdateClusterRecordsFor(zoneInfo); //the import deletes apex NS and a cluster file is not allowed to contain them
                 }
 
                 Utf8JsonWriter jsonWriter = context.GetCurrentJsonWriter();
@@ -1996,6 +2057,9 @@ namespace DnsServerCore
                 }
 
                 _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, records, overwriteRecords, overwriteZone, overwriteSoaSerial);
+
+                if ((zoneInfo.Type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.CatalogZoneName))
+                    _dnsWebService._clusterManager.UpdateClusterRecordsFor(zoneInfo); //overwrite removes the cluster NS records when the file has none
 
                 _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] Total " + records.Count + " record(s) were imported successfully into " + zoneInfo.TypeName + " zone: " + zoneInfo.DisplayName);
             }
@@ -2144,8 +2208,7 @@ namespace DnsServerCore
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Delete))
                     throw new DnsWebServiceException("Access was denied.");
 
-                if ((zoneInfo.Type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
-                    throw new DnsWebServiceException("Cannot convert the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
+                ThrowIfClusterManagedZone(zoneInfo, "convert");
 
                 _dnsWebService._dnsServer.AuthZoneManager.ConvertZoneTypeTo(zoneInfo.Name, type);
 
@@ -2967,20 +3030,7 @@ namespace DnsServerCore
                     if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Delete))
                         throw new DnsWebServiceException("Access was denied.");
 
-                    switch (zoneInfo.Type)
-                    {
-                        case AuthZoneType.Primary:
-                            if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
-                                throw new DnsWebServiceException("Cannot delete the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
-
-                            break;
-
-                        case AuthZoneType.Catalog:
-                            if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
-                                throw new DnsWebServiceException("Cannot delete the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
-
-                            break;
-                    }
+                    ThrowIfClusterManagedZone(zoneInfo, "delete");
 
                     if (!_dnsWebService._dnsServer.AuthZoneManager.DeleteZone(zoneInfo, true))
                         throw new DnsWebServiceException("Failed to delete the zone '" + zoneInfo.DisplayName + "': no such zone exists.");
@@ -3023,6 +3073,30 @@ namespace DnsServerCore
                 _dnsWebService._dnsServer.CacheZoneManager.DeleteZone(zoneInfo.Name);
             }
 
+            private void ThrowIfClusterManagedZone(AuthZoneInfo zoneInfo, string action)
+            {
+                if (!_dnsWebService._clusterManager.ClusterInitialized)
+                    return;
+
+                switch (zoneInfo.Type)
+                {
+                    case AuthZoneType.Primary:
+                    case AuthZoneType.Secondary:
+                    case AuthZoneType.SecondaryForwarder:
+                        if (_dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
+                            throw new DnsWebServiceException("Cannot " + action + " the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
+
+                        break;
+
+                    case AuthZoneType.Catalog:
+                    case AuthZoneType.SecondaryCatalog:
+                        if (_dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
+                            throw new DnsWebServiceException("Cannot " + action + " the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
+
+                        break;
+                }
+            }
+
             public void DisableZone(HttpContext context)
             {
                 User sessionUser = _dnsWebService.GetSessionUser(context);
@@ -3042,20 +3116,7 @@ namespace DnsServerCore
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Modify))
                     throw new DnsWebServiceException("Access was denied.");
 
-                switch (zoneInfo.Type)
-                {
-                    case AuthZoneType.Primary:
-                        if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name))
-                            throw new DnsWebServiceException("Cannot disable the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
-
-                        break;
-
-                    case AuthZoneType.Catalog:
-                        if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name))
-                            throw new DnsWebServiceException("Cannot disable the Cluster Catalog zone '" + zoneInfo.DisplayName + "'.");
-
-                        break;
-                }
+                ThrowIfClusterManagedZone(zoneInfo, "disable");
 
                 zoneInfo.Disabled = true;
                 _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(zoneInfo.Name);
@@ -3418,8 +3479,19 @@ namespace DnsServerCore
                 if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, zoneInfo.Name, sessionUser, PermissionFlag.Delete))
                     throw new DnsWebServiceException("Access was denied.");
 
+                if (_dnsWebService._clusterManager.ClusterInitialized && ((zoneInfo.Type == AuthZoneType.Secondary) || (zoneInfo.Type == AuthZoneType.SecondaryForwarder) || (zoneInfo.Type == AuthZoneType.SecondaryCatalog)) && (_dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name) || _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.Name)))
+                {
+                    if ((request.QueryOrForm("primaryNameServerAddresses") is not null) || (request.QueryOrForm("primaryZoneTransferProtocol") is not null) || (request.QueryOrForm("primaryZoneTransferTsigKeyName") is not null))
+                        throw new DnsWebServiceException("Cannot update primary name servers for the " + (_dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name) ? "Cluster Primary" : "Cluster Catalog") + " zone '" + zoneInfo.DisplayName + "'.");
+                }
+
                 if (request.TryGetQueryOrForm("disabled", bool.Parse, out bool disabled))
+                {
+                    if (disabled)
+                        ThrowIfClusterManagedZone(zoneInfo, "disable");
+
                     zoneInfo.Disabled = disabled;
+                }
 
                 //catalog zone override options
                 switch (zoneInfo.Type)
@@ -3747,6 +3819,9 @@ namespace DnsServerCore
                         {
                             string oldCatalogZoneName = zoneInfo.CatalogZoneName;
 
+                            if (_dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterPrimaryZone(zoneInfo.Name) && !catalogZoneName.Equals(oldCatalogZoneName ?? "", StringComparison.OrdinalIgnoreCase))
+                                throw new DnsWebServiceException("Cannot change the Catalog zone for the Cluster Primary zone '" + zoneInfo.DisplayName + "'.");
+
                             if (catalogZoneName.Length == 0)
                             {
                                 if (!string.IsNullOrEmpty(oldCatalogZoneName))
@@ -3879,6 +3954,8 @@ namespace DnsServerCore
                 uint expiryTtl = request.GetQueryOrForm("expiryTtl", ZoneFile.ParseTtl, 0u);
 
                 DnsResourceRecord newRecord;
+                DnsResourceRecord ptrRecord = null;
+                string ptrZoneName = null;
 
                 switch (type)
                 {
@@ -3929,12 +4006,10 @@ namespace DnsServerCore
                                 if ((reverseZoneInfo.Type != AuthZoneType.Primary) && (reverseZoneInfo.Type != AuthZoneType.Forwarder))
                                     throw new DnsWebServiceException("Reverse zone '" + reverseZoneInfo.DisplayName + "' is not a primary or forwarder zone.");
 
-                                DnsResourceRecord ptrRecord = new DnsResourceRecord(ptrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(domain));
+                                ptrRecord = new DnsResourceRecord(ptrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(domain));
                                 ptrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
                                 ptrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
-
-                                _dnsWebService._dnsServer.AuthZoneManager.SetRecord(reverseZoneInfo.Name, ptrRecord);
-                                _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(reverseZoneInfo.Name);
+                                ptrZoneName = reverseZoneInfo.Name;
                             }
 
                             if (type == DnsResourceRecordType.A)
@@ -4259,6 +4334,14 @@ namespace DnsServerCore
                 {
                     if (!_dnsWebService._dnsServer.AuthZoneManager.AddRecord(zoneInfo.Name, newRecord))
                         throw new DnsWebServiceException("Cannot add record: record already exists.");
+                }
+
+                if (ptrRecord is not null)
+                {
+                    //replace only the PTR for this name so other names at the same address are kept
+                    ReplacePtrRecord(ptrZoneName, ptrRecord, null, null, null);
+
+                    _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(ptrZoneName);
                 }
 
                 //additional processing
@@ -4688,6 +4771,10 @@ namespace DnsServerCore
 
                 DnsResourceRecord oldRecord = null;
                 DnsResourceRecord newRecord;
+                DnsResourceRecord newPtrRecord = null;
+                string newPtrZoneName = null;
+                string oldPtrZoneName = null;
+                string oldPtrName = null;
 
                 switch (type)
                 {
@@ -4741,18 +4828,14 @@ namespace DnsServerCore
                                     if (!_dnsWebService._authManager.IsPermitted(PermissionSection.Zones, oldReverseZoneInfo.Name, sessionUser, PermissionFlag.Delete))
                                         throw new DnsWebServiceException("Cannot update reverse zone to delete existing PTR record: access was denied.");
 
-                                    //delete old PTR record if any and save old reverse zone
-                                    _dnsWebService._dnsServer.AuthZoneManager.DeleteRecords(oldReverseZoneInfo.Name, oldPtrDomain, DnsResourceRecordType.PTR);
-                                    _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(oldReverseZoneInfo.Name);
+                                    oldPtrZoneName = oldReverseZoneInfo.Name;
+                                    oldPtrName = oldPtrDomain;
                                 }
 
-                                //add new PTR record and save reverse zone
-                                DnsResourceRecord ptrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(newDomain)); //PTR must point to the updated record name
-                                ptrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
-                                ptrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
-
-                                _dnsWebService._dnsServer.AuthZoneManager.SetRecord(newReverseZoneInfo.Name, ptrRecord);
-                                _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(newReverseZoneInfo.Name);
+                                newPtrRecord = new DnsResourceRecord(newPtrDomain, DnsResourceRecordType.PTR, DnsClass.IN, ttl, new DnsPTRRecordData(newDomain)); //PTR must point to the updated record name
+                                newPtrRecord.GetAuthGenericRecordInfo().LastModified = DateTime.UtcNow;
+                                newPtrRecord.GetAuthGenericRecordInfo().ExpiryTtl = expiryTtl;
+                                newPtrZoneName = newReverseZoneInfo.Name;
                             }
 
                             if (type == DnsResourceRecordType.A)
@@ -4792,7 +4875,7 @@ namespace DnsServerCore
                                 if (expiryTtl > 0)
                                     throw new DnsWebServiceException("Cannot set automatic expiry TTL for NS records for Primary zones that are members of the Cluster Catalog zone. These NS records are automatically managed by the Cluster and only their TTL values can be updated.");
 
-                                if (!nameServer.Equals(newNameServer, StringComparison.OrdinalIgnoreCase))
+                                if (!nameServer.Equals(newNameServer, StringComparison.OrdinalIgnoreCase) || !domain.Equals(newDomain, StringComparison.OrdinalIgnoreCase))
                                     throw new DnsWebServiceException("Cannot update NS records for Primary zones that are members of the Cluster Catalog zone. These NS records are automatically managed by the Cluster and only their TTL values can be updated.");
 
                                 if (!string.IsNullOrEmpty(glueAddresses))
@@ -5234,6 +5317,18 @@ namespace DnsServerCore
                 else
                 {
                     _dnsWebService._dnsServer.AuthZoneManager.UpdateRecord(zoneInfo.Name, oldRecord, newRecord);
+                }
+
+                if (newPtrRecord is not null)
+                {
+                    //replace only the PTR for this name so other names at the same address are kept
+                    ReplacePtrRecord(newPtrZoneName, newPtrRecord, oldPtrZoneName, oldPtrName, oldPtrZoneName is null ? null : new DnsPTRRecordData(domain));
+
+                    if (oldPtrZoneName is not null)
+                        _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(oldPtrZoneName);
+
+                    if ((oldPtrZoneName is null) || !oldPtrZoneName.Equals(newPtrZoneName, StringComparison.OrdinalIgnoreCase))
+                        _dnsWebService._dnsServer.AuthZoneManager.SaveZoneFile(newPtrZoneName);
                 }
 
                 //additional processing

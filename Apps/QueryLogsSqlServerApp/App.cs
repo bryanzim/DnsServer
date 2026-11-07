@@ -61,6 +61,10 @@ namespace QueryLogsSqlServer
         const int CLEAN_UP_TIMER_PERIODIC_INTERVAL = 15 * 60 * 1000;
 
         bool _isStartupInit = true;
+        int _configGeneration;
+        bool _pendingEnableLogging;
+        int _pendingMaxQueueSize;
+        readonly object _configSync = new object();
 
         #endregion
 
@@ -82,34 +86,36 @@ namespace QueryLogsSqlServer
 
                             await using (SqlCommand command = connection.CreateCommand())
                             {
-                                command.CommandText = "SELECT Count(*) FROM dns_logs;";
+                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE server = @server;";
+                                command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain);
 
                                 totalRecords = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             int recordsToRemove = totalRecords - _maxLogRecords;
                             if (recordsToRemove > 0)
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, null);
                         }
 
                         if (_maxLogDays > 0)
                         {
                             int recordsToRemove;
+                            DateTime cutoff = DateTime.UtcNow.AddDays(_maxLogDays * -1);
 
                             await using (SqlCommand command = connection.CreateCommand())
                             {
-                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE timestamp < @timestamp;";
-
-                                command.Parameters.AddWithValue("@timestamp", DateTime.UtcNow.AddDays(_maxLogDays * -1));
+                                command.CommandText = "SELECT Count(*) FROM dns_logs WHERE server = @server AND timestamp < @timestamp;";
+                                command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain);
+                                command.Parameters.AddWithValue("@timestamp", cutoff);
 
                                 recordsToRemove = Convert.ToInt32(await command.ExecuteScalarAsync());
                             }
 
                             if (recordsToRemove > 0)
-                                await BatchRemove(recordsToRemove);
+                                await BatchRemove(recordsToRemove, cutoff);
                         }
 
-                        async Task BatchRemove(int recordsToRemove)
+                        async Task BatchRemove(int recordsToRemove, DateTime? cutoff)
                         {
                             int batchToRemove;
 
@@ -119,7 +125,15 @@ namespace QueryLogsSqlServer
 
                                 await using (SqlCommand command = connection.CreateCommand())
                                 {
-                                    command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT TOP {batchToRemove} dlid FROM dns_logs ORDER BY dlid);";
+                                    if (cutoff is null)
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT TOP {batchToRemove} dlid FROM dns_logs WHERE server = @server ORDER BY timestamp, dlid);";
+                                    else
+                                        command.CommandText = $"DELETE FROM dns_logs WHERE dlid IN (SELECT TOP {batchToRemove} dlid FROM dns_logs WHERE server = @server AND timestamp < @timestamp ORDER BY timestamp, dlid);";
+
+                                    command.Parameters.AddWithValue("@server", _dnsServer?.ServerDomain);
+
+                                    if (cutoff is not null)
+                                        command.Parameters.AddWithValue("@timestamp", cutoff.Value);
 
                                     await command.ExecuteNonQueryAsync();
                                 }
@@ -201,10 +215,12 @@ namespace QueryLogsSqlServer
                         if (logs.Count < 1)
                             continue;
 
-                        await BulkInsertLogsAsync(logs, sb);
-
-                        logs.Clear();
+                        if (await BulkInsertLogsAsync(logs, sb))
+                            logs.Clear();
                     }
+
+                    if (!_disposed && (logs.Count > 0))
+                        await BulkInsertLogsAsync(logs, sb);
                 }
                 catch (Exception ex)
                 {
@@ -225,7 +241,7 @@ namespace QueryLogsSqlServer
             _channel?.Writer.TryComplete();
         }
 
-        private async Task BulkInsertLogsAsync(List<LogEntry> logs, StringBuilder sb)
+        private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs, StringBuilder sb)
         {
             try
             {
@@ -333,12 +349,14 @@ namespace QueryLogsSqlServer
                         await command.ExecuteNonQueryAsync();
                     }
                 }
+                return true;
             }
             catch (Exception ex)
             {
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
+                return false;
             }
         }
 
@@ -374,9 +392,54 @@ namespace QueryLogsSqlServer
                 if (!_connectionString.TrimEnd().EndsWith(';'))
                     _connectionString += ";";
 
+                lock (_configSync)
+                {
+                    _configGeneration++;
+                    _pendingEnableLogging = enableLogging;
+                    _pendingMaxQueueSize = maxQueueSize;
+                }
+
                 async Task ApplyConfig()
                 {
-                    if (enableLogging)
+                    int configGeneration;
+                    bool currentEnableLogging;
+                    int currentMaxQueueSize;
+
+                    lock (_configSync)
+                    {
+                        configGeneration = _configGeneration;
+                        currentEnableLogging = _pendingEnableLogging;
+                        currentMaxQueueSize = _pendingMaxQueueSize;
+                    }
+
+                    void CommitConfig(bool startChannel)
+                    {
+                        lock (_configSync)
+                        {
+                            if (configGeneration != _configGeneration)
+                                return;
+
+                            if (startChannel)
+                            {
+                                if (!_enableLogging || (_maxQueueSize != currentMaxQueueSize))
+                                    StartNewChannel(currentMaxQueueSize);
+                            }
+                            else
+                            {
+                                StopChannel();
+                            }
+
+                            _enableLogging = currentEnableLogging;
+                            _maxQueueSize = currentMaxQueueSize;
+
+                            if ((_maxLogDays > 0) || (_maxLogRecords > 0))
+                                _cleanupTimer.Change(CLEAN_UP_TIMER_INITIAL_INTERVAL, Timeout.Infinite);
+                            else
+                                _cleanupTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                        }
+                    }
+
+                    if (currentEnableLogging)
                     {
                         await using (SqlConnection connection = new SqlConnection(_connectionString))
                         {
@@ -507,21 +570,12 @@ END
                             }
                         }
 
-                        if (!_enableLogging || (_maxQueueSize != maxQueueSize))
-                            StartNewChannel(maxQueueSize);
+                        CommitConfig(true);
                     }
                     else
                     {
-                        StopChannel();
+                        CommitConfig(false);
                     }
-
-                    _enableLogging = enableLogging;
-                    _maxQueueSize = maxQueueSize;
-
-                    if ((_maxLogDays > 0) || (_maxLogRecords > 0))
-                        _cleanupTimer.Change(CLEAN_UP_TIMER_INITIAL_INTERVAL, Timeout.Infinite);
-                    else
-                        _cleanupTimer.Change(Timeout.Infinite, Timeout.Infinite);
                 }
 
                 if (_isStartupInit)
@@ -537,13 +591,34 @@ END
 
                             while (true)
                             {
+                                int generation;
+
+                                lock (_configSync)
+                                    generation = _configGeneration;
+
                                 try
                                 {
                                     await ApplyConfig();
-                                    return;
+
+                                    lock (_configSync)
+                                    {
+                                        if (generation == _configGeneration)
+                                            return;
+                                    }
+
+                                    retryCount = 0;
                                 }
                                 catch (SqlException ex)
                                 {
+                                    lock (_configSync)
+                                    {
+                                        if (generation != _configGeneration)
+                                        {
+                                            retryCount = 0;
+                                            continue;
+                                        }
+                                    }
+
                                     switch (ex.Number)
                                     {
                                         case 258:
@@ -573,6 +648,15 @@ END
                                 }
                                 catch (Exception ex)
                                 {
+                                    lock (_configSync)
+                                    {
+                                        if (generation != _configGeneration)
+                                        {
+                                            retryCount = 0;
+                                            continue;
+                                        }
+                                    }
+
                                     _dnsServer?.WriteLog(ex);
                                     return;
                                 }
@@ -636,8 +720,8 @@ END
             {
                 if (qname.Contains('*'))
                 {
-                    whereClause += "qname like @qname AND ";
-                    qname = qname.Replace("*", "%");
+                    whereClause += "qname like @qname escape '!' AND ";
+                    qname = qname.Replace("!", "!!", StringComparison.Ordinal).Replace("%", "!%", StringComparison.Ordinal).Replace("_", "!_", StringComparison.Ordinal).Replace("*", "%", StringComparison.Ordinal);
                 }
                 else
                 {
@@ -695,12 +779,17 @@ END
                     totalEntries = Convert.ToInt64(await command.ExecuteScalarAsync());
                 }
 
+                if (entriesPerPage < 1)
+                    entriesPerPage = 25;
+
                 long totalPages = (totalEntries / entriesPerPage) + (totalEntries % entriesPerPage > 0 ? 1 : 0);
 
                 if (totalPages < 1)
                     pageNumber = 1;
                 else if ((pageNumber > totalPages) || (pageNumber < 0))
                     pageNumber = totalPages;
+                else if (pageNumber < 1)
+                    pageNumber = 1;
 
                 long offset = (pageNumber - 1) * entriesPerPage;
 

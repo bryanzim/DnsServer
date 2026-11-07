@@ -240,20 +240,27 @@ namespace Failover
                 case DnsResourceRecordType.A:
                     {
                         DnsDatagram response = await _service.DnsServer.DirectQueryAsync(new DnsQuestionRecord(domain, type, DnsClass.IN));
-                        if ((response is null) || (response.Answer.Count == 0))
+                        if ((response is null) || (response.RCODE != DnsResponseCode.NoError) || (response.Answer.Count == 0))
                             return new HealthCheckResponse(HealthStatus.Failed, "Failed to resolve address.");
 
                         IReadOnlyList<IPAddress> addresses = DnsClient.ParseResponseA(response);
                         if (addresses.Count > 0)
                         {
                             HealthCheckResponse? lastResponse = null;
+                            bool sawFailure = false;
 
                             foreach (IPAddress address in addresses)
                             {
                                 lastResponse = await IsHealthyAsync(address, healthCheckUrl);
                                 if (lastResponse.Status == HealthStatus.Healthy)
                                     return lastResponse;
+
+                                if (lastResponse.Status == HealthStatus.Failed)
+                                    sawFailure = true;
                             }
+
+                            if (sawFailure)
+                                return new HealthCheckResponse(HealthStatus.Failed, "Failed health check.");
 
                             if (lastResponse is not null)
                                 return lastResponse;
@@ -265,20 +272,27 @@ namespace Failover
                 case DnsResourceRecordType.AAAA:
                     {
                         DnsDatagram response = await _service.DnsServer.DirectQueryAsync(new DnsQuestionRecord(domain, type, DnsClass.IN));
-                        if ((response is null) || (response.Answer.Count == 0))
+                        if ((response is null) || (response.RCODE != DnsResponseCode.NoError) || (response.Answer.Count == 0))
                             return new HealthCheckResponse(HealthStatus.Failed, "Failed to resolve address.");
 
                         IReadOnlyList<IPAddress> addresses = DnsClient.ParseResponseAAAA(response);
                         if (addresses.Count > 0)
                         {
                             HealthCheckResponse? lastResponse = null;
+                            bool sawFailure = false;
 
                             foreach (IPAddress address in addresses)
                             {
                                 lastResponse = await IsHealthyAsync(address, healthCheckUrl);
                                 if (lastResponse.Status == HealthStatus.Healthy)
                                     return lastResponse;
+
+                                if (lastResponse.Status == HealthStatus.Failed)
+                                    sawFailure = true;
                             }
+
+                            if (sawFailure)
+                                return new HealthCheckResponse(HealthStatus.Failed, "Failed health check.");
 
                             if (lastResponse is not null)
                                 return lastResponse;
@@ -292,18 +306,39 @@ namespace Failover
             }
         }
 
-        public async Task<HealthCheckResponse> IsHealthyAsync(IPAddress address, Uri? healthCheckUrl)
+        public bool IsAddressUnderMaintenance(IPAddress address)
         {
-            foreach (KeyValuePair<NetworkAddress, bool> network in _service.UnderMaintenance)
-            {
-                if (network.Key.Contains(address))
-                {
-                    if (network.Value)
-                        return new HealthCheckResponse(HealthStatus.Maintenance);
+            return _service.IsAddressUnderMaintenance(address);
+        }
 
-                    break;
+        public async Task<HealthCheckResponse> ApplyDomainMaintenanceAsync(string domain, DnsResourceRecordType type, HealthCheckResponse response)
+        {
+            DnsDatagram lookup = await _service.DnsServer.DirectQueryAsync(new DnsQuestionRecord(domain, type, DnsClass.IN));
+            if ((lookup is null) || (lookup.RCODE != DnsResponseCode.NoError) || (lookup.Answer.Count == 0))
+                return response;
+
+            IReadOnlyList<IPAddress> addresses = type == DnsResourceRecordType.AAAA ? DnsClient.ParseResponseAAAA(lookup) : DnsClient.ParseResponseA(lookup);
+            if (addresses.Count == 0)
+                return response;
+
+            foreach (IPAddress address in addresses)
+            {
+                if (!IsAddressUnderMaintenance(address))
+                {
+                    if (response.Status == HealthStatus.Maintenance)
+                        return new HealthCheckResponse(HealthStatus.Unknown);
+
+                    return response;
                 }
             }
+
+            return new HealthCheckResponse(HealthStatus.Maintenance);
+        }
+
+        public async Task<HealthCheckResponse> IsHealthyAsync(IPAddress address, Uri? healthCheckUrl)
+        {
+            if (_service.IsAddressUnderMaintenance(address))
+                return new HealthCheckResponse(HealthStatus.Maintenance);
 
             switch (_type)
             {

@@ -72,30 +72,34 @@ namespace GeoCountry
 
         internal static bool TryMatchGroup(JsonElement jsonAppRecordData, long? asn, string? countryCode, out JsonElement jsonCountry)
         {
-            foreach (KeyValuePair<string, List<string>> group in _groups!)
+            if (asn is not null)
             {
-                if (jsonAppRecordData.TryGetProperty(group.Key, out jsonCountry))
+                string asnName = "AS" + asn;
+
+                foreach (KeyValuePair<string, List<string>> group in _groups!)
                 {
-                    List<string> groupEntries = group.Value;
+                    if (!jsonAppRecordData.TryGetProperty(group.Key, out jsonCountry))
+                        continue;
 
-                    if (asn is not null)
+                    foreach (string groupEntry in group.Value)
                     {
-                        string asnName = "AS" + asn;
-
-                        foreach (string groupEntry in groupEntries)
-                        {
-                            if (groupEntry.Equals(asnName, StringComparison.Ordinal))
-                                return true; //found ASN match
-                        }
+                        if (groupEntry.Equals(asnName, StringComparison.Ordinal))
+                            return true; //found ASN match
                     }
+                }
+            }
 
-                    if (countryCode is not null)
+            if (countryCode is not null)
+            {
+                foreach (KeyValuePair<string, List<string>> group in _groups!)
+                {
+                    if (!jsonAppRecordData.TryGetProperty(group.Key, out jsonCountry))
+                        continue;
+
+                    foreach (string groupEntry in group.Value)
                     {
-                        foreach (string groupEntry in groupEntries)
-                        {
-                            if (groupEntry.Equals(countryCode, StringComparison.Ordinal))
-                                return true; //found country code match
-                        }
+                        if (groupEntry.Equals(countryCode, StringComparison.Ordinal))
+                            return true; //found country code match
                     }
                 }
             }
@@ -113,7 +117,20 @@ namespace GeoCountry
             _dnsServer = dnsServer;
             _maxMind = MaxMind.Create(dnsServer);
 
-            if (string.IsNullOrWhiteSpace(config) || config.StartsWith('#') || !config.TrimStart().StartsWith('{'))
+            static bool IsJsonObjectConfig(string config)
+            {
+                try
+                {
+                    using JsonDocument jsonDocument = JsonDocument.Parse(config, _jsonParseOptions);
+                    return jsonDocument.RootElement.ValueKind == JsonValueKind.Object;
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(config) || config.StartsWith('#') || !IsJsonObjectConfig(config))
             {
                 //save default config into file
                 config = "{\r\n    \"groups\": {\r\n        \"custom-group\": [\r\n            \"SG\",\r\n            \"FR\",\r\n            \"AS1234\"\r\n        ]\r\n    }\r\n}\r\n";
@@ -175,6 +192,7 @@ namespace GeoCountry
                         JsonElement jsonCountry = default;
 
                         byte scopePrefixLength = 0;
+                        bool ecsClientLocated = false;
                         EDnsClientSubnetOptionData requestECS = request.GetEDnsClientSubnetOption();
                         if (requestECS is not null)
                         {
@@ -182,12 +200,12 @@ namespace GeoCountry
 
                             if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(requestECS.Address, out IspResponse? csIsp) && (csIsp.Network is not null))
                             {
-                                scopePrefixLength = (byte)csIsp.Network.PrefixLength;
+                                scopePrefixLength = (byte)Math.Min(csIsp.Network.PrefixLength, requestECS.SourcePrefixLength);
                                 asn = csIsp.AutonomousSystemNumber;
                             }
                             else if ((_maxMind.AsnReader is not null) && _maxMind.AsnReader.TryAsn(requestECS.Address, out AsnResponse? csAsn) && (csAsn.Network is not null))
                             {
-                                scopePrefixLength = (byte)csAsn.Network.PrefixLength;
+                                scopePrefixLength = (byte)Math.Min(csAsn.Network.PrefixLength, requestECS.SourcePrefixLength);
                                 asn = csAsn.AutonomousSystemNumber;
                             }
                             else
@@ -199,12 +217,16 @@ namespace GeoCountry
                             {
                                 if (_maxMind.CountryReader.TryCountry(requestECS.Address, out CountryResponse? csResponse) && (csResponse.Country.IsoCode is not null))
                                 {
+                                    ecsClientLocated = true;
+
                                     if (!jsonAppRecordData.TryGetProperty(csResponse.Country.IsoCode, out jsonCountry))
                                         if (!TryMatchGroup(jsonAppRecordData, asn, csResponse.Country.IsoCode, out jsonCountry))
                                             jsonAppRecordData.TryGetProperty("default", out jsonCountry);
                                 }
                                 else if (asn is not null)
                                 {
+                                    ecsClientLocated = true;
+
                                     if (!TryMatchGroup(jsonAppRecordData, asn, null, out jsonCountry))
                                         jsonAppRecordData.TryGetProperty("default", out jsonCountry);
                                 }
@@ -213,6 +235,11 @@ namespace GeoCountry
 
                         if (jsonCountry.ValueKind == JsonValueKind.Undefined)
                         {
+                            if ((requestECS is not null) && ecsClientLocated)
+                                return Task.FromResult<DnsDatagram?>(null);
+
+                            scopePrefixLength = 0; //this answer is chosen from the resolver, not the ECS client
+
                             long? asn = null;
 
                             if ((_maxMind.IspReader is not null) && _maxMind.IspReader.TryIsp(remoteEP.Address, out IspResponse? csIsp) && (csIsp.Network is not null))

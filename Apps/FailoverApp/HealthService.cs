@@ -350,24 +350,39 @@ namespace Failover
 
                     NetworkAddress umNetwork = NetworkAddress.Parse(network);
 
-                    if (_underMaintenance.TryAdd(umNetwork, enabled))
-                    {
-                        if (enabled)
-                        {
-                            foreach (KeyValuePair<string, HealthMonitor> healthMonitor in _healthMonitors)
-                            {
-                                HealthMonitor monitor = healthMonitor.Value;
-
-                                if (monitor.Address is null)
-                                    continue;
-
-                                if (umNetwork.Contains(monitor.Address))
-                                    monitor.SetUnderMaintenance();
-                            }
-                        }
-                    }
+                    _underMaintenance.TryAdd(umNetwork, enabled);
                 }
             }
+
+            foreach (KeyValuePair<string, HealthMonitor> healthMonitor in _healthMonitors)
+            {
+                HealthMonitor monitor = healthMonitor.Value;
+
+                if (monitor.Address is null)
+                {
+                    monitor.RequestCheck();
+                    continue;
+                }
+
+                monitor.ApplyMaintenance(IsAddressUnderMaintenance(monitor.Address));
+            }
+        }
+
+        public bool IsAddressUnderMaintenance(IPAddress address)
+        {
+            NetworkAddress? maintenanceNetwork = null;
+            bool inMaintenance = false;
+
+            foreach (KeyValuePair<NetworkAddress, bool> network in _underMaintenance)
+            {
+                if (network.Key.Contains(address) && ((maintenanceNetwork is null) || (network.Key.PrefixLength > maintenanceNetwork.PrefixLength)))
+                {
+                    maintenanceNetwork = network.Key;
+                    inMaintenance = network.Value;
+                }
+            }
+
+            return inMaintenance;
         }
 
         public HealthCheckResponse QueryStatus(IPAddress address, string healthCheck, Uri? healthCheckUrl, bool tryAdd)

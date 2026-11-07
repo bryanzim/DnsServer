@@ -65,6 +65,7 @@ namespace DnsServerCore.Cluster
         DateTime _upSince;
         DateTime _lastSeen;
         HttpApiClient _apiClient;
+        string _apiClientToken;
         readonly object _apiClientLock = new object();
 
         Timer _heartbeatTimer;
@@ -159,6 +160,16 @@ namespace DnsServerCore.Cluster
 
         bool _disposed;
 
+        internal void StopHeartbeat()
+        {
+            try
+            {
+                _heartbeatTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException)
+            { }
+        }
+
         public void Dispose()
         {
             HttpApiClient apiClient;
@@ -195,27 +206,40 @@ namespace DnsServerCore.Cluster
                 if (_disposed)
                     throw new ObjectDisposedException(nameof(ClusterNode));
 
+                string currentClusterApiToken = null;
+                bool cachedTokenStillValid = false;
+
+                foreach (UserSession session in _clusterManager.DnsWebService.AuthManager.Sessions)
+                {
+                    if (session.Type != UserSessionType.ClusterApiToken)
+                        continue;
+
+                    if (currentClusterApiToken is null)
+                        currentClusterApiToken = session.Token;
+
+                    if ((_apiClientToken is not null) && session.Token.Equals(_apiClientToken, StringComparison.Ordinal))
+                        cachedTokenStillValid = true;
+                }
+
+                if (currentClusterApiToken is null)
+                    throw new InvalidOperationException("No API token was found for the Cluster domain.");
+
+                if ((_apiClient is not null) && !cachedTokenStillValid)
+                {
+                    HttpApiClient staleClient = _apiClient;
+                    _apiClient = null;
+                    _apiClientToken = null;
+                    ReleaseApiClient(staleClient);
+                }
+
                 if (_apiClient is null)
                 {
                     HttpApiClient apiClient = new HttpApiClient(_url, _clusterManager.DnsWebService.DnsServer.Proxy, _clusterManager.DnsWebService.DnsServer.IPv6Mode, false, new InternalDnsClient(_clusterManager.DnsWebService.DnsServer, this));
 
-                    UserSession clusterApiToken = null;
-
-                    foreach (UserSession session in _clusterManager.DnsWebService.AuthManager.Sessions)
-                    {
-                        if (session.Type == UserSessionType.ClusterApiToken)
-                        {
-                            clusterApiToken = session;
-                            break;
-                        }
-                    }
-
-                    if (clusterApiToken is null)
-                        throw new InvalidOperationException("No API token was found for the Cluster domain.");
-
-                    apiClient.UseApiToken(clusterApiToken.Token);
+                    apiClient.UseApiToken(currentClusterApiToken);
 
                     _apiClient = apiClient;
+                    _apiClientToken = currentClusterApiToken;
                 }
 
                 return _apiClient;
@@ -273,6 +297,11 @@ namespace DnsServerCore.Cluster
             _type = ClusterNodeType.Primary;
         }
 
+        internal void RevertToSecondaryNode()
+        {
+            _type = ClusterNodeType.Secondary;
+        }
+
         public void UpdateSelfNodeIPAddresses(IReadOnlyList<IPAddress> ipAddresses)
         {
             if (_state != ClusterNodeState.Self)
@@ -300,7 +329,7 @@ namespace DnsServerCore.Cluster
             _url = url;
         }
 
-        public void UpdateNode(Uri url, IReadOnlyList<IPAddress> ipAddresses)
+        public void ValidateNodeUpdate(Uri url, IReadOnlyList<IPAddress> ipAddresses)
         {
             if (url.OriginalString.Length > 255)
                 throw new ArgumentException("Cluster node URL length must be less than 255 bytes.", nameof(url));
@@ -310,6 +339,11 @@ namespace DnsServerCore.Cluster
 
             if (ipAddresses.Count > 10)
                 throw new ArgumentException("Cluster node cannot have more than 10 IP addresses.", nameof(ipAddresses));
+        }
+
+        public void UpdateNode(Uri url, IReadOnlyList<IPAddress> ipAddresses)
+        {
+            ValidateNodeUpdate(url, ipAddresses);
 
             bool changed = false;
 
@@ -329,7 +363,7 @@ namespace DnsServerCore.Cluster
                 ReplaceApiClient();
         }
 
-        public void UpdateNode(ClusterInfo.ClusterNodeInfo nodeInfo)
+        public bool UpdateNode(ClusterInfo.ClusterNodeInfo nodeInfo)
         {
             if (nodeInfo.Id != _id)
                 throw new InvalidOperationException();
@@ -349,10 +383,17 @@ namespace DnsServerCore.Cluster
                 changed = true;
             }
 
-            _type = Enum.Parse<ClusterNodeType>(nodeInfo.Type, true);
-
             if (changed)
                 ReplaceApiClient();
+
+            ClusterNodeType nodeType = Enum.Parse<ClusterNodeType>(nodeInfo.Type, true);
+            if (_type != nodeType)
+            {
+                _type = nodeType;
+                changed = true;
+            }
+
+            return changed;
         }
 
         private void ReplaceApiClient()
@@ -363,6 +404,7 @@ namespace DnsServerCore.Cluster
             {
                 apiClient = _apiClient;
                 _apiClient = null;
+                _apiClientToken = null;
             }
 
             if (apiClient is not null)

@@ -2069,6 +2069,30 @@ namespace DnsServerCore.Dns
 
                 sendBuffer = ArrayPool<byte>.Shared.Rent(sendBufferSize);
 
+                if ((response.NextDatagram is not null) && response.IsZoneTransfer)
+                {
+                    //a split zone transfer is more than one message; the first chunk can still compress into this buffer
+                    DnsDatagram truncatedResponse = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, true, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, response.RCODE, response.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative };
+
+                    if (response.IsSigned)
+                    {
+                        try
+                        {
+                            truncatedResponse = truncatedResponse.SignResponse(request, _tsigKeys);
+                        }
+                        catch (NotSupportedException)
+                        {
+                            //the signed truncation does not fit; send it unsigned
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            //the signed truncation does not fit; send it unsigned
+                        }
+                    }
+
+                    response = truncatedResponse;
+                }
+
                 using (MemoryStream sendBufferStream = new MemoryStream(sendBuffer, 0, sendBufferSize))
                 {
                     try
@@ -2079,8 +2103,24 @@ namespace DnsServerCore.Dns
                     {
                         if (response.IsSigned)
                         {
-                            //rfc8945 section 5.3
-                            response = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, true, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, DnsResponseCode.NoError, response.Question, null, null, new DnsResourceRecord[] { response.Additional[response.Additional.Count - 1] }, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative };
+                            //rfc8945 section 5.3: sign the truncated message; omit the TSIG when it does not fit
+                            DnsDatagram truncatedResponse = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, true, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, response.RCODE, response.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative };
+
+                            try
+                            {
+                                DnsDatagram signedTruncatedResponse = truncatedResponse.SignResponse(request, _tsigKeys);
+                                sendBufferStream.Position = 0;
+                                signedTruncatedResponse.WriteTo(sendBufferStream);
+                                response = signedTruncatedResponse;
+                            }
+                            catch (NotSupportedException)
+                            {
+                                response = truncatedResponse;
+                            }
+                            catch (InvalidOperationException)
+                            {
+                                response = truncatedResponse;
+                            }
                         }
                         else
                         {
@@ -2107,7 +2147,8 @@ namespace DnsServerCore.Dns
                                     break;
 
                                 case DnsResourceRecordType.IXFR:
-                                    response = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, false, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, response.RCODE, response.Question, new DnsResourceRecord[] { response.Answer[0] }, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative }; //truncate response
+                                    //a single SOA means the zone is already current, so set TC and send no answer; the client retries the difference over TCP
+                                    response = new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, true, response.RecursionDesired, response.RecursionAvailable, response.AuthenticData, response.CheckingDisabled, response.RCODE, response.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize) { Tag = DnsServerResponseType.Authoritative };
                                     break;
 
                                 default:
@@ -2266,6 +2307,8 @@ namespace DnsServerCore.Dns
 
         private async Task ReadStreamRequestAsync(Stream stream, IPEndPoint remoteEP, NameServerAddress dnsEP, DnsTransportProtocol protocol)
         {
+            IPEndPoint connectionEP = remoteEP;
+
             try
             {
                 using MemoryStream readBuffer = new MemoryStream(64);
@@ -2275,6 +2318,7 @@ namespace DnsServerCore.Dns
                 while (true)
                 {
                     DnsDatagram request;
+                    IPEndPoint requestEP = connectionEP;
 
                     //read dns datagram with timeout
                     using (CancellationTokenSource cancellationTokenSource = new CancellationTokenSource())
@@ -2296,7 +2340,7 @@ namespace DnsServerCore.Dns
 
                     if ((protocol == DnsTransportProtocol.Tcp) && _enableEDnsClientSubnetSourceAddress)
                     {
-                        if (NetworkAccessControl.IsAddressAllowed(remoteEP.Address, _dnsReverseProxyNetworkACL))
+                        if (NetworkAccessControl.IsAddressAllowed(connectionEP.Address, _dnsReverseProxyNetworkACL))
                         {
                             //this feature is intended to be used with a reverse proxy or load balancer on private network
                             EDnsClientSubnetOptionData ecs = request.GetEDnsClientSubnetOption(true);
@@ -2306,13 +2350,13 @@ namespace DnsServerCore.Dns
                                 {
                                     case 32:
                                         if (ecs.Family == EDnsClientSubnetAddressFamily.IPv4)
-                                            remoteEP = new IPEndPoint(ecs.Address, 0);
+                                            requestEP = new IPEndPoint(ecs.Address, 0);
 
                                         break;
 
                                     case 128:
                                         if (ecs.Family == EDnsClientSubnetAddressFamily.IPv6)
-                                            remoteEP = new IPEndPoint(ecs.Address, 0);
+                                            requestEP = new IPEndPoint(ecs.Address, 0);
 
                                         break;
                                 }
@@ -2320,14 +2364,14 @@ namespace DnsServerCore.Dns
                         }
                     }
 
-                    if (HasQpmLimitExceeded(remoteEP.Address, DnsTransportProtocol.Tcp))
+                    if (HasQpmLimitExceeded(requestEP.Address, DnsTransportProtocol.Tcp))
                     {
-                        _statsManager.QueueUpdate(null, remoteEP, protocol, null, true);
+                        _statsManager.QueueUpdate(null, requestEP, protocol, null, true);
                         break;
                     }
 
                     //process request async
-                    _ = ProcessStreamRequestAsync(stream, writeBuffer, writeSemaphore, remoteEP, request, protocol);
+                    _ = ProcessStreamRequestAsync(stream, writeBuffer, writeSemaphore, requestEP, request, protocol);
                 }
             }
             catch (ObjectDisposedException)
@@ -2942,7 +2986,6 @@ namespace DnsServerCore.Dns
                             case DnsResourceRecordType.IXFR:
                                 return await ProcessZoneTransferQueryAsync(request, remoteEP, protocol, tsigAuthenticatedKeyName);
 
-                            case DnsResourceRecordType.RRSIG:
                             case DnsResourceRecordType.FWD:
                             case DnsResourceRecordType.APP:
                             case DnsResourceRecordType.CHILD_NS:
@@ -3185,6 +3228,10 @@ namespace DnsServerCore.Dns
                 case AuthZoneType.Forwarder:
                     //update
                     {
+                        //refuse before prerequisites so a denied client cannot learn which names exist
+                        if (!await IsUpdatePermittedAsync())
+                            return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.Refused, request.Question) { Tag = DnsServerResponseType.Authoritative };
+
                         //process prerequisite section
                         {
                             Dictionary<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> temp = new Dictionary<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>();
@@ -3206,13 +3253,13 @@ namespace DnsServerCore.Dns
                                     if (prRecord.Type == DnsResourceRecordType.ANY)
                                     {
                                         //check if name is in use
-                                        if (!_authZoneManager.NameExists(zoneInfo.Name, prRecord.Name))
+                                        if (!_authZoneManager.EnabledNameExists(zoneInfo.Name, prRecord.Name))
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NxDomain, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
                                     else
                                     {
                                         //check if RRSet exists (value independent)
-                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
+                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetEnabledRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
                                         if (rrset.Count == 0)
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
@@ -3225,13 +3272,13 @@ namespace DnsServerCore.Dns
                                     if (prRecord.Type == DnsResourceRecordType.ANY)
                                     {
                                         //check if name is not in use
-                                        if (_authZoneManager.NameExists(zoneInfo.Name, prRecord.Name))
+                                        if (_authZoneManager.EnabledNameExists(zoneInfo.Name, prRecord.Name))
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXDomain, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
                                     else
                                     {
                                         //check if RRSet does not exists
-                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
+                                        IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetEnabledRecords(zoneInfo.Name, prRecord.Name, prRecord.Type);
                                         if (rrset.Count > 0)
                                             return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                     }
@@ -3269,7 +3316,7 @@ namespace DnsServerCore.Dns
                                 foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
                                 {
                                     List<DnsResourceRecord> prRRSet = rrsetEntry.Value;
-                                    IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetRecords(zoneInfo.Name, zoneEntry.Key, rrsetEntry.Key);
+                                    IReadOnlyList<DnsResourceRecord> rrset = _authZoneManager.GetEnabledRecords(zoneInfo.Name, zoneEntry.Key, rrsetEntry.Key);
 
                                     //check if RRSet exists (value dependent)
                                     //compare RRSets
@@ -3301,10 +3348,6 @@ namespace DnsServerCore.Dns
                                 }
                             }
                         }
-
-                        //check for permissions
-                        if (!await IsUpdatePermittedAsync())
-                            return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.Refused, request.Question) { Tag = DnsServerResponseType.Authoritative };
 
                         //process update section
                         {
@@ -3367,7 +3410,7 @@ namespace DnsServerCore.Dns
                             }
 
                             //update
-                            Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSets = new Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>>();
+                            Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSets = new Dictionary<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>>(StringComparer.OrdinalIgnoreCase);
 
                             void AddToOriginalRRSets(string domain, DnsResourceRecordType type, IReadOnlyList<DnsResourceRecord> existingRRSet)
                             {
@@ -3380,6 +3423,20 @@ namespace DnsServerCore.Dns
                                 originalRRSetEntries.TryAdd(type, existingRRSet);
                             }
 
+                            void RevertOriginalRRSets()
+                            {
+                                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSetEntries in originalRRSets)
+                                {
+                                    foreach (KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> originalRRSet in originalRRSetEntries.Value)
+                                    {
+                                        if (originalRRSet.Value.Count == 0)
+                                            _authZoneManager.DeleteRecords(zoneInfo.Name, originalRRSetEntries.Key, originalRRSet.Key);
+                                        else
+                                            _authZoneManager.SetRecords(zoneInfo.Name, originalRRSet.Value);
+                                    }
+                                }
+                            }
+
                             try
                             {
                                 foreach (DnsResourceRecord uRecord in request.Authority)
@@ -3389,8 +3446,12 @@ namespace DnsServerCore.Dns
                                         //Add to an RRset
                                         if (uRecord.Type == DnsResourceRecordType.CNAME)
                                         {
-                                            if (_authZoneManager.NameExists(zoneInfo.Name, uRecord.Name) && (_authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count == 0))
-                                                continue; //current name exists and has non-CNAME records so cannot add CNAME record
+                                            if (_authZoneManager.EnabledNameExists(zoneInfo.Name, uRecord.Name) && (_authZoneManager.GetEnabledRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count == 0))
+                                            {
+                                                //current name exists and has non-CNAME records so cannot add CNAME record
+                                                RevertOriginalRRSets();
+                                                return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
+                                            }
 
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
                                             AddToOriginalRRSets(uRecord.Name, uRecord.Type, existingRRSet);
@@ -3420,7 +3481,10 @@ namespace DnsServerCore.Dns
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
                                             AddToOriginalRRSets(uRecord.Name, uRecord.Type, existingRRSet);
 
-                                            GenericRecordInfo recordInfo = uRecord.GetAuthGenericRecordInfo();
+                                            SOARecordInfo recordInfo = uRecord.GetAuthSOARecordInfo();
+                                            if (existingRRSet.Count > 0)
+                                                recordInfo.UseSoaSerialDateScheme = existingRRSet[0].GetAuthSOARecordInfo().UseSoaSerialDateScheme;
+
                                             recordInfo.LastModified = DateTime.UtcNow;
                                             recordInfo.Comments = "Via Dynamic Updates (RFC 2136)" + (string.IsNullOrEmpty(tsigAuthenticatedKeyName) ? "" : " using key '" + tsigAuthenticatedKeyName + "'") + " from '" + remoteEP.ToString() + "'";
 
@@ -3428,8 +3492,12 @@ namespace DnsServerCore.Dns
                                         }
                                         else
                                         {
-                                            if (_authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count > 0)
-                                                continue; //current name contains CNAME so cannot add non-CNAME record
+                                            if (_authZoneManager.GetEnabledRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count > 0)
+                                            {
+                                                //current name contains CNAME so cannot add non-CNAME record
+                                                RevertOriginalRRSets();
+                                                return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
+                                            }
 
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
                                             AddToOriginalRRSets(uRecord.Name, uRecord.Type, existingRRSet);
@@ -3545,16 +3613,7 @@ namespace DnsServerCore.Dns
                             catch
                             {
                                 //revert
-                                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>> originalRRSetEntries in originalRRSets)
-                                {
-                                    foreach (KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> originalRRSet in originalRRSetEntries.Value)
-                                    {
-                                        if (originalRRSet.Value.Count == 0)
-                                            _authZoneManager.DeleteRecords(zoneInfo.Name, originalRRSetEntries.Key, originalRRSet.Key);
-                                        else
-                                            _authZoneManager.SetRecords(zoneInfo.Name, originalRRSet.Value);
-                                    }
-                                }
+                                RevertOriginalRRSets();
 
                                 throw;
                             }
@@ -3882,16 +3941,26 @@ namespace DnsServerCore.Dns
                     {
                         DnsResourceRecordType questionType = request.Question[0].Type;
                         DnsResourceRecord lastRR = response.GetLastAnswerRecord();
+                        if (lastRR is null)
+                            lastRR = FindAliasAnswerRecord(response); //GetLastAnswerRecord returns only the question type or a CNAME
 
-                        if ((lastRR.Type != questionType) && (questionType != DnsResourceRecordType.ANY))
+                        if ((lastRR is not null) && (lastRR.Type != questionType) && (questionType != DnsResourceRecordType.ANY))
                         {
                             switch (lastRR.Type)
                             {
                                 case DnsResourceRecordType.CNAME:
-                                    return await ProcessCNAMEAsync(request, response, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, _clientTimeout, context ?? new DnsClient.ResolverContext());
+                                    response = await ProcessCNAMEAsync(request, response, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, _clientTimeout, context ?? new DnsClient.ResolverContext());
+                                    if (response is null)
+                                        return null;
+
+                                    return await ApplyCnameCloakingAsync(request, response, remoteEP, protocol);
 
                                 case DnsResourceRecordType.ANAME:
                                 case DnsResourceRecordType.ALIAS:
+                                    DnsDatagram cloakedResponse = await ApplyCnameCloakingAsync(request, response, remoteEP, protocol);
+                                    if (!ReferenceEquals(cloakedResponse, response))
+                                        return cloakedResponse;
+
                                     return await ProcessANAMEAsync(request, response, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, _clientTimeout, context ?? new DnsClient.ResolverContext());
                             }
                         }
@@ -3945,7 +4014,7 @@ namespace DnsServerCore.Dns
             }
             while (reprocessResponse);
 
-            return response;
+            return await ApplyCnameCloakingAsync(request, response, remoteEP, protocol);
         }
 
         internal async Task<DnsDatagram> AuthoritativeQueryAsync(DnsDatagram request, DnsTransportProtocol protocol, bool isRecursionAllowed, bool skipDnsAppAuthoritativeRequestHandlers, IPEndPoint remoteEP = null)
@@ -4193,6 +4262,7 @@ namespace DnsServerCore.Dns
             int queryCount = 0;
             do
             {
+                bool resolvedAlias = false;
                 string cnameDomain = (lastRR.RDATA as DnsCNAMERecordData).Domain;
                 if (lastRR.Name.Equals(cnameDomain, StringComparison.OrdinalIgnoreCase))
                 {
@@ -4229,11 +4299,13 @@ namespace DnsServerCore.Dns
                         break;
                     }
                 }
-                else if ((newResponse.Answer.Count > 0) && (newResponse.GetLastAnswerRecord() is DnsResourceRecord lastAnswer) && ((lastAnswer.Type == DnsResourceRecordType.ANAME) || (lastAnswer.Type == DnsResourceRecordType.ALIAS)))
+                else if ((newResponse.Answer.Count > 0) && IsAliasAnswer(newResponse))
                 {
                     newResponse = await ProcessANAMEAsync(request, newResponse, remoteEP, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, clientTimeout, context);
                     if (newResponse is null)
                         return null; //drop request
+
+                    resolvedAlias = true; //synthesized addresses are owned by the alias name, not the question
                 }
                 else if ((newResponse.Answer.Count == 0) && (newResponse.Authority.Count > 0))
                 {
@@ -4282,10 +4354,12 @@ namespace DnsServerCore.Dns
                     break; //cannot proceed to resolve further
 
                 lastRR = newResponse.GetLastAnswerRecord();
-                if (lastRR.Type != DnsResourceRecordType.CNAME)
+                if (resolvedAlias || (lastRR is null) || (lastRR.Type != DnsResourceRecordType.CNAME))
                 {
-                    newAnswer.AddRange(newResponse.Answer);
-                    break; //cname was resolved
+                    if (resolvedAlias ? (newResponse.Answer.Count > 0) : (lastRR is not null))
+                        newAnswer.AddRange(newResponse.Answer);
+
+                    break; //cname was resolved, or the answer does not continue this name
                 }
 
                 foreach (DnsResourceRecord newResponseAnswerRecord in newResponse.Answer)
@@ -4422,6 +4496,42 @@ namespace DnsServerCore.Dns
             return finalResponse;
         }
 
+        private static DnsResourceRecord FindAliasAnswerRecord(DnsDatagram response)
+        {
+            if ((response.Question.Count == 0) || (response.Answer.Count == 0))
+                return null;
+
+            string name = response.Question[0].Name;
+            DnsResourceRecord alias = null;
+
+            foreach (DnsResourceRecord record in response.Answer)
+            {
+                if (!record.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (record.Type == DnsResourceRecordType.CNAME)
+                {
+                    name = (record.RDATA as DnsCNAMERecordData).Domain;
+                    alias = null;
+                }
+                else if ((record.Type == DnsResourceRecordType.ANAME) || (record.Type == DnsResourceRecordType.ALIAS))
+                {
+                    alias = record;
+                }
+            }
+
+            return alias;
+        }
+
+        private static bool IsAliasAnswer(DnsDatagram response)
+        {
+            DnsResourceRecord lastAnswer = response.GetLastAnswerRecord();
+            if (lastAnswer is null)
+                lastAnswer = FindAliasAnswerRecord(response);
+
+            return (lastAnswer is not null) && ((lastAnswer.Type == DnsResourceRecordType.ANAME) || (lastAnswer.Type == DnsResourceRecordType.ALIAS));
+        }
+
         private async Task<DnsDatagram> ProcessANAMEAsync(DnsDatagram request, DnsDatagram response, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed, bool skipDnsAppAuthoritativeRequestHandlers, int clientTimeout, DnsClient.ResolverContext context)
         {
             EDnsOption[] eDnsClientSubnetOption = null;
@@ -4434,6 +4544,24 @@ namespace DnsServerCore.Dns
             }
 
             ConcurrentQueue<Task<IReadOnlyList<DnsResourceRecord>>> resolveQueue = new ConcurrentQueue<Task<IReadOnlyList<DnsResourceRecord>>>(); //concurrent: ResolveANAMEAsync tasks enqueue from thread pool threads while this method dequeues
+            bool queryIsAllowed = await IsAllowedAsync(request, remoteEP, protocol);
+            DnsDatagram blockedAliasResponse = null;
+
+            async Task<DnsDatagram> GetBlockedAliasResponseAsync(string domain)
+            {
+                if (queryIsAllowed || string.IsNullOrEmpty(domain) || !DnsClient.IsDomainNameValid(domain))
+                    return null;
+
+                DnsDatagram aliasRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(domain, request.Question[0].Type, request.Question[0].Class)], null, null, null, _udpPayloadSize);
+
+                if (request.Metadata is not null)
+                    aliasRequest.SetMetadata(request.Metadata.NameServer);
+
+                if (await IsAllowedAsync(aliasRequest, remoteEP, protocol))
+                    return null; //alias target is in an allowed zone
+
+                return await ProcessBlockedQueryAsync(aliasRequest, remoteEP, protocol);
+            }
 
             async Task<IReadOnlyList<DnsResourceRecord>> ResolveANAMEAsync(DnsResourceRecord anameRR, int queryCount = 0)
             {
@@ -4443,6 +4571,26 @@ namespace DnsServerCore.Dns
 
                 do
                 {
+                    DnsDatagram blockedResponse = await GetBlockedAliasResponseAsync(lastDomain);
+                    if (blockedResponse is not null)
+                    {
+                        if ((blockedResponse.Answer is not null) && (blockedResponse.Answer.Count > 0))
+                        {
+                            DnsResourceRecord[] rewrittenAnswer = new DnsResourceRecord[blockedResponse.Answer.Count];
+
+                            for (int i = 0; i < blockedResponse.Answer.Count; i++)
+                            {
+                                DnsResourceRecord blockedRecord = blockedResponse.Answer[i];
+                                rewrittenAnswer[i] = new DnsResourceRecord(anameRR.Name, blockedRecord.Type, blockedRecord.Class, blockedRecord.TTL, blockedRecord.RDATA);
+                            }
+
+                            return rewrittenAnswer;
+                        }
+
+                        blockedAliasResponse = blockedResponse;
+                        return Array.Empty<DnsResourceRecord>();
+                    }
+
                     DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, request.CheckingDisabled, DnsResponseCode.NoError, new DnsQuestionRecord[] { new DnsQuestionRecord(lastDomain, request.Question[0].Type, request.Question[0].Class) }, null, null, null, _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None, eDnsClientSubnetOption);
 
                     //query authoritative zone first
@@ -4486,6 +4634,9 @@ namespace DnsServerCore.Dns
                     }
 
                     //check new response
+                    if (newResponse.RCODE == DnsResponseCode.NxDomain)
+                        return Array.Empty<DnsResourceRecord>(); //the alias name exists
+
                     if (newResponse.RCODE != DnsResponseCode.NoError)
                         return null; //cannot proceed to resolve further
 
@@ -4494,6 +4645,12 @@ namespace DnsServerCore.Dns
 
                     DnsResourceRecordType questionType = request.Question[0].Type;
                     DnsResourceRecord lastRR = newResponse.GetLastAnswerRecord();
+                    if (lastRR is null)
+                        lastRR = FindAliasAnswerRecord(newResponse); //an alias is not a CNAME, so the library helper does not return it
+
+                    if (lastRR is null)
+                        return Array.Empty<DnsResourceRecord>(); //answer does not continue this name
+
                     if (lastRR.Type == questionType)
                     {
                         //found final answer
@@ -4578,6 +4735,24 @@ namespace DnsServerCore.Dns
                     responseAnswer.AddRange(records);
             }
 
+            if ((blockedAliasResponse is not null) && (responseAnswer.Count == 0) && !foundErrors)
+            {
+                string queryName = (request.Question.Count > 0) ? request.Question[0].Name : null;
+
+                foreach (DnsResourceRecord aliasRecord in response.Answer)
+                {
+                    if ((aliasRecord.Type == DnsResourceRecordType.ANAME) || (aliasRecord.Type == DnsResourceRecordType.ALIAS))
+                    {
+                        queryName = aliasRecord.Name;
+                        break;
+                    }
+                }
+
+                // the alias name exists, so an empty block must not negative-cache it
+                IReadOnlyList<DnsResourceRecord> blockedAuthority = (queryName is null) ? null : GetAliasNodataAuthority(queryName, response.Authority);
+                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.NoError, request.Question, null, blockedAuthority, blockedAliasResponse.Additional) { Tag = blockedAliasResponse.Tag };
+            }
+
             DnsResponseCode rcode = DnsResponseCode.NoError;
             IReadOnlyList<DnsResourceRecord> authority = null;
 
@@ -4650,13 +4825,15 @@ namespace DnsServerCore.Dns
 
         private async Task<DnsDatagram> ProcessBlockedQueryAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol)
         {
+            bool recursionAvailable = IsRecursionAllowed(remoteEP.Address);
+
             if (_enableBlocking)
             {
                 DnsDatagram response = _blockedZoneManager.Query(request);
                 if (response is null)
                 {
                     //domain not blocked in blocked zone
-                    response = _blockListZoneManager.Query(request); //check in block list zone
+                    response = _blockListZoneManager.Query(request, recursionAvailable); //check in block list zone
                     if (response is not null)
                     {
                         //domain is blocked in block list zone
@@ -4687,7 +4864,7 @@ namespace DnsServerCore.Dns
 
                         IReadOnlyList<DnsResourceRecord> answer = [new DnsResourceRecord(question.Name, DnsResourceRecordType.TXT, question.Class, _blockingAnswerTtl, new DnsTXTRecordData("source=blocked-zone; domain=" + blockedDomain))];
 
-                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NoError, request.Question, answer) { Tag = DnsServerResponseType.Blocked };
+                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, recursionAvailable, false, false, DnsResponseCode.NoError, request.Question, answer) { Tag = DnsServerResponseType.Blocked };
                     }
                     else
                     {
@@ -4723,7 +4900,7 @@ namespace DnsServerCore.Dns
                                 if (parentDomain is null)
                                     parentDomain = string.Empty;
 
-                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, !_allowTxtBlockingReport, false, false, DnsResponseCode.NxDomain, request.Question, null, [new DnsResourceRecord(parentDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _blockedZoneManager.DnsSOARecord)], null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
+                                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, recursionAvailable, false, false, DnsResponseCode.NxDomain, request.Question, null, [new DnsResourceRecord(parentDomain, DnsResourceRecordType.SOA, question.Class, _blockingAnswerTtl, _blockedZoneManager.DnsSOARecord)], null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
 
                             default:
                                 throw new InvalidOperationException();
@@ -4780,7 +4957,7 @@ namespace DnsServerCore.Dns
                                 break;
                         }
 
-                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, !_allowTxtBlockingReport, false, false, DnsResponseCode.NoError, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
+                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, recursionAvailable, false, false, DnsResponseCode.NoError, request.Question, answer, authority, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, EDnsHeaderFlags.None, options) { Tag = DnsServerResponseType.Blocked };
                     }
                 }
             }
@@ -4792,6 +4969,9 @@ namespace DnsServerCore.Dns
                     DnsDatagram appBlockedResponse = await blockingHandler.ProcessRequestAsync(request, remoteEP);
                     if (appBlockedResponse is not null)
                     {
+                        if (appBlockedResponse.RecursionAvailable != recursionAvailable)
+                            appBlockedResponse = new DnsDatagram(appBlockedResponse.Identifier, true, appBlockedResponse.OPCODE, appBlockedResponse.AuthoritativeAnswer, appBlockedResponse.Truncation, appBlockedResponse.RecursionDesired, recursionAvailable, appBlockedResponse.AuthenticData, appBlockedResponse.CheckingDisabled, appBlockedResponse.RCODE, appBlockedResponse.Question, appBlockedResponse.Answer, appBlockedResponse.Authority, appBlockedResponse.Additional);
+
                         if (appBlockedResponse.Tag is null)
                             appBlockedResponse.Tag = DnsServerResponseType.Blocked;
 
@@ -4805,6 +4985,119 @@ namespace DnsServerCore.Dns
             }
 
             return null;
+        }
+
+        private IReadOnlyList<DnsResourceRecord> GetAliasNodataAuthority(string ownerName, IReadOnlyList<DnsResourceRecord> existingAuthority)
+        {
+            if (existingAuthority is not null)
+            {
+                foreach (DnsResourceRecord record in existingAuthority)
+                {
+                    if ((record.Type == DnsResourceRecordType.SOA) && (ownerName.Equals(record.Name, StringComparison.OrdinalIgnoreCase) || ownerName.EndsWith("." + record.Name, StringComparison.OrdinalIgnoreCase)))
+                        return existingAuthority;
+                }
+            }
+
+            AuthZoneInfo zoneInfo = _authZoneManager.FindAuthZoneInfo(ownerName);
+            if (zoneInfo?.ApexZone is not null)
+            {
+                IReadOnlyList<DnsResourceRecord> soaRecords = zoneInfo.ApexZone.GetRecords(DnsResourceRecordType.SOA);
+                if (soaRecords.Count > 0)
+                    return soaRecords;
+            }
+
+            return null;
+        }
+
+        private async Task<DnsDatagram> ApplyCnameCloakingAsync(DnsDatagram request, DnsDatagram response, IPEndPoint remoteEP, DnsTransportProtocol protocol)
+        {
+            if ((response is null) || (response.Answer is null) || (response.Answer.Count == 0) || !AnswerContainsAlias(response.Answer))
+                return response;
+
+            return await ApplyCnameCloakingAsync(request, response, remoteEP, protocol, await IsAllowedAsync(request, remoteEP, protocol));
+        }
+
+        private async Task<DnsDatagram> ApplyCnameCloakingAsync(DnsDatagram request, DnsDatagram response, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool queryIsAllowed)
+        {
+            if (queryIsAllowed || (response is null) || (response.Answer is null) || (response.Answer.Count == 0) || !AnswerContainsAlias(response.Answer))
+                return response;
+
+            for (int i = 0; i < response.Answer.Count; i++)
+            {
+                DnsResourceRecord record = response.Answer[i];
+                string aliasDomain;
+
+                switch (record.Type)
+                {
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.DNAME:
+                        continue;
+
+                    case DnsResourceRecordType.CNAME:
+                        aliasDomain = (record.RDATA as DnsCNAMERecordData).Domain;
+                        break;
+
+                    case DnsResourceRecordType.ANAME:
+                    case DnsResourceRecordType.ALIAS:
+                        // address synthesis owns blocking so one blocked target does not drop the others
+                        continue;
+
+                    default:
+                        return response;
+                }
+
+                if (string.IsNullOrEmpty(aliasDomain) || !DnsClient.IsDomainNameValid(aliasDomain))
+                    continue;
+
+                DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(aliasDomain, request.Question[0].Type, request.Question[0].Class)], null, null, null, _udpPayloadSize);
+
+                if (request.Metadata is not null)
+                    newRequest.SetMetadata(request.Metadata.NameServer);
+
+                //check allowed zone
+                if (await IsAllowedAsync(newRequest, remoteEP, protocol))
+                    return response; //alias target is in an allowed zone
+
+                //check blocked zone and block list zone
+                DnsDatagram blockedResponse = await ProcessBlockedQueryAsync(newRequest, remoteEP, protocol);
+                if (blockedResponse is null)
+                    continue;
+
+                //found cname cloaking
+                IReadOnlyList<DnsResourceRecord> blockedAnswer = blockedResponse.Answer;
+
+                int blockedCount = blockedAnswer is null ? 0 : blockedAnswer.Count;
+                List<DnsResourceRecord> answer = new List<DnsResourceRecord>(i + 1 + blockedCount);
+
+                //copy current and previous records, including a leading DNAME or signature
+                for (int j = 0; j <= i; j++)
+                    answer.Add(response.Answer[j]);
+
+                if (blockedAnswer is not null)
+                    answer.AddRange(blockedAnswer);
+
+                //include blocked response additional section to pass on Extended DNS Errors
+                return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, response.RecursionDesired, response.RecursionAvailable, false, false, blockedResponse.RCODE, request.Question, answer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
+            }
+
+            return response;
+        }
+
+        private static bool AnswerContainsAlias(IReadOnlyList<DnsResourceRecord> answer)
+        {
+            foreach (DnsResourceRecord record in answer)
+            {
+                switch (record.Type)
+                {
+                    case DnsResourceRecordType.CNAME:
+                    case DnsResourceRecordType.DNAME:
+                    case DnsResourceRecordType.ANAME:
+                    case DnsResourceRecordType.ALIAS:
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private async Task<DnsDatagram> ProcessRecursiveQueryAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, IReadOnlyList<DnsResourceRecord> conditionalForwarders, bool dnssecValidation, bool skipDnsAppAuthoritativeRequestHandlers, int clientTimeout)
@@ -4828,7 +5121,7 @@ namespace DnsServerCore.Dns
                 DnsResourceRecordType questionType = request.Question[0].Type;
                 DnsResourceRecord lastRR = response.GetLastAnswerRecord();
 
-                if ((lastRR.Type != questionType) && (lastRR.Type == DnsResourceRecordType.CNAME) && (questionType != DnsResourceRecordType.ANY))
+                if ((lastRR is not null) && (lastRR.Type != questionType) && (lastRR.Type == DnsResourceRecordType.CNAME) && (questionType != DnsResourceRecordType.ANY))
                 {
                     response = await ProcessCNAMEAsync(request, response, remoteEP, protocol, true, skipDnsAppAuthoritativeRequestHandlers, clientTimeout, context);
                     if (response is null)
@@ -4836,49 +5129,7 @@ namespace DnsServerCore.Dns
                 }
 
                 if (!isAllowed)
-                {
-                    //check for CNAME cloaking
-                    for (int i = 0; i < response.Answer.Count; i++)
-                    {
-                        DnsResourceRecord record = response.Answer[i];
-
-                        if (record.Type != DnsResourceRecordType.CNAME)
-                            break; //no further CNAME records exists
-
-                        string cnameDomain = (record.RDATA as DnsCNAMERecordData).Domain;
-
-                        if (!DnsClient.IsDomainNameValid(cnameDomain))
-                            continue; //skip check for invalid domain
-
-                        DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(cnameDomain, request.Question[0].Type, request.Question[0].Class)], null, null, null, _udpPayloadSize);
-
-                        if (request.Metadata is not null)
-                            newRequest.SetMetadata(request.Metadata.NameServer);
-
-                        //check allowed zone
-                        isAllowed = await IsAllowedAsync(newRequest, remoteEP, protocol);
-                        if (isAllowed)
-                            break; //CNAME is in allowed zone
-
-                        //check blocked zone and block list zone
-                        DnsDatagram blockedResponse = await ProcessBlockedQueryAsync(newRequest, remoteEP, protocol);
-                        if (blockedResponse is not null)
-                        {
-                            //found cname cloaking
-                            List<DnsResourceRecord> answer = new List<DnsResourceRecord>(i + 1 + blockedResponse.Answer.Count);
-
-                            //copy current and previous CNAME records
-                            for (int j = 0; j <= i; j++)
-                                answer.Add(response.Answer[j]);
-
-                            //copy last response answers
-                            answer.AddRange(blockedResponse.Answer);
-
-                            //include blocked response additional section to pass on Extended DNS Errors
-                            return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, true, true, false, false, blockedResponse.RCODE, request.Question, answer, blockedResponse.Authority, blockedResponse.Additional) { Tag = blockedResponse.Tag };
-                        }
-                    }
-                }
+                    response = await ApplyCnameCloakingAsync(request, response, remoteEP, protocol, false);
             }
 
             if (response.Tag is null)

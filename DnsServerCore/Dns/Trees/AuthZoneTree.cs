@@ -434,10 +434,136 @@ namespace DnsServerCore.Dns.Trees
                 return new AuthZoneNode(null, zone);
             });
 
-            if (ReferenceEquals(zoneNode.ApexZone, zone))
-                return true; //added successfully
+            bool added;
 
-            return zoneNode.TryAdd(zone);
+            if (ReferenceEquals(zoneNode.ApexZone, zone))
+                added = true; //added successfully
+            else
+                added = zoneNode.TryAdd(zone);
+
+            if (added)
+                AdoptRecordsBelow(zone);
+
+            return added;
+        }
+
+        private void AdoptRecordsBelow(ApexZone apexZone)
+        {
+            //names that already exist strictly below this apex were stored for the parent; they are in this zone now
+            if (!TryGet(apexZone.Name, out AuthZoneNode _, out Node currentNode))
+                return;
+
+            Node current = currentNode;
+            byte[] currentKey = ConvertToByteKey(apexZone.Name);
+            Dictionary<ApexZone, List<DnsResourceRecord>> movedFromParent = new Dictionary<ApexZone, List<DnsResourceRecord>>();
+
+            do
+            {
+                current = GetNextSubDomainZoneNode(currentKey, current, currentNode.Depth);
+                if (current is null)
+                    break;
+
+                NodeValue value = current.Value;
+                if (value is null)
+                    break;
+
+                currentKey = value.Key;
+
+                AuthZoneNode authZoneNode = value.Value;
+                if (authZoneNode is null)
+                    continue;
+
+                SubDomainZone existing = authZoneNode.ParentSideZone;
+                if (existing is null)
+                    continue;
+
+                if ((existing.AuthoritativeZone is not null) && existing.AuthoritativeZone.Name.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if ((apexZone.Name.Length > 0) && !existing.Name.EndsWith("." + apexZone.Name, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                SubDomainZone adopted = CreateSubDomainZone(apexZone, existing.Name);
+                if (adopted is null)
+                    continue;
+
+                List<DnsResourceRecord> records = new List<DnsResourceRecord>();
+                existing.ListAllRecords(records);
+
+                Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> recordsByType = new Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>();
+
+                foreach (DnsResourceRecord record in records)
+                {
+                    if (!recordsByType.TryGetValue(record.Type, out List<DnsResourceRecord> rrset))
+                    {
+                        rrset = new List<DnsResourceRecord>();
+                        recordsByType.Add(record.Type, rrset);
+                    }
+
+                    rrset.Add(record);
+                }
+
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrset in recordsByType)
+                    adopted.LoadRecords(rrset.Key, rrset.Value);
+
+                adopted.AutoUpdateState();
+
+                if (!authZoneNode.TryRemove(out SubDomainZone removed))
+                    continue;
+
+                if (!authZoneNode.TryAdd(adopted))
+                {
+                    authZoneNode.TryAdd(removed);
+                    continue;
+                }
+
+                if (removed.AuthoritativeZone is null)
+                    continue;
+
+                if (!movedFromParent.TryGetValue(removed.AuthoritativeZone, out List<DnsResourceRecord> movedRecords))
+                {
+                    movedRecords = new List<DnsResourceRecord>();
+                    movedFromParent.Add(removed.AuthoritativeZone, movedRecords);
+                }
+
+                movedRecords.AddRange(records);
+            }
+            while (true);
+
+            if (movedFromParent.Count == 0)
+                return;
+
+            foreach (KeyValuePair<ApexZone, List<DnsResourceRecord>> moved in movedFromParent)
+            {
+                if ((moved.Key is PrimaryZone) || (moved.Key is ForwarderZone))
+                    moved.Key.PublishRemovedRecords(moved.Value);
+                else
+                    moved.Key.SaveZoneFile();
+
+                apexZone.ScheduleAdoptedRecordExpiry(moved.Value);
+            }
+
+            apexZone.SaveZoneFile();
+        }
+
+        private static SubDomainZone CreateSubDomainZone(ApexZone apexZone, string domain)
+        {
+            if (apexZone is PrimaryZone primaryZone)
+                return new PrimarySubDomainZone(primaryZone, domain);
+
+            if (apexZone is SecondaryCatalogZone secondaryCatalogZone)
+                return new SecondaryCatalogSubDomainZone(secondaryCatalogZone, domain);
+
+            if (apexZone is SecondaryZone secondaryZone)
+                return new SecondarySubDomainZone(secondaryZone, domain);
+
+            if (apexZone is CatalogZone catalogZone)
+                return new CatalogSubDomainZone(catalogZone, domain);
+
+            if (apexZone is ForwarderZone forwarderZone)
+                return new ForwarderSubDomainZone(forwarderZone, domain);
+
+            return null;
         }
 
         public bool TryGet(string zoneName, string domain, out AuthZone authZone)
@@ -761,74 +887,73 @@ namespace DnsServerCore.Dns.Trees
         {
             byte[] key = ConvertToByteKey(domain);
 
-            AuthZoneNode authZoneNode = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
-            if (authZoneNode is not null)
-            {
-                //zone exists
-                ApexZone apexZone = authZoneNode.ApexZone;
-                SubDomainZone parentSideZone = authZoneNode.ParentSideZone;
-
-                if ((apexZone is not null) && (parentSideZone is not null))
-                {
-                    //found ambiguity between apex zone and sub domain zone
-                    if (!apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        //zone name does not match with apex zone and thus not match with closest authority node
-                        //find the closest authority zone for given zone name
-                        if (!TryGet(zoneName, out _, out Node closestNodeForZoneName))
-                            throw new InvalidOperationException();
-
-                        closestAuthorityNode = closestNodeForZoneName;
-                    }
-                }
-            }
-
-            Node previousNode = GetPreviousSubDomainZoneNode(key, currentNode, closestAuthorityNode.Depth);
-            if (previousNode is not null)
-            {
-                AuthZone authZone = GetAuthZoneFromNode(previousNode, zoneName);
-                if (authZone is not null)
-                    return authZone;
-            }
-
-            return null;
+            _ = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
+            return FindAdjacentSubDomainZone(zoneName, key, currentNode, closestAuthorityNode, false);
         }
 
         public AuthZone FindNextSubDomainZone(string zoneName, string domain)
         {
             byte[] key = ConvertToByteKey(domain);
 
-            AuthZoneNode authZoneNode = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
-            if (authZoneNode is not null)
+            _ = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
+            return FindAdjacentSubDomainZone(zoneName, key, currentNode, closestAuthorityNode, true);
+        }
+
+        private AuthZone FindAdjacentSubDomainZone(string zoneName, byte[] key, Node currentNode, Node closestAuthorityNode, bool findNext)
+        {
+            //a name that now belongs to a child zone still sits in the tree; keep walking until the neighbor belongs to this zone
+            AnchorWalkToZone(zoneName, ref closestAuthorityNode);
+
+            byte[] currentKey = key;
+
+            while (true)
             {
-                //zone exists
-                ApexZone apexZone = authZoneNode.ApexZone;
-                SubDomainZone parentSideZone = authZoneNode.ParentSideZone;
+                Node adjacentNode = findNext ? GetNextSubDomainZoneNode(currentKey, currentNode, closestAuthorityNode.Depth) : GetPreviousSubDomainZoneNode(currentKey, currentNode, closestAuthorityNode.Depth);
+                if ((adjacentNode is null) || ReferenceEquals(adjacentNode, currentNode))
+                    return null;
 
-                if ((apexZone is not null) && (parentSideZone is not null))
+                AuthZone authZone = GetAuthZoneFromNode(adjacentNode, zoneName);
+                if (authZone is null)
+                    return null;
+
+                if (BelongsToZone(authZone, zoneName))
+                    return authZone;
+
+                NodeValue value = adjacentNode.Value;
+                if (value is null)
+                    return null;
+
+                currentNode = adjacentNode;
+                currentKey = value.Key;
+            }
+        }
+
+        private void AnchorWalkToZone(string zoneName, ref Node closestAuthorityNode)
+        {
+            if (closestAuthorityNode is not null)
+            {
+                NodeValue value = closestAuthorityNode.Value;
+                if ((value is not null) && (value.Value is AuthZoneNode authZoneNode))
                 {
-                    //found ambiguity between apex zone and sub domain zone
-                    if (!apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        //zone name does not match with apex zone and thus not match with closest authority node
-                        //find the closest authority zone for given zone name
-                        if (!TryGet(zoneName, out _, out Node closestNodeForZoneName))
-                            throw new InvalidOperationException();
-
-                        closestAuthorityNode = closestNodeForZoneName;
-                    }
+                    ApexZone apexZone = authZoneNode.ApexZone;
+                    if ((apexZone is not null) && apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
+                        return;
                 }
             }
 
-            Node nextNode = GetNextSubDomainZoneNode(key, currentNode, closestAuthorityNode.Depth);
-            if (nextNode is not null)
-            {
-                AuthZone authZone = GetAuthZoneFromNode(nextNode, zoneName);
-                if (authZone is not null)
-                    return authZone;
-            }
+            if (!TryGet(zoneName, out _, out Node zoneNode))
+                throw new InvalidOperationException();
 
-            return null;
+            closestAuthorityNode = zoneNode;
+        }
+
+        private static bool BelongsToZone(AuthZone authZone, string zoneName)
+        {
+            if (authZone is not SubDomainZone subDomainZone)
+                return true;
+
+            ApexZone authoritativeZone = subDomainZone.AuthoritativeZone;
+            return (authoritativeZone is null) || authoritativeZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase);
         }
 
         public bool SubDomainExistsFor(string zoneName, string domain)
@@ -931,33 +1056,28 @@ namespace DnsServerCore.Dns.Trees
                 }
             }
 
-            if (isWildcardAnswer)
-            {
-                //add proof of cover for the domain to prove non-existence (wildcard)
+            //add closest encloser proof
+            string hashedClosestEncloser = nsec3Param.ComputeHashedOwnerNameBase32HexString(closestEncloser) + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : "");
+
+            AuthZone closestEncloserZone = GetAuthZone(closestAuthority.Name, hashedClosestEncloser);
+            if (closestEncloserZone is null)
+                throw new InvalidOperationException();
+
+            IReadOnlyList<DnsResourceRecord> closestEncloserProofRecords = closestEncloserZone.QueryRecords(DnsResourceRecordType.NSEC3, true);
+            if (closestEncloserProofRecords.Count == 0)
+                throw new InvalidOperationException();
+
+            nsec3Records.AddRange(closestEncloserProofRecords);
+
+            DnsResourceRecord closestEncloserProofRecord = closestEncloserProofRecords[0];
+            DnsNSEC3RecordData closestEncloserProof = closestEncloserProofRecord.RDATA as DnsNSEC3RecordData;
+
+            //add proof of cover for the next closer name
+            if (!DnsNSECRecordData.IsDomainCovered(closestEncloserProofRecord.Name, closestEncloserProof.NextHashedOwnerName + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : ""), hashedNextCloserName))
                 NSec3AddProofOfCoverFor(hashedNextCloserName, closestAuthority.Name, nsec3Records);
-            }
-            else
+
+            if (!isWildcardAnswer)
             {
-                //add closest encloser proof
-                string hashedClosestEncloser = nsec3Param.ComputeHashedOwnerNameBase32HexString(closestEncloser) + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : "");
-
-                AuthZone nsec3Zone = GetAuthZone(closestAuthority.Name, hashedClosestEncloser);
-                if (nsec3Zone is null)
-                    throw new InvalidOperationException();
-
-                IReadOnlyList<DnsResourceRecord> closestEncloserProofRecords = nsec3Zone.QueryRecords(DnsResourceRecordType.NSEC3, true);
-                if (closestEncloserProofRecords.Count == 0)
-                    throw new InvalidOperationException();
-
-                nsec3Records.AddRange(closestEncloserProofRecords);
-
-                DnsResourceRecord closestEncloserProofRecord = closestEncloserProofRecords[0];
-                DnsNSEC3RecordData closestEncloserProof = closestEncloserProofRecord.RDATA as DnsNSEC3RecordData;
-
-                //add proof of cover for the next closer name
-                if (!DnsNSECRecordData.IsDomainCovered(closestEncloserProofRecord.Name, closestEncloserProof.NextHashedOwnerName + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : ""), hashedNextCloserName))
-                    NSec3AddProofOfCoverFor(hashedNextCloserName, closestAuthority.Name, nsec3Records);
-
                 //add proof of cover to prove that a wildcard expansion was not possible
                 string wildcardDomain = closestEncloser.Length > 0 ? "*." + closestEncloser : "*";
                 string hashedWildcardDomainName = nsec3Param.ComputeHashedOwnerNameBase32HexString(wildcardDomain) + (closestAuthority.Name.Length > 0 ? "." + closestAuthority.Name : "");

@@ -29,6 +29,7 @@ using System.IO;
 using System.Net;
 using System.Net.Mail;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -479,6 +480,580 @@ namespace DnsServerCore
                 WriteDnsSettings(jsonWriter);
             }
 
+            void ValidateDnsSettingsRequest(HttpRequest request)
+            {
+                if (request.TryGetQueryOrForm("dnsServerDomain", out string dnsServerDomain))
+                {
+                    dnsServerDomain = dnsServerDomain.TrimEnd('.');
+
+                    if (!_dnsWebService._dnsServer.ServerDomain.Equals(dnsServerDomain, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (_dnsWebService._clusterManager.ClusterInitialized)
+                        {
+                            if (!dnsServerDomain.EndsWith("." + _dnsWebService._clusterManager.ClusterDomain, StringComparison.OrdinalIgnoreCase))
+                                throw new ArgumentException("DNS server domain name must end with the cluster domain name.", nameof(dnsServerDomain));
+                        }
+
+                        if (DnsClient.IsDomainNameUnicode(dnsServerDomain))
+                            dnsServerDomain = DnsClient.ConvertDomainNameToAscii(dnsServerDomain);
+
+                        DnsClient.IsDomainNameValid(dnsServerDomain, true);
+
+                        if (IPAddress.TryParse(dnsServerDomain, out _))
+                            throw new DnsServerException("Invalid domain name [" + dnsServerDomain + "]: IP address cannot be used for DNS server domain name.");
+
+                        if (_dnsWebService._clusterManager.ClusterInitialized)
+                        {
+                            int tlsPort = _dnsWebService.WebServiceTlsPort;
+                            if (request.TryGetQueryOrForm("webServiceTlsPort", int.Parse, out int webServiceTlsPort))
+                                tlsPort = webServiceTlsPort;
+
+                            Uri nodeUrl = new Uri($"https://{dnsServerDomain}:{tlsPort}/");
+                            if (nodeUrl.OriginalString.Length > 255)
+                                throw new ArgumentException("Cluster node URL length must be less than 255 bytes.", nameof(dnsServerDomain));
+                        }
+                    }
+                }
+
+                if (request.TryQueryOrFormArray("dnsServerLocalEndPoints", InterfaceEndPoint.Parse, out IPEndPoint[] dnsServerLocalEndPoints))
+                {
+                    foreach (IPEndPoint localEndPoint in dnsServerLocalEndPoints)
+                    {
+                        if (localEndPoint.Port == 853)
+                            throw new ArgumentException("Port 853 is reserved for DNS-over-TLS service. Please use a different port for DNS Server Local End Points.", nameof(DnsServer.LocalEndPoints));
+                    }
+                }
+
+                _ = request.TryQueryOrFormArray("dnsServerIPv4SourceAddresses", NetworkAddress.Parse, out NetworkAddress[] _);
+                _ = request.TryQueryOrFormArray("dnsServerIPv6SourceAddresses", NetworkAddress.Parse, out NetworkAddress[] _);
+                _ = request.TryGetQueryOrForm("defaultRecordTtl", ZoneFile.ParseTtl, out uint _);
+                _ = request.TryGetQueryOrForm("defaultNsRecordTtl", ZoneFile.ParseTtl, out uint _);
+                _ = request.TryGetQueryOrForm("defaultSoaRecordTtl", ZoneFile.ParseTtl, out uint _);
+
+                string defaultResponsiblePerson = request.QueryOrForm("defaultResponsiblePerson");
+                if ((defaultResponsiblePerson is not null) && (defaultResponsiblePerson.Length > 0))
+                {
+                    if (defaultResponsiblePerson.Length > 255)
+                        throw new ArgumentException("Default responsible person email address length cannot exceed 255 characters.", nameof(defaultResponsiblePerson));
+
+                    _ = new MailAddress(defaultResponsiblePerson);
+                }
+
+                _ = request.TryGetQueryOrForm("useSoaSerialDateScheme", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("minSoaRefresh", ZoneFile.ParseTtl, out uint _);
+                _ = request.TryGetQueryOrForm("minSoaRetry", ZoneFile.ParseTtl, out uint _);
+
+                if (request.TryQueryOrFormArray("zoneTransferAllowedNetworks", NetworkAddress.Parse, out NetworkAddress[] zoneTransferAllowedNetworks) && (zoneTransferAllowedNetworks.Length > byte.MaxValue))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ZoneTransferAllowedNetworks), "Networks cannot have more than 255 entries.");
+
+                if (request.TryQueryOrFormArray("notifyAllowedNetworks", NetworkAddress.Parse, out NetworkAddress[] notifyAllowedNetworks) && (notifyAllowedNetworks.Length > byte.MaxValue))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.NotifyAllowedNetworks), "Networks cannot have more than 255 entries.");
+
+                _ = request.TryGetQueryOrForm("dnsServerEnableCheckForUpdate", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("dnsAppsEnableAutomaticUpdate", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrFormEnum("ipv6Mode", out IPv6Mode _);
+                _ = request.TryGetQueryOrForm("preferIPv6", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("enableUdpSocketPool", bool.Parse, out bool _);
+                _ = request.TryQueryOrFormArray("socketPoolExcludedPorts", ushort.Parse, out ushort[] _);
+
+                if (request.TryGetQueryOrForm("udpPayloadSize", ushort.Parse, out ushort udpPayloadSize) && ((udpPayloadSize < 512) || (udpPayloadSize > 4096)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.UdpPayloadSize), "Invalid EDNS UDP payload size: valid range is 512-4096 bytes.");
+
+                _ = request.TryGetQueryOrForm("dnssecValidation", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("eDnsClientSubnet", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("eDnsClientSubnetIPv4PrefixLength", byte.Parse, out byte eDnsClientSubnetIPv4PrefixLength) && (eDnsClientSubnetIPv4PrefixLength > 32))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.EDnsClientSubnetIPv4PrefixLength), "EDNS Client Subnet IPv4 prefix length cannot be greater than 32.");
+
+                if (request.TryGetQueryOrForm("eDnsClientSubnetIPv6PrefixLength", byte.Parse, out byte eDnsClientSubnetIPv6PrefixLength) && (eDnsClientSubnetIPv6PrefixLength > 64))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.EDnsClientSubnetIPv6PrefixLength), "EDNS Client Subnet IPv6 prefix length cannot be greater than 64.");
+
+                string eDnsClientSubnetIpv4Override = request.QueryOrForm("eDnsClientSubnetIpv4Override");
+                if (!string.IsNullOrEmpty(eDnsClientSubnetIpv4Override) && (NetworkAddress.Parse(eDnsClientSubnetIpv4Override).AddressFamily != AddressFamily.InterNetwork))
+                    throw new ArgumentException("EDNS Client Subnet IPv4 Override must be an IPv4 network address.", nameof(DnsServer.EDnsClientSubnetIpv4Override));
+
+                string eDnsClientSubnetIpv6Override = request.QueryOrForm("eDnsClientSubnetIpv6Override");
+                if (!string.IsNullOrEmpty(eDnsClientSubnetIpv6Override) && (NetworkAddress.Parse(eDnsClientSubnetIpv6Override).AddressFamily != AddressFamily.InterNetworkV6))
+                    throw new ArgumentException("EDNS Client Subnet IPv6 Override must be an IPv6 network address.", nameof(DnsServer.EDnsClientSubnetIpv6Override));
+
+                if (request.TryQueryOrFormArray("qpmPrefixLimitsIPv4", delegate (JsonElement jsonObject)
+                {
+                    return new KeyValuePair<int, (int, int)>(jsonObject.GetProperty("prefix").GetInt32(), (jsonObject.GetProperty("udpLimit").GetInt32(), jsonObject.GetProperty("tcpLimit").GetInt32()));
+                }, delegate (ArraySegment<string> tableRow)
+                {
+                    return new KeyValuePair<int, (int, int)>(int.Parse(tableRow[0]), (int.Parse(tableRow[1]), int.Parse(tableRow[2])));
+                }, 3, out KeyValuePair<int, (int, int)>[] qpmPrefixLimitsIPv4, '|'))
+                {
+                    if (qpmPrefixLimitsIPv4.Length > byte.MaxValue)
+                        throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmPrefixLimitsIPv4), "QPM Prefix Limits for IPv4 cannot have more than 255 entries.");
+
+                    HashSet<int> prefixes = new HashSet<int>();
+
+                    foreach (KeyValuePair<int, (int, int)> qpmPrefixLimit in qpmPrefixLimitsIPv4)
+                    {
+                        if ((qpmPrefixLimit.Key < 0) || (qpmPrefixLimit.Key > 32))
+                            throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmPrefixLimitsIPv4), "QPM limit IPv4 prefix valid range is between 0 and 32.");
+
+                        if ((qpmPrefixLimit.Value.Item1 < 0) || (qpmPrefixLimit.Value.Item2 < 0))
+                            throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmPrefixLimitsIPv4), "QPM limit value cannot be less than 0.");
+
+                        if (!prefixes.Add(qpmPrefixLimit.Key))
+                            throw new ArgumentException("An item with the same key has already been added.");
+                    }
+                }
+
+                if (request.TryQueryOrFormArray("qpmPrefixLimitsIPv6", delegate (JsonElement jsonObject)
+                {
+                    return new KeyValuePair<int, (int, int)>(jsonObject.GetProperty("prefix").GetInt32(), (jsonObject.GetProperty("udpLimit").GetInt32(), jsonObject.GetProperty("tcpLimit").GetInt32()));
+                }, delegate (ArraySegment<string> tableRow)
+                {
+                    return new KeyValuePair<int, (int, int)>(int.Parse(tableRow[0]), (int.Parse(tableRow[1]), int.Parse(tableRow[2])));
+                }, 3, out KeyValuePair<int, (int, int)>[] qpmPrefixLimitsIPv6, '|'))
+                {
+                    if (qpmPrefixLimitsIPv6.Length > byte.MaxValue)
+                        throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmPrefixLimitsIPv6), "QPM Prefix Limits for IPv6 cannot have more than 255 entries.");
+
+                    HashSet<int> prefixes = new HashSet<int>();
+
+                    foreach (KeyValuePair<int, (int, int)> qpmPrefixLimit in qpmPrefixLimitsIPv6)
+                    {
+                        if ((qpmPrefixLimit.Key < 0) || (qpmPrefixLimit.Key > 128))
+                            throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmPrefixLimitsIPv6), "QPM limit IPv6 prefix valid range is between 0 and 128.");
+
+                        if ((qpmPrefixLimit.Value.Item1 < 0) || (qpmPrefixLimit.Value.Item2 < 0))
+                            throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmPrefixLimitsIPv6), "QPM limit value cannot be less than 0.");
+
+                        if (!prefixes.Add(qpmPrefixLimit.Key))
+                            throw new ArgumentException("An item with the same key has already been added.");
+                    }
+                }
+
+                if (request.TryGetQueryOrForm("qpmLimitSampleMinutes", int.Parse, out int qpmLimitSampleMinutes) && ((qpmLimitSampleMinutes < 1) || (qpmLimitSampleMinutes > 60)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmLimitSampleMinutes), "Valid range is between 1 and 60 minutes.");
+
+                if (request.TryGetQueryOrForm("qpmLimitUdpTruncationPercentage", int.Parse, out int qpmLimitUdpTruncationPercentage) && ((qpmLimitUdpTruncationPercentage < 0) || (qpmLimitUdpTruncationPercentage > 100)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmLimitUdpTruncationPercentage), "Percentage value valid range is between 0 and 100.");
+
+                if (request.TryQueryOrFormArray("qpmLimitBypassList", NetworkAddress.Parse, out NetworkAddress[] qpmLimitBypassList) && (qpmLimitBypassList.Length > byte.MaxValue))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.QpmLimitBypassList), "Networks cannot have more than 255 entries.");
+
+                if (request.TryGetQueryOrForm("clientTimeout", int.Parse, out int clientTimeout) && ((clientTimeout < 1000) || (clientTimeout > 10000)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ClientTimeout), "Valid range is from 1000 to 10000.");
+
+                if (request.TryGetQueryOrForm("tcpSendTimeout", int.Parse, out int tcpSendTimeout) && ((tcpSendTimeout < 1000) || (tcpSendTimeout > 90000)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.TcpSendTimeout), "Valid range is from 1000 to 90000.");
+
+                if (request.TryGetQueryOrForm("tcpReceiveTimeout", int.Parse, out int tcpReceiveTimeout) && ((tcpReceiveTimeout < 1000) || (tcpReceiveTimeout > 90000)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.TcpReceiveTimeout), "Valid range is from 1000 to 90000.");
+
+                if (request.TryGetQueryOrForm("quicIdleTimeout", int.Parse, out int quicIdleTimeout) && ((quicIdleTimeout < 1000) || (quicIdleTimeout > 90000)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.QuicIdleTimeout), "Valid range is from 1000 to 90000.");
+
+                if (request.TryGetQueryOrForm("quicMaxInboundStreams", int.Parse, out int quicMaxInboundStreams) && ((quicMaxInboundStreams < 1) || (quicMaxInboundStreams > 1000)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.QuicMaxInboundStreams), "Valid range is from 1 to 1000.");
+
+                _ = request.TryGetQueryOrForm("listenBacklog", int.Parse, out int _);
+
+                if (request.TryGetQueryOrForm("udpSendBufferSizeKB", int.Parse, out int udpSendBufferSizeKB) && ((udpSendBufferSizeKB < 8) || (udpSendBufferSizeKB > 65536)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.UdpSendBufferSizeKB), "Valid range is from 8 KB to 65536 KB.");
+
+                if (request.TryGetQueryOrForm("udpReceiveBufferSizeKB", int.Parse, out int udpReceiveBufferSizeKB) && ((udpReceiveBufferSizeKB < 8) || (udpReceiveBufferSizeKB > 65536)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.UdpReceiveBufferSizeKB), "Valid range is from 8 KB to 65536 KB.");
+
+                if (request.TryGetQueryOrForm("maxConcurrentResolutionsPerCore", ushort.Parse, out ushort maxConcurrentResolutionsPerCore) && (maxConcurrentResolutionsPerCore < 1))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.MaxConcurrentResolutionsPerCore), "Value cannot be less than 1.");
+
+                _ = request.TryQueryOrFormArray("webServiceLocalAddresses", IPAddress.Parse, out IPAddress[] _);
+                _ = request.TryGetQueryOrForm("webServiceHttpPort", int.Parse, out int _);
+
+                if (request.TryGetQueryOrForm("webServiceEnableHttpUnixSocket", bool.Parse, out bool webServiceEnableHttpUnixSocket) && webServiceEnableHttpUnixSocket && !_dnsWebService._webServiceEnableHttpUnixSocket && !DnsServer.IsUnixDomainSocketSupported())
+                    throw new ArgumentException("Unix Domain Sockets (UDS) are supported only on Linux, Windows 10 (build 17063 and later), and Windows Server 2019 (update 1809 and later).", "webServiceEnableHttpUnixSocket");
+
+                _ = request.TryQueryOrForm("webServiceHttpUnixSocket", out string _);
+
+                if (request.TryGetQueryOrForm("webServiceEnableTlsUnixSocket", bool.Parse, out bool webServiceEnableTlsUnixSocket) && webServiceEnableTlsUnixSocket && !_dnsWebService._webServiceEnableTlsUnixSocket && !DnsServer.IsUnixDomainSocketSupported())
+                    throw new ArgumentException("Unix Domain Sockets (UDS) are supported only on Linux, Windows 10 (build 17063 and later), and Windows Server 2019 (update 1809 and later).", "webServiceEnableTlsUnixSocket");
+
+                _ = request.TryQueryOrForm("webServiceTlsUnixSocket", out string _);
+                _ = request.TryGetQueryOrForm("webServiceEnableTls", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("webServiceEnableHttp3", bool.Parse, out bool webServiceEnableHttp3) && webServiceEnableHttp3 && !_dnsWebService._webServiceEnableHttp3)
+                    DnsServer.ValidateQuicSupport("HTTP/3");
+
+                _ = request.TryGetQueryOrForm("webServiceHttpToTlsRedirect", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("webServiceUseSelfSignedTlsCertificate", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("webServiceTlsPort", int.Parse, out int _);
+
+                if (request.TryQueryOrFormArray("webServiceReverseProxyAddresses", NetworkAccessControl.Parse, out NetworkAccessControl[] webServiceReverseProxyAddresses) && (webServiceReverseProxyAddresses.Length > byte.MaxValue))
+                    throw new ArgumentOutOfRangeException("WebServiceReverseProxyAddresses", "Web Service Reverse Proxy Addresses list cannot have more than 255 entries.");
+
+                if (request.TryQueryOrForm("webServiceRealIpHeader", out string webServiceRealIpHeader) && !string.IsNullOrWhiteSpace(webServiceRealIpHeader))
+                {
+                    if (webServiceRealIpHeader.Length > 255)
+                        throw new ArgumentException("Web Service Real IP header name cannot exceed 255 characters.", nameof(webServiceRealIpHeader));
+
+                    if (webServiceRealIpHeader.Contains(' '))
+                        throw new ArgumentException("Web Service Real IP header name cannot contain invalid characters.", nameof(webServiceRealIpHeader));
+                }
+
+                if (request.TryQueryOrForm("webServiceCspFrameAncestorsHeader", out string webServiceCspFrameAncestorsHeader) && !string.IsNullOrWhiteSpace(webServiceCspFrameAncestorsHeader) && (webServiceCspFrameAncestorsHeader.Length > 255))
+                    throw new ArgumentException("Web Service Content Security Policy (CSP) Frame Ancestors header value cannot exceed 255 characters.", nameof(webServiceCspFrameAncestorsHeader));
+
+                string webServiceTlsCertificatePath = request.QueryOrForm("webServiceTlsCertificatePath");
+                if (!string.IsNullOrEmpty(webServiceTlsCertificatePath))
+                {
+                    string webServiceTlsCertificatePassword = request.QueryOrForm("webServiceTlsCertificatePassword");
+
+                    if ((webServiceTlsCertificatePassword is null) || (webServiceTlsCertificatePassword == "************"))
+                        webServiceTlsCertificatePassword = _dnsWebService._webServiceTlsCertificatePassword;
+
+                    if (string.IsNullOrWhiteSpace(webServiceTlsCertificatePath))
+                        throw new ArgumentException("Web service TLS certificate path cannot be null or empty.", nameof(webServiceTlsCertificatePath));
+
+                    if (webServiceTlsCertificatePath.Length > 255)
+                        throw new ArgumentException("Web service TLS certificate path length cannot exceed 255 characters.", nameof(webServiceTlsCertificatePath));
+
+                    if (webServiceTlsCertificatePassword?.Length > 255)
+                        throw new ArgumentException("Web service TLS certificate password length cannot exceed 255 characters.", nameof(webServiceTlsCertificatePassword));
+
+                    if ((webServiceTlsCertificatePath != _dnsWebService._webServiceTlsCertificatePath) || (webServiceTlsCertificatePassword != _dnsWebService._webServiceTlsCertificatePassword))
+                        ValidatePkcs12Certificate(_dnsWebService._log.ConvertToAbsolutePath(webServiceTlsCertificatePath), webServiceTlsCertificatePassword, "Web Service TLS certificate file does not exists: ", "Web Service TLS certificate file must be PKCS #12 formatted with .pfx or .p12 extension: ", "Web Service TLS certificate file must contain a certificate with private key.");
+                }
+
+                _ = request.TryGetQueryOrForm("enableEDnsClientSubnetSourceAddress", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("enableDnsOverUdpProxy", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("enableDnsOverTcpProxy", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("enableDnsOverHttp", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("enableDnsOverHttpUnixSocket", bool.Parse, out bool enableDnsOverHttpUnixSocket) && enableDnsOverHttpUnixSocket && !_dnsWebService._dnsServer.EnableDnsOverHttpUnixSocket && !DnsServer.IsUnixDomainSocketSupported())
+                    throw new ArgumentException("Unix Domain Sockets (UDS) are supported only on Linux, Windows 10 (build 17063 and later), and Windows Server 2019 (update 1809 and later).", nameof(DnsServer.EnableDnsOverHttpUnixSocket));
+
+                if (request.TryGetQueryOrForm("enableDnsOverHttpsUnixSocket", bool.Parse, out bool enableDnsOverHttpsUnixSocket) && enableDnsOverHttpsUnixSocket && !_dnsWebService._dnsServer.EnableDnsOverHttpsUnixSocket && !DnsServer.IsUnixDomainSocketSupported())
+                    throw new ArgumentException("Unix Domain Sockets (UDS) are supported only on Linux, Windows 10 (build 17063 and later), and Windows Server 2019 (update 1809 and later).", nameof(DnsServer.EnableDnsOverHttpsUnixSocket));
+
+                _ = request.TryGetQueryOrForm("enableDnsOverTls", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("enableDnsOverHttps", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("enableDnsOverHttp3", bool.Parse, out bool enableDnsOverHttp3) && enableDnsOverHttp3 && !_dnsWebService._dnsServer.EnableDnsOverHttp3)
+                    DnsServer.ValidateQuicSupport("DNS-over-HTTP/3");
+
+                if (request.TryGetQueryOrForm("enableDnsOverQuic", bool.Parse, out bool enableDnsOverQuic) && enableDnsOverQuic && !_dnsWebService._dnsServer.EnableDnsOverQuic)
+                    DnsServer.ValidateQuicSupport();
+
+                _ = request.TryGetQueryOrForm("enableDnsOverHttpHelpRedirect", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("dnsOverUdpProxyPort", int.Parse, out int dnsOverUdpProxyPort))
+                    ValidateDnsPort(dnsOverUdpProxyPort, nameof(DnsServer.DnsOverUdpProxyPort), "DNS-over-UDP proxy", false, false);
+
+                if (request.TryGetQueryOrForm("dnsOverTcpProxyPort", int.Parse, out int dnsOverTcpProxyPort))
+                    ValidateDnsPort(dnsOverTcpProxyPort, nameof(DnsServer.DnsOverTcpProxyPort), "DNS-over-TCP proxy", false, false);
+
+                if (request.TryGetQueryOrForm("dnsOverHttpPort", int.Parse, out int dnsOverHttpPort))
+                    ValidateDnsPort(dnsOverHttpPort, nameof(DnsServer.DnsOverHttpPort), "DNS-over-HTTP", true, true);
+
+                _ = request.TryQueryOrForm("dnsOverHttpUnixSocket", out string _);
+                _ = request.TryQueryOrForm("dnsOverHttpsUnixSocket", out string _);
+
+                if (request.TryGetQueryOrForm("dnsOverTlsPort", int.Parse, out int dnsOverTlsPort))
+                    ValidateDnsPort(dnsOverTlsPort, nameof(DnsServer.DnsOverTlsPort), "DNS-over-TLS", true, false);
+
+                if (request.TryGetQueryOrForm("dnsOverHttpsPort", int.Parse, out int dnsOverHttpsPort))
+                    ValidateDnsPort(dnsOverHttpsPort, nameof(DnsServer.DnsOverHttpsPort), "DNS-over-HTTPS", true, true);
+
+                if (request.TryGetQueryOrForm("dnsOverQuicPort", int.Parse, out int dnsOverQuicPort))
+                    ValidateDnsPort(dnsOverQuicPort, nameof(DnsServer.DnsOverQuicPort), "DNS-over-QUIC", true, false);
+
+                if (request.TryQueryOrFormArray("dnsReverseProxyNetworkACL", NetworkAccessControl.Parse, out NetworkAccessControl[] dnsReverseProxyNetworkACL))
+                {
+                    if (dnsReverseProxyNetworkACL.Length > byte.MaxValue)
+                        throw new ArgumentOutOfRangeException(nameof(DnsServer.DnsReverseProxyNetworkACL), "Network Access Control List cannot have more than 255 entries.");
+                }
+                else if (request.TryQueryOrFormArray("reverseProxyNetworkACL", NetworkAccessControl.Parse, out dnsReverseProxyNetworkACL))
+                {
+                    if (dnsReverseProxyNetworkACL.Length > byte.MaxValue)
+                        throw new ArgumentOutOfRangeException(nameof(DnsServer.DnsReverseProxyNetworkACL), "Network Access Control List cannot have more than 255 entries.");
+                }
+
+                if (request.TryQueryOrForm("dnsOverHttpRealIpHeader", out string dnsOverHttpRealIpHeader) && !string.IsNullOrEmpty(dnsOverHttpRealIpHeader))
+                {
+                    if (dnsOverHttpRealIpHeader.Length > 255)
+                        throw new ArgumentException("DNS-over-HTTP Real IP header name cannot exceed 255 characters.", nameof(DnsServer.DnsOverHttpRealIpHeader));
+
+                    if (dnsOverHttpRealIpHeader.Contains(' '))
+                        throw new ArgumentException("DNS-over-HTTP Real IP header name cannot contain invalid characters.", nameof(DnsServer.DnsOverHttpRealIpHeader));
+                }
+
+                string dnsTlsCertificatePath = request.QueryOrForm("dnsTlsCertificatePath");
+                if (!string.IsNullOrEmpty(dnsTlsCertificatePath))
+                {
+                    string dnsTlsCertificatePassword = request.QueryOrForm("dnsTlsCertificatePassword");
+
+                    if ((dnsTlsCertificatePassword is null) || (dnsTlsCertificatePassword == "************"))
+                        dnsTlsCertificatePassword = _dnsWebService._dnsServer.DnsTlsCertificatePassword;
+
+                    if (dnsTlsCertificatePath.Length > 255)
+                        throw new ArgumentException("DNS optional protocols TLS certificate path length cannot exceed 255 characters.", nameof(dnsTlsCertificatePath));
+
+                    if (dnsTlsCertificatePassword?.Length > 255)
+                        throw new ArgumentException("DNS optional protocols TLS certificate password length cannot exceed 255 characters.", nameof(dnsTlsCertificatePassword));
+
+                    if ((dnsTlsCertificatePath != _dnsWebService._dnsServer.DnsTlsCertificatePath) || (dnsTlsCertificatePassword != _dnsWebService._dnsServer.DnsTlsCertificatePassword))
+                        ValidatePkcs12Certificate(_dnsWebService._log.ConvertToAbsolutePath(dnsTlsCertificatePath), dnsTlsCertificatePassword, "DNS Server TLS certificate file does not exists: ", "DNS Server TLS certificate file must be PKCS #12 formatted with .pfx or .p12 extension: ", "DNS Server TLS certificate file must contain a certificate with private key.");
+                }
+
+                if (request.TryQueryOrFormArray("tsigKeys", delegate (JsonElement jsonObject)
+                {
+                    string keyName = jsonObject.GetProperty("keyName").GetString().TrimEnd('.').ToLowerInvariant();
+                    string sharedSecret = jsonObject.GetProperty("sharedSecret").GetString();
+                    string algorithmName = jsonObject.GetProperty("algorithmName").GetString();
+
+                    if (DnsClient.IsDomainNameUnicode(keyName))
+                        keyName = DnsClient.ConvertDomainNameToAscii(keyName);
+
+                    DnsClient.IsDomainNameValid(keyName, true);
+
+                    if (sharedSecret.Length == 0)
+                        return new TsigKey(keyName, algorithmName);
+
+                    return new TsigKey(keyName, sharedSecret, algorithmName);
+                }, delegate (ArraySegment<string> tableRow)
+                {
+                    string keyName = tableRow[0].TrimEnd('.').ToLowerInvariant();
+                    string sharedSecret = tableRow[1];
+                    string algorithmName = tableRow[2];
+
+                    if (DnsClient.IsDomainNameUnicode(keyName))
+                        keyName = DnsClient.ConvertDomainNameToAscii(keyName);
+
+                    DnsClient.IsDomainNameValid(keyName, true);
+
+                    if (sharedSecret.Length == 0)
+                        return new TsigKey(keyName, algorithmName);
+
+                    return new TsigKey(keyName, sharedSecret, algorithmName);
+                }, 3, out TsigKey[] tsigKeys, '|'))
+                {
+                    if (tsigKeys.Length > byte.MaxValue)
+                        throw new ArgumentOutOfRangeException(nameof(DnsServer.TsigKeys), "TSIG keys cannot have more than 255 entries.");
+
+                    HashSet<string> keyNames = new HashSet<string>();
+
+                    foreach (TsigKey tsigKey in tsigKeys)
+                    {
+                        if (!keyNames.Add(tsigKey.KeyName))
+                            throw new ArgumentException("An item with the same key has already been added.");
+                    }
+
+                    if (_dnsWebService._clusterManager.ClusterInitialized && ((tsigKeys.Length == 0) || !keyNames.Contains("cluster-catalog." + _dnsWebService._clusterManager.ClusterDomain)))
+                        throw new DnsWebServiceException($"Cannot remove TSIG key for 'cluster-catalog.{_dnsWebService._clusterManager.ClusterDomain}' Cluster Catalog zone.");
+                }
+
+                _ = request.TryGetQueryOrFormEnum("recursion", out DnsServerRecursion _);
+
+                if (request.TryQueryOrFormArray("recursionNetworkACL", NetworkAccessControl.Parse, out NetworkAccessControl[] recursionNetworkACL) && (recursionNetworkACL.Length > byte.MaxValue))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.RecursionNetworkACL), "Network Access Control List cannot have more than 255 entries.");
+
+                _ = request.TryGetQueryOrForm("randomizeName", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("qnameMinimization", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("locallyServedDnsZones", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("resolverRetries", int.Parse, out int resolverRetries) && ((resolverRetries < 1) || (resolverRetries > 10)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ResolverRetries), "Valid range is from 1 to 10.");
+
+                if (request.TryGetQueryOrForm("resolverTimeout", int.Parse, out int resolverTimeout) && ((resolverTimeout < 1000) || (resolverTimeout > 10000)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ResolverTimeout), "Valid range is from 1000 to 10000.");
+
+                if (request.TryGetQueryOrForm("resolverConcurrency", int.Parse, out int resolverConcurrency) && ((resolverConcurrency < 1) || (resolverConcurrency > 4)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ResolverConcurrency), "Valid range is from 1 to 4.");
+
+                if (request.TryGetQueryOrForm("resolverMaxStackCount", int.Parse, out int resolverMaxStackCount) && ((resolverMaxStackCount < 10) || (resolverMaxStackCount > 30)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ResolverMaxStackCount), "Valid range is from 10 to 30.");
+
+                _ = request.TryGetQueryOrForm("saveCache", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("serveStale", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("serveStaleTtl", ZoneFile.ParseTtl, out uint serveStaleTtl) && (serveStaleTtl > 7 * 24 * 60 * 60))
+                    throw new ArgumentOutOfRangeException(nameof(DnsCache.ServeStaleTtl), "Serve stale TTL cannot be higher than 7 days. Recommended value is between 1-3 days.");
+
+                if (request.TryGetQueryOrForm("serveStaleAnswerTtl", ZoneFile.ParseTtl, out uint serveStaleAnswerTtl) && (serveStaleAnswerTtl > 300))
+                    throw new ArgumentOutOfRangeException(nameof(DnsCache.ServeStaleAnswerTtl), "Serve stale answer TTL cannot be higher than 5 minutes. Recommended value is 30 seconds.");
+
+                if (request.TryGetQueryOrForm("serveStaleResetTtl", ZoneFile.ParseTtl, out uint serveStaleResetTtl) && ((serveStaleResetTtl < 10) || (serveStaleResetTtl > 900)))
+                    throw new ArgumentOutOfRangeException("ServeStaleResetTtl", "Serve stale reset TTL must be between 10 and 900 seconds. Recommended value is 30 seconds.");
+
+                if (request.TryGetQueryOrForm("serveStaleMaxWaitTime", int.Parse, out int serveStaleMaxWaitTime) && ((serveStaleMaxWaitTime < 0) || (serveStaleMaxWaitTime > 1800)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ServeStaleMaxWaitTime), "Serve stale max wait time valid range is 0 to 1800 milliseconds. Default value is 1800 milliseconds.");
+
+                if (request.TryGetQueryOrForm("cacheMaximumEntries", long.Parse, out long cacheMaximumEntries) && (cacheMaximumEntries < 0))
+                    throw new ArgumentOutOfRangeException("MaximumEntries", "Invalid cache maximum entries value. Valid range is 0 and above.");
+
+                _ = request.TryGetQueryOrForm("cacheMinimumRecordTtl", ZoneFile.ParseTtl, out uint _);
+                _ = request.TryGetQueryOrForm("cacheMaximumRecordTtl", ZoneFile.ParseTtl, out uint _);
+                _ = request.TryGetQueryOrForm("cacheNegativeRecordTtl", ZoneFile.ParseTtl, out uint _);
+                _ = request.TryGetQueryOrForm("cacheFailureRecordTtl", ZoneFile.ParseTtl, out uint _);
+
+                if (request.TryGetQueryOrForm("cachePrefetchEligibility", int.Parse, out int cachePrefetchEligibility) && (cachePrefetchEligibility < 2))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.CachePrefetchEligibility), "Valid value is greater that or equal to 2.");
+
+                if (request.TryGetQueryOrForm("cachePrefetchTrigger", int.Parse, out int cachePrefetchTrigger) && (cachePrefetchTrigger < 0))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.CachePrefetchTrigger), "Valid value is greater that or equal to 0.");
+
+                _ = request.TryGetQueryOrForm("enableCachePrefetch", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("enableBlocking", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("allowTxtBlockingReport", bool.Parse, out bool _);
+
+                if (request.TryQueryOrFormArray("blockingBypassList", NetworkAddress.Parse, out NetworkAddress[] blockingBypassList) && (blockingBypassList.Length > byte.MaxValue))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.BlockingBypassList), "Networks cannot have more than 255 entries.");
+
+                _ = request.TryGetQueryOrFormEnum("blockingType", out DnsServerBlockingType _);
+                _ = request.TryGetQueryOrForm("blockingAnswerTtl", ZoneFile.ParseTtl, out uint _);
+                _ = request.TryQueryOrFormArray("customBlockingAddresses", out string[] _);
+
+                if (request.TryQueryOrFormArray("blockListUrls", out string[] blockListUrls))
+                {
+                    if (blockListUrls.Length > 255)
+                        throw new ArgumentException("Cannot configure more than 255 block list URLs.", "BlockListUrls");
+
+                    foreach (string url in blockListUrls)
+                    {
+                        if (url.Length > 255)
+                            throw new ArgumentException("Block list URL (or comment line) length cannot exceed 255 characters.", "BlockListUrls");
+
+                        if (url.TrimStart().StartsWith('#'))
+                            continue;
+
+                        try
+                        {
+                            _ = new Uri(url.StartsWith('!') ? url.Substring(1) : url);
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new ArgumentException(ex.Message, "BlockListUrls");
+                        }
+                    }
+                }
+
+                if (request.TryGetQueryOrForm("blockListUpdateIntervalHours", int.Parse, out int blockListUpdateIntervalHours) && ((blockListUpdateIntervalHours < 0) || (blockListUpdateIntervalHours > 168)))
+                    throw new ArgumentOutOfRangeException("BlockListUpdateIntervalHours", "Value must be between 1 hour and 168 hours (7 days) or 0 to disable automatic update.");
+
+                NetProxyType effectiveProxyType = _dnsWebService._dnsServer.Proxy?.Type ?? NetProxyType.None;
+
+                if (request.TryGetQueryOrFormEnum("proxyType", out NetProxyType proxyType))
+                {
+                    effectiveProxyType = proxyType;
+
+                    if (proxyType != NetProxyType.None)
+                    {
+                        NetworkCredential credential = null;
+
+                        if (request.TryGetQueryOrForm("proxyUsername", out string proxyUsername))
+                        {
+                            if (proxyUsername.Length > 255)
+                                throw new ArgumentException("Proxy username length cannot exceed 255 characters.", nameof(proxyUsername));
+
+                            string proxyPassword = request.QueryOrForm("proxyPassword");
+                            if ((proxyPassword == PROXY_PASSWORD_HIDDEN) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
+                                proxyPassword = _dnsWebService._dnsServer.Proxy.Credential.Password;
+
+                            if (proxyPassword?.Length > 255)
+                                throw new ArgumentException("Proxy password length cannot exceed 255 characters.", nameof(proxyPassword));
+
+                            credential = new NetworkCredential(proxyUsername, proxyPassword);
+                        }
+
+                        _ = NetProxy.CreateProxy(proxyType, request.QueryOrForm("proxyAddress"), int.Parse(request.QueryOrForm("proxyPort")), credential);
+                        _ = request.TryQueryOrFormArray("proxyBypass", delegate (string value) { return new NetProxyBypassItem(value); }, out NetProxyBypassItem[] _);
+                    }
+                }
+
+                if (request.TryQueryOrFormArray("forwarders", NameServerAddress.Parse, out NameServerAddress[] forwarders) && (forwarders.Length > 0))
+                {
+                    DnsTransportProtocol forwarderProtocol = request.GetQueryOrFormEnum("forwarderProtocol", DnsTransportProtocol.Udp);
+
+                    switch (forwarderProtocol)
+                    {
+                        case DnsTransportProtocol.Udp:
+                            if (effectiveProxyType == NetProxyType.Http)
+                                throw new DnsWebServiceException("HTTP proxy server can transport only DNS-over-TCP, DNS-over-TLS, or DNS-over-HTTPS forwarder protocols. Use SOCKS5 proxy server for DNS-over-UDP or DNS-over-QUIC forwarder protocols.");
+
+                            break;
+
+                        case DnsTransportProtocol.Quic:
+                            DnsServer.ValidateQuicSupport();
+
+                            if (effectiveProxyType == NetProxyType.Http)
+                                throw new DnsWebServiceException("HTTP proxy server can transport only DNS-over-TCP, DNS-over-TLS, or DNS-over-HTTPS forwarder protocols. Use SOCKS5 proxy server for DNS-over-UDP or DNS-over-QUIC forwarder protocols.");
+
+                            break;
+                    }
+                }
+
+                _ = request.TryGetQueryOrForm("concurrentForwarding", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("forwarderRetries", int.Parse, out int forwarderRetries) && ((forwarderRetries < 1) || (forwarderRetries > 10)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ForwarderRetries), "Valid range is from 1 to 10.");
+
+                if (request.TryGetQueryOrForm("forwarderTimeout", int.Parse, out int forwarderTimeout) && ((forwarderTimeout < 1000) || (forwarderTimeout > 10000)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ForwarderTimeout), "Valid range is from 1000 to 10000.");
+
+                if (request.TryGetQueryOrForm("forwarderConcurrency", int.Parse, out int forwarderConcurrency) && ((forwarderConcurrency < 1) || (forwarderConcurrency > 10)))
+                    throw new ArgumentOutOfRangeException(nameof(DnsServer.ForwarderConcurrency), "Valid range is from 1 to 10.");
+
+                _ = request.TryGetQueryOrFormEnum("loggingType", out LoggingType _);
+                _ = request.TryGetQueryOrForm("enableLogging", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("ignoreResolverLogs", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("logQueries", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("noStackTrace", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("useLocalTime", bool.Parse, out bool _);
+
+                if (request.TryGetQueryOrForm("logFolder", out string logFolder) && (logFolder.Length > 255))
+                    throw new ArgumentException("Log folder path length cannot exceed 255 characters.", nameof(LogManager.LogFolder));
+
+                if (request.TryGetQueryOrForm("maxLogFileDays", int.Parse, out int maxLogFileDays) && (maxLogFileDays < 0))
+                    throw new ArgumentOutOfRangeException(nameof(LogManager.MaxLogFileDays), "MaxLogFileDays must be greater than or equal to 0.");
+
+                _ = request.TryGetQueryOrForm("enableInMemoryStats", bool.Parse, out bool _);
+                _ = request.TryGetQueryOrForm("maxStatFileDays", int.Parse, out int _);
+            }
+
+            static void ValidateDnsPort(int port, string name, string serviceName, bool rejectDnsPort, bool rejectDotPort)
+            {
+                if ((port < ushort.MinValue) || (port > ushort.MaxValue))
+                    throw new ArgumentOutOfRangeException(name, "Port number valid range is from 0 to 65535.");
+
+                if (rejectDnsPort && (port == 53))
+                    throw new ArgumentOutOfRangeException(name, "Port 53 cannot be used for " + serviceName + " service. Please use a different port.");
+
+                if (rejectDotPort && (port == 853))
+                    throw new ArgumentOutOfRangeException(name, "Port 853 is reserved for DNS-over-TLS service. Please use a different port for " + serviceName + " service.");
+            }
+
+            static void ValidatePkcs12Certificate(string path, string password, string missingMessage, string extensionMessage, string privateKeyMessage)
+            {
+                if (!File.Exists(path))
+                    throw new ArgumentException(missingMessage + path);
+
+                switch (Path.GetExtension(path).ToLowerInvariant())
+                {
+                    case ".pfx":
+                    case ".p12":
+                        break;
+
+                    default:
+                        throw new ArgumentException(extensionMessage + path);
+                }
+
+                X509Certificate2Collection certificateCollection = X509CertificateLoader.LoadPkcs12CollectionFromFile(path, password, X509KeyStorageFlags.EphemeralKeySet);
+
+                foreach (X509Certificate2 certificate in certificateCollection)
+                {
+                    if (certificate.HasPrivateKey)
+                        return;
+                }
+
+                throw new ArgumentException(privateKeyMessage);
+            }
+
             public async Task SetDnsSettingsAsync(HttpContext context)
             {
                 User sessionUser = _dnsWebService.GetSessionUser(context);
@@ -495,6 +1070,7 @@ namespace DnsServerCore
                 int oldWebServiceHttpPort = _dnsWebService._webServiceHttpPort;
                 int oldWebServiceTlsPort = _dnsWebService._webServiceTlsPort;
                 bool _webServiceEnablingTls = false;
+                bool settingsApplied = false;
 
                 Dictionary<string, string> clusterParameters = new Dictionary<string, string>(128);
 
@@ -511,6 +1087,9 @@ namespace DnsServerCore
                 {
                     try
                     {
+                        //reject invalid input before any setter runs, so a later failure cannot leave part of the request applied
+                        ValidateDnsSettingsRequest(request);
+
                         #region general
 
                         if (request.TryGetQueryOrForm("dnsServerDomain", out string dnsServerDomain))
@@ -1656,7 +2235,7 @@ namespace DnsServerCore
                                         forwarders[i] = forwarders[i].Clone(forwarderProtocol);
                                 }
 
-                                if (!_dnsWebService._dnsServer.Forwarders.ListEquals(forwarders))
+                                if ((_dnsWebService._dnsServer.Forwarders is null) || !_dnsWebService._dnsServer.Forwarders.ListEquals(forwarders))
                                     _dnsWebService._dnsServer.Forwarders = forwarders;
 
                                 clusterParameters.Add("forwarderProtocol", forwarderProtocol.ToString());
@@ -1727,6 +2306,8 @@ namespace DnsServerCore
                             _dnsWebService._dnsServer.StatsManager.MaxStatFileDays = maxStatFileDays;
 
                         #endregion
+
+                        settingsApplied = true;
                     }
                     finally
                     {
@@ -1767,11 +2348,14 @@ namespace DnsServerCore
                                 _dnsWebService._clusterManager.UpdateSelfNodeUrlAndCertificate();
                         }
 
-                        //save config
-                        _dnsWebService.SaveConfigFile();
-                        _dnsWebService._dnsServer.SaveConfigFile();
-                        _dnsWebService._dnsServer.BlockListZoneManager.SaveConfigFile();
-                        _dnsWebService._log.SaveConfigFile();
+                        //save config only after every setting in the request was applied
+                        if (settingsApplied)
+                        {
+                            _dnsWebService.SaveConfigFile();
+                            _dnsWebService._dnsServer.SaveConfigFile();
+                            _dnsWebService._dnsServer.BlockListZoneManager.SaveConfigFile();
+                            _dnsWebService._log.SaveConfigFile();
+                        }
                     }
 
                     _dnsWebService._log.Write(_dnsWebService.GetRemoteEndPoint(context), "[" + sessionUser.Username + "] DNS Settings were updated successfully.");
