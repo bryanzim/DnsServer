@@ -118,52 +118,31 @@ if(WIN32 AND EXISTS "${_dns_firewall_project}" AND NOT DNS_MSBUILD_EXECUTABLE)
 		"Install Visual Studio 2026 with MSBuild.")
 endif()
 
-set(_dns_library_projects
-	TechnitiumLibrary.ByteTree/TechnitiumLibrary.ByteTree.csproj
-	TechnitiumLibrary.Net/TechnitiumLibrary.Net.csproj
-	TechnitiumLibrary.Security.OTP/TechnitiumLibrary.Security.OTP.csproj
-)
-set(_dns_library_commands "")
-foreach(_dns_rel IN LISTS _dns_library_projects)
-	if(EXISTS "${DNS_LIBRARY_ROOT}/${_dns_rel}")
-		list(APPEND _dns_library_commands
-			COMMAND ${CMAKE_COMMAND} -E env DOTNET_NOLOGO=1 DOTNET_CLI_TELEMETRY_OPTOUT=1
-				${DOTNET_EXECUTABLE} build "${DNS_LIBRARY_ROOT}/${_dns_rel}"
-					--configuration ${DNS_LIBRARY_CONFIGURATION}
-					--verbosity minimal
-		)
-	endif()
-endforeach()
-if(WIN32 AND EXISTS "${_dns_firewall_project}")
-	list(APPEND _dns_library_commands
-		COMMAND "${DNS_MSBUILD_EXECUTABLE}" "${_dns_firewall_project}"
-			/nologo /v:m
-			/p:Configuration=${DNS_LIBRARY_CONFIGURATION}
-			/p:AppendTargetFrameworkToOutputPath=false
-			"/p:OutputPath=${DNS_LIBRARY_ROOT}/bin/"
-	)
-endif()
-
-if(EXISTS "${DNS_LIBRARY_ROOT}/TechnitiumLibrary.sln" OR EXISTS "${DNS_LIBRARY_ROOT}/TechnitiumLibrary.Net/TechnitiumLibrary.Net.csproj")
-	set(_dns_library_workdir "${DNS_LIBRARY_ROOT}")
-else()
-	set(_dns_library_workdir "${CMAKE_SOURCE_DIR}")
+if(NOT EXISTS "${DNS_LIBRARY_ROOT}/TechnitiumLibrary.sln" AND NOT EXISTS "${DNS_LIBRARY_ROOT}/TechnitiumLibrary.Net/TechnitiumLibrary.Net.csproj")
 	message(WARNING
 		"TechnitiumLibrary was not found at ${DNS_LIBRARY_ROOT}. "
 		"The build expects its assemblies in ${DNS_LIBRARY_ROOT}/bin.")
 endif()
 
+# Build the local master branch, then return that repo to the branch that was checked out.
+# HintPaths read ../TechnitiumLibrary/bin, and that directory is gitignored, so the assemblies stay.
 add_custom_target(technitium_library
-	${_dns_library_commands}
+	COMMAND ${CMAKE_COMMAND}
+		-DLIB_ROOT=${DNS_LIBRARY_ROOT}
+		-DDOTNET_EXECUTABLE=${DOTNET_EXECUTABLE}
+		-DMSBUILD_EXECUTABLE=${DNS_MSBUILD_EXECUTABLE}
+		-DCONFIGURATION=${DNS_LIBRARY_CONFIGURATION}
+		-DSNAPSHOT_DIR=${CMAKE_BINARY_DIR}/technitium-library-bin
+		-P ${CMAKE_SOURCE_DIR}/cmake/BuildTechnitiumLibrary.cmake
 	COMMAND ${CMAKE_COMMAND}
 		-DLIB_BIN=${DNS_LIBRARY_ROOT}/bin
 		-DLIB_ROOT=${DNS_LIBRARY_ROOT}
 		-DDLL_LIST_FILE=${CMAKE_BINARY_DIR}/technitium-library-dlls.txt
 		-P ${CMAKE_SOURCE_DIR}/cmake/CheckTechnitiumLibrary.cmake
-	WORKING_DIRECTORY "${_dns_library_workdir}"
+	WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 	USES_TERMINAL
 	VERBATIM
-	COMMENT "Build TechnitiumLibrary"
+	COMMENT "Build TechnitiumLibrary master"
 )
 
 set(DNS_SERVER_PROJECTS "")
@@ -289,7 +268,7 @@ if(DNS_TOOLCHAIN STREQUAL "clang")
 	message(STATUS "Clang: ${DNS_CLANG_CXX} (${_dns_clang_version})")
 endif()
 message(STATUS ".NET SDK host: ${DOTNET_EXECUTABLE}")
-message(STATUS "TechnitiumLibrary: ${DNS_LIBRARY_ROOT}")
+message(STATUS "TechnitiumLibrary: ${DNS_LIBRARY_ROOT} (build local master, then restore the previous branch)")
 if(DNS_MSBUILD_EXECUTABLE)
 	message(STATUS "MSBuild: ${DNS_MSBUILD_EXECUTABLE}")
 endif()
