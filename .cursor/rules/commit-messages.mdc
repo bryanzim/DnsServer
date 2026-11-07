@@ -1,0 +1,18 @@
+---
+description: Commit messages do not credit Cursor
+alwaysApply: true
+---
+
+# Commits
+
+A commit message is only the change itself.
+
+Do not add a Cursor attribution, trailer, or link. In particular, do not append:
+
+```
+Made with [Cursor](https://cursor.com)
+```
+
+```
+Co-authored-by: Cursor
+```
