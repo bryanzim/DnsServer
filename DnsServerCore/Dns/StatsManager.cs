@@ -1859,6 +1859,8 @@ namespace DnsServerCore.Dns
 
             public readonly static StatCounter Empty = new StatCounter() { _locked = true };
 
+            readonly static StringComparer _domainComparer = StringComparer.OrdinalIgnoreCase;
+
             volatile bool _locked;
 
             long _totalQueries;
@@ -1890,8 +1892,8 @@ namespace DnsServerCore.Dns
 
             public StatCounter()
             {
-                _queryDomains = new ConcurrentDictionary<string, Counter>(1, 10);
-                _queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, 10);
+                _queryDomains = new ConcurrentDictionary<string, Counter>(1, 10, _domainComparer);
+                _queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, 10, _domainComparer);
                 _queryTypes = new ConcurrentDictionary<DnsResourceRecordType, Counter>(1, 10);
                 _protocolTypes = new ConcurrentDictionary<DnsTransportProtocol, Counter>(1, 2);
                 _clientIpAddressesUdpTcp = new ConcurrentDictionary<IPAddress, (Counter, Counter)>(1, 10);
@@ -1937,7 +1939,7 @@ namespace DnsServerCore.Dns
 
                         {
                             int count = bR.ReadInt32();
-                            _queryDomains = new ConcurrentDictionary<string, Counter>(1, count);
+                            _queryDomains = new ConcurrentDictionary<string, Counter>(1, count, _domainComparer);
 
                             for (int i = 0; i < count; i++)
                                 _queryDomains.TryAdd(bR.BaseStream.ReadShortString(), new Counter(bR.ReadInt32()));
@@ -1945,7 +1947,7 @@ namespace DnsServerCore.Dns
 
                         {
                             int count = bR.ReadInt32();
-                            _queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, count);
+                            _queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, count, _domainComparer);
 
                             for (int i = 0; i < count; i++)
                                 _queryBlockedDomains.TryAdd(bR.BaseStream.ReadShortString(), new Counter(bR.ReadInt32()));
@@ -2016,7 +2018,7 @@ namespace DnsServerCore.Dns
 
                         {
                             int count = bR.ReadInt32();
-                            _queryDomains = new ConcurrentDictionary<string, Counter>(1, count);
+                            _queryDomains = new ConcurrentDictionary<string, Counter>(1, count, _domainComparer);
 
                             for (int i = 0; i < count; i++)
                                 _queryDomains.TryAdd(bR.BaseStream.ReadShortString(), new Counter(bR.ReadInt64()));
@@ -2024,7 +2026,7 @@ namespace DnsServerCore.Dns
 
                         {
                             int count = bR.ReadInt32();
-                            _queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, count);
+                            _queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, count, _domainComparer);
 
                             for (int i = 0; i < count; i++)
                                 _queryBlockedDomains.TryAdd(bR.BaseStream.ReadShortString(), new Counter(bR.ReadInt64()));
@@ -2186,7 +2188,7 @@ namespace DnsServerCore.Dns
                                         break;
 
                                     default:
-                                        _queryDomains.GetOrAdd(query.Name.ToLowerInvariant(), GetNewCounter).Increment();
+                                        _queryDomains.GetOrAdd(query.Name, GetNewCounter).Increment();
                                         break;
                                 }
                             }
@@ -2223,7 +2225,7 @@ namespace DnsServerCore.Dns
 
                         case DnsServerResponseType.Blocked:
                             if (query is not null)
-                                _queryBlockedDomains.GetOrAdd(query.Name.ToLowerInvariant(), GetNewCounter).Increment();
+                                _queryBlockedDomains.GetOrAdd(query.Name, GetNewCounter).Increment();
 
                             _totalBlocked++;
                             break;
@@ -2232,7 +2234,7 @@ namespace DnsServerCore.Dns
                             _totalRecursive++;
 
                             if (query is not null)
-                                _queryBlockedDomains.GetOrAdd(query.Name.ToLowerInvariant(), GetNewCounter).Increment();
+                                _queryBlockedDomains.GetOrAdd(query.Name, GetNewCounter).Increment();
 
                             _totalBlocked++;
                             break;
@@ -2241,7 +2243,7 @@ namespace DnsServerCore.Dns
                             _totalCached++;
 
                             if (query is not null)
-                                _queryBlockedDomains.GetOrAdd(query.Name.ToLowerInvariant(), GetNewCounter).Increment();
+                                _queryBlockedDomains.GetOrAdd(query.Name, GetNewCounter).Increment();
 
                             _totalBlocked++;
                             break;
@@ -2317,7 +2319,7 @@ namespace DnsServerCore.Dns
                     if (topDomainsList.Count > limit)
                         topDomainsList.RemoveRange(limit, topDomainsList.Count - limit);
 
-                    ConcurrentDictionary<string, Counter> queryDomains = new ConcurrentDictionary<string, Counter>(1, topDomainsList.Count);
+                    ConcurrentDictionary<string, Counter> queryDomains = new ConcurrentDictionary<string, Counter>(1, topDomainsList.Count, _domainComparer);
 
                     foreach (KeyValuePair<string, Counter> item in topDomainsList)
                         queryDomains[item.Key] = item.Value;
@@ -2338,7 +2340,7 @@ namespace DnsServerCore.Dns
                     if (topBlockedDomainsList.Count > limit)
                         topBlockedDomainsList.RemoveRange(limit, topBlockedDomainsList.Count - limit);
 
-                    ConcurrentDictionary<string, Counter> queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, topBlockedDomainsList.Count);
+                    ConcurrentDictionary<string, Counter> queryBlockedDomains = new ConcurrentDictionary<string, Counter>(1, topBlockedDomainsList.Count, _domainComparer);
 
                     foreach (KeyValuePair<string, Counter> item in topBlockedDomainsList)
                         queryBlockedDomains[item.Key] = item.Value;
