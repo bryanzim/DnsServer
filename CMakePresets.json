@@ -57,6 +57,18 @@
       "configuration": "Release"
     },
     {
+      "name": "clang-installers",
+      "configurePreset": "clang",
+      "configuration": "Release",
+      "targets": ["installers"]
+    },
+    {
+      "name": "vs2026-installers",
+      "configurePreset": "vs2026",
+      "configuration": "Release",
+      "targets": ["installers"]
+    },
+    {
       "name": "clang-debug",
       "configurePreset": "clang-debug",
       "configuration": "Debug"
