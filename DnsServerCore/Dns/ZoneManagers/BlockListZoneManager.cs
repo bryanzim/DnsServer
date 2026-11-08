@@ -26,6 +26,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using DnsServerCore.Dns.Trees;
 using TechnitiumLibrary;
 using TechnitiumLibrary.IO;
 using TechnitiumLibrary.Net;
@@ -40,6 +41,7 @@ namespace DnsServerCore.Dns.ZoneManagers
     {
         #region variables
 
+        readonly static object _allowSentinel = new object();
         readonly static char[] _popWordSeperator = new char[] { ' ', '\t' };
         readonly static char[] _trimSeperator = new char[] { ' ', '\t', '*', '.' };
 
@@ -48,8 +50,7 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         IReadOnlyList<string> _blockListUrls = [];
 
-        Dictionary<string, object> _allowListZone = new Dictionary<string, object>();
-        Dictionary<string, List<Uri>> _blockListZone = new Dictionary<string, List<Uri>>();
+        BlockListZones _zones = BlockListZones.Empty;
 
         DnsSOARecordData _soaRecord;
         DnsNSRecordData _nsRecord;
@@ -479,15 +480,40 @@ namespace DnsServerCore.Dns.ZoneManagers
             return domains;
         }
 
-        private List<Uri> IsZoneBlocked(string domain, out string blockedDomain)
+        private static List<Uri> IsZoneBlocked(BlockListZones zones, string domain, out string blockedDomain)
+        {
+            if (zones.BlockTree.TryGetSelfOrAncestor(domain, out BlockListEntry entry))
+            {
+                blockedDomain = entry.Domain;
+                return entry.BlockLists;
+            }
+
+            if (zones.BlockFallback.Count > 0)
+                return FindFallbackBlock(zones.BlockFallback, domain, out blockedDomain);
+
+            blockedDomain = null;
+            return null;
+        }
+
+        private static bool IsZoneAllowed(BlockListZones zones, string domain)
+        {
+            if (zones.AllowTree.TryGetSelfOrAncestor(domain, out _))
+                return true;
+
+            if (zones.AllowFallback.Count > 0)
+                return FindFallbackAllow(zones.AllowFallback, domain);
+
+            return false;
+        }
+
+        private static List<Uri> FindFallbackBlock(Dictionary<string, List<Uri>> zones, string domain, out string blockedDomain)
         {
             domain = domain.ToLowerInvariant();
 
             do
             {
-                if (_blockListZone.TryGetValue(domain, out List<Uri> blockLists))
+                if (zones.TryGetValue(domain, out List<Uri> blockLists))
                 {
-                    //found zone blocked
                     blockedDomain = domain;
                     return blockLists;
                 }
@@ -500,13 +526,13 @@ namespace DnsServerCore.Dns.ZoneManagers
             return null;
         }
 
-        private bool IsZoneAllowed(string domain)
+        private static bool FindFallbackAllow(Dictionary<string, object> zones, string domain)
         {
             domain = domain.ToLowerInvariant();
 
             do
             {
-                if (_allowListZone.TryGetValue(domain, out _))
+                if (zones.ContainsKey(domain))
                     return true;
 
                 domain = AuthZoneManager.GetParentZone(domain);
@@ -514,6 +540,50 @@ namespace DnsServerCore.Dns.ZoneManagers
             while (domain is not null);
 
             return false;
+        }
+
+        private static void AddAllowZone(DomainTree<object> tree, Dictionary<string, object> fallback, string domain, ref int count)
+        {
+            if (tree.TryAdd(domain, _allowSentinel))
+            {
+                count++;
+                return;
+            }
+
+            if (tree.ContainsKey(domain))
+                return;
+
+            if (fallback.TryAdd(domain, _allowSentinel))
+                count++;
+        }
+
+        private static void AddBlockZone(DomainTree<BlockListEntry> tree, Dictionary<string, List<Uri>> fallback, string domain, Uri blockListUrl, ref int count)
+        {
+            BlockListEntry entry = new BlockListEntry(domain);
+            if (tree.TryAdd(domain, entry))
+            {
+                entry.BlockLists.Add(blockListUrl);
+                count++;
+                return;
+            }
+
+            if (tree.TryGet(domain, out entry))
+            {
+                if (!entry.BlockLists.Contains(blockListUrl))
+                    entry.BlockLists.Add(blockListUrl);
+
+                return;
+            }
+
+            if (!fallback.TryGetValue(domain, out List<Uri> blockLists))
+            {
+                blockLists = new List<Uri>(2);
+                fallback.Add(domain, blockLists);
+                count++;
+            }
+
+            if (!blockLists.Contains(blockListUrl))
+                blockLists.Add(blockListUrl);
         }
 
         private void ApplyBlockListUrls(IReadOnlyList<string> blockListUrls, bool initialLoad = false)
@@ -553,8 +623,7 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         private void Flush()
         {
-            _allowListZone = new Dictionary<string, object>();
-            _blockListZone = new Dictionary<string, List<Uri>>();
+            _zones = BlockListZones.Empty;
         }
 
         private async Task<bool> UpdateBlockListsAsync(bool forceReload)
@@ -803,44 +872,32 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
 
             //load block list zone
-            Dictionary<string, object> allowListZone = new Dictionary<string, object>(totalAllowedDomains);
+            DomainTree<object> allowTree = new DomainTree<object>();
+            Dictionary<string, object> allowFallback = new Dictionary<string, object>();
+            int allowCount = 0;
 
             foreach (KeyValuePair<Uri, Queue<string>> allowListQueue in allowListQueues)
             {
                 Queue<string> queue = allowListQueue.Value;
 
                 while (queue.Count > 0)
-                {
-                    string domain = queue.Dequeue();
-
-                    allowListZone.TryAdd(domain, null);
-                }
+                    AddAllowZone(allowTree, allowFallback, queue.Dequeue(), ref allowCount);
             }
 
-            Dictionary<string, List<Uri>> blockListZone = new Dictionary<string, List<Uri>>(totalBlockedDomains);
+            DomainTree<BlockListEntry> blockTree = new DomainTree<BlockListEntry>();
+            Dictionary<string, List<Uri>> blockFallback = new Dictionary<string, List<Uri>>();
+            int blockCount = 0;
 
             foreach (KeyValuePair<Uri, Queue<string>> blockListQueue in blockListQueues)
             {
                 Queue<string> queue = blockListQueue.Value;
 
                 while (queue.Count > 0)
-                {
-                    string domain = queue.Dequeue();
-
-                    if (!blockListZone.TryGetValue(domain, out List<Uri> blockLists))
-                    {
-                        blockLists = new List<Uri>(2);
-                        blockListZone.Add(domain, blockLists);
-                    }
-
-                    if (!blockLists.Contains(blockListQueue.Key))
-                        blockLists.Add(blockListQueue.Key);
-                }
+                    AddBlockZone(blockTree, blockFallback, queue.Dequeue(), blockListQueue.Key, ref blockCount);
             }
 
             //set new allowed and blocked zones
-            _allowListZone = allowListZone;
-            _blockListZone = blockListZone;
+            _zones = new BlockListZones(allowTree, allowFallback, allowCount, blockTree, blockFallback, blockCount);
 
             _dnsServer.LogManager.Write("DNS Server block list zone was loaded successfully.");
         }
@@ -851,20 +908,22 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         public bool IsAllowed(DnsDatagram request)
         {
-            if (_allowListZone.Count < 1)
+            BlockListZones zones = _zones;
+            if (zones.AllowCount < 1)
                 return false;
 
-            return IsZoneAllowed(request.Question[0].Name);
+            return IsZoneAllowed(zones, request.Question[0].Name);
         }
 
         public DnsDatagram Query(DnsDatagram request, bool recursionAvailable)
         {
-            if (_blockListZone.Count < 1)
+            BlockListZones zones = _zones;
+            if (zones.BlockCount < 1)
                 return null;
 
             DnsQuestionRecord question = request.Question[0];
 
-            List<Uri> blockLists = IsZoneBlocked(question.Name, out string blockedDomain);
+            List<Uri> blockLists = IsZoneBlocked(zones, question.Name, out string blockedDomain);
             if (blockLists is null)
                 return null; //zone not blocked
 
@@ -1122,11 +1181,44 @@ namespace DnsServerCore.Dns.ZoneManagers
         { get { return _temporaryDisableBlockingTill; } }
 
         public int TotalZonesAllowed
-        { get { return _allowListZone.Count; } }
+        { get { return _zones.AllowCount; } }
 
         public int TotalZonesBlocked
-        { get { return _blockListZone.Count; } }
+        { get { return _zones.BlockCount; } }
 
         #endregion
+
+        sealed class BlockListZones
+        {
+            public static readonly BlockListZones Empty = new BlockListZones(new DomainTree<object>(), new Dictionary<string, object>(), 0, new DomainTree<BlockListEntry>(), new Dictionary<string, List<Uri>>(), 0);
+
+            public readonly DomainTree<object> AllowTree;
+            public readonly Dictionary<string, object> AllowFallback;
+            public readonly int AllowCount;
+            public readonly DomainTree<BlockListEntry> BlockTree;
+            public readonly Dictionary<string, List<Uri>> BlockFallback;
+            public readonly int BlockCount;
+
+            public BlockListZones(DomainTree<object> allowTree, Dictionary<string, object> allowFallback, int allowCount, DomainTree<BlockListEntry> blockTree, Dictionary<string, List<Uri>> blockFallback, int blockCount)
+            {
+                AllowTree = allowTree;
+                AllowFallback = allowFallback;
+                AllowCount = allowCount;
+                BlockTree = blockTree;
+                BlockFallback = blockFallback;
+                BlockCount = blockCount;
+            }
+        }
+
+        sealed class BlockListEntry
+        {
+            public readonly string Domain;
+            public readonly List<Uri> BlockLists = new List<Uri>(2);
+
+            public BlockListEntry(string domain)
+            {
+                Domain = domain;
+            }
+        }
     }
 }
