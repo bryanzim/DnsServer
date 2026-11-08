@@ -20,7 +20,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using DnsServerCore.Dns.ResourceRecords;
 using System;
 using System.Collections.Generic;
-using TechnitiumLibrary;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
 namespace DnsServerCore.Dns.Zones
@@ -67,33 +66,57 @@ namespace DnsServerCore.Dns.Zones
                 return records;
             }
 
-            List<DnsResourceRecord> newRecords = new List<DnsResourceRecord>(records.Count);
+            bool rotate = false;
+
+            switch (type)
+            {
+                case DnsResourceRecordType.A:
+                case DnsResourceRecordType.AAAA:
+                case DnsResourceRecordType.NS:
+                    rotate = true; //rotate records to allow load balancing
+                    break;
+            }
+
             DateTime utcNow = DateTime.UtcNow;
+            int enabled = 0;
+            bool anyDisabled = false;
 
             foreach (DnsResourceRecord record in records)
             {
                 GenericRecordInfo authRecordInfo = record.GetAuthGenericRecordInfo();
 
                 if (authRecordInfo.Disabled)
+                {
+                    anyDisabled = true;
                     continue; //record disabled
+                }
 
                 //update last used on
                 authRecordInfo.TouchLastUsedOn(utcNow);
-
-                newRecords.Add(record);
+                enabled++;
             }
 
-            if (newRecords.Count > 1)
+            if (enabled == 0)
+                return Array.Empty<DnsResourceRecord>();
+
+            if (!anyDisabled)
             {
-                switch (type)
-                {
-                    case DnsResourceRecordType.A:
-                    case DnsResourceRecordType.AAAA:
-                    case DnsResourceRecordType.NS:
-                        newRecords.Shuffle(); //shuffle records to allow load balancing
-                        break;
-                }
+                if (rotate)
+                    return new RoundRobinReadOnlyList(records, NextRoundRobinStart(records.Count));
+
+                return records;
             }
+
+            List<DnsResourceRecord> newRecords = new List<DnsResourceRecord>(enabled);
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (!record.GetAuthGenericRecordInfo().Disabled)
+                    newRecords.Add(record);
+            }
+
+            if (rotate && (newRecords.Count > 1))
+                RotateRecords(newRecords, NextRoundRobinStart(newRecords.Count));
 
             return newRecords;
         }

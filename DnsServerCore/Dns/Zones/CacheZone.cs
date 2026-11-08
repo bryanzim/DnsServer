@@ -22,7 +22,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
-using TechnitiumLibrary;
 using TechnitiumLibrary.Net;
 using TechnitiumLibrary.Net.Dns;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
@@ -94,7 +93,7 @@ namespace DnsServerCore.Dns.Zones
 
         #region private
 
-        private static IReadOnlyList<DnsResourceRecord> ValidateRRSet(IReadOnlyList<DnsResourceRecord> records, bool serveStale, bool skipSpecialCacheRecord)
+        private IReadOnlyList<DnsResourceRecord> ValidateRRSet(IReadOnlyList<DnsResourceRecord> records, bool serveStale, bool skipSpecialCacheRecord)
         {
             foreach (DnsResourceRecord record in records)
             {
@@ -117,9 +116,7 @@ namespace DnsServerCore.Dns.Zones
                 {
                     case DnsResourceRecordType.A:
                     case DnsResourceRecordType.AAAA:
-                        List<DnsResourceRecord> newRecords = new List<DnsResourceRecord>(records);
-                        newRecords.Shuffle(); //shuffle records to allow load balancing
-                        return newRecords;
+                        return new RoundRobinReadOnlyList(records, NextRoundRobinStart(records.Count)); //rotate records to allow load balancing
                 }
             }
 

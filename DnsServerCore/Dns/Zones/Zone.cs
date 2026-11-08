@@ -18,10 +18,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using TechnitiumLibrary.Net;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
@@ -33,6 +35,7 @@ namespace DnsServerCore.Dns.Zones
 
         protected readonly string _name;
         protected readonly ConcurrentDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> _entries;
+        int _roundRobin;
 
         #endregion
 
@@ -122,6 +125,21 @@ namespace DnsServerCore.Dns.Zones
 
         #region public
 
+        protected int NextRoundRobinStart(int count)
+        {
+            return (int)((uint)Interlocked.Increment(ref _roundRobin) % (uint)count);
+        }
+
+        protected static void RotateRecords(List<DnsResourceRecord> records, int start)
+        {
+            if (start == 0)
+                return;
+
+            records.Reverse(0, start);
+            records.Reverse(start, records.Count - start);
+            records.Reverse();
+        }
+
         public virtual void ListAllRecords(List<DnsResourceRecord> records)
         {
             foreach (KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entry in _entries)
@@ -148,5 +166,36 @@ namespace DnsServerCore.Dns.Zones
         { get { return _entries.IsEmpty; } }
 
         #endregion
+    }
+
+    sealed class RoundRobinReadOnlyList : IReadOnlyList<DnsResourceRecord>
+    {
+        readonly IReadOnlyList<DnsResourceRecord> _records;
+        readonly int _start;
+
+        public RoundRobinReadOnlyList(IReadOnlyList<DnsResourceRecord> records, int start)
+        {
+            _records = records;
+            _start = start;
+        }
+
+        public DnsResourceRecord this[int index]
+        { get { return _records[(index + _start) % _records.Count]; } }
+
+        public int Count
+        { get { return _records.Count; } }
+
+        public IEnumerator<DnsResourceRecord> GetEnumerator()
+        {
+            int count = _records.Count;
+
+            for (int i = 0; i < count; i++)
+                yield return _records[(i + _start) % count];
+        }
+
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            return GetEnumerator();
+        }
     }
 }
