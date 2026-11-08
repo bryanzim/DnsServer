@@ -2126,6 +2126,24 @@ namespace DnsServerCore.Dns
                 return (new Counter(), new Counter());
             }
 
+            private void IncrementClient(IPAddress clientIpAddress, DnsTransportProtocol protocol)
+            {
+                if (!_clientIpAddressesUdpTcp.TryGetValue(clientIpAddress, out (Counter, Counter) counters))
+                {
+                    counters = (new Counter(), new Counter());
+
+                    if (_clientIpAddressesUdpTcp.TryAdd(clientIpAddress, counters))
+                        _totalClients++;
+                    else if (!_clientIpAddressesUdpTcp.TryGetValue(clientIpAddress, out counters))
+                        return;
+                }
+
+                if (protocol == DnsTransportProtocol.Udp)
+                    counters.Item1.Increment();
+                else
+                    counters.Item2.Increment();
+            }
+
             #endregion
 
             #region public
@@ -2150,14 +2168,7 @@ namespace DnsServerCore.Dns
                     _totalDropped++;
 
                     if (rateLimited)
-                    {
-                        if (protocol == DnsTransportProtocol.Udp)
-                            _clientIpAddressesUdpTcp.GetOrAdd(clientIpAddress, GetNewCounterTuple).Item1.Increment();
-                        else
-                            _clientIpAddressesUdpTcp.GetOrAdd(clientIpAddress, GetNewCounterTuple).Item2.Increment();
-
-                        _totalClients = _clientIpAddressesUdpTcp.Count;
-                    }
+                        IncrementClient(clientIpAddress, protocol);
                 }
                 else
                 {
@@ -2239,12 +2250,7 @@ namespace DnsServerCore.Dns
                     if (query is not null)
                         _queryTypes.GetOrAdd(query.Type, GetNewCounter).Increment();
 
-                    if (protocol == DnsTransportProtocol.Udp)
-                        _clientIpAddressesUdpTcp.GetOrAdd(clientIpAddress, GetNewCounterTuple).Item1.Increment();
-                    else
-                        _clientIpAddressesUdpTcp.GetOrAdd(clientIpAddress, GetNewCounterTuple).Item2.Increment();
-
-                    _totalClients = _clientIpAddressesUdpTcp.Count;
+                    IncrementClient(clientIpAddress, protocol);
                 }
 
                 _protocolTypes.GetOrAdd(protocol, GetNewCounter).Increment();
