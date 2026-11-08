@@ -7,6 +7,14 @@
 #define MyAppURL "https://technitium.com/dns/"
 #define MyAppExeName "DnsServerSystemTrayApp.exe"
 
+; CMake passes these. A manual compile keeps the historical names and publish folder.
+#ifndef SetupBaseName
+#define SetupBaseName "DnsServerSetup"
+#endif
+#ifndef PublishDir
+#define PublishDir "publish"
+#endif
+
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
@@ -25,7 +33,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\dist
-OutputBaseFilename=DnsServerSetup
+OutputBaseFilename={#SetupBaseName}
 SetupIconFile=.\logo.ico
 WizardSmallImageFile=.\logo.bmp
 Compression=lzma
@@ -40,8 +48,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}";
 
 [Files]
-Source: ".\publish\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: ".\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PublishDir}/{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PublishDir}/*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

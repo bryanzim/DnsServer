@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 using System;
 using System.Text;
+using System.Threading;
 using TechnitiumLibrary.ByteTree;
 
 namespace DnsServerCore.Dns.Trees
@@ -26,6 +27,8 @@ namespace DnsServerCore.Dns.Trees
     class DomainTree<T> : ByteTree<string, T> where T : class
     {
         #region variables
+
+        protected const int MaxDomainKeyLength = 256;
 
         readonly static byte[] _keyMap;
         readonly static byte[] _reverseKeyMap;
@@ -119,6 +122,35 @@ namespace DnsServerCore.Dns.Trees
             }
 
             byte[] key = new byte[domain.Length + 1];
+            if (!TryWriteByteKey(domain, key, out int bytesWritten, throwException))
+                return null;
+
+            if (bytesWritten == key.Length)
+                return key;
+
+            byte[] sizedKey = new byte[bytesWritten];
+            key.AsSpan(0, bytesWritten).CopyTo(sizedKey);
+            return sizedKey;
+        }
+
+        protected bool TryWriteByteKey(string domain, Span<byte> destination, out int bytesWritten, bool throwException = true)
+        {
+            bytesWritten = 0;
+
+            if (domain.Length == 0)
+                return true;
+
+            if (domain.Length > 255)
+            {
+                if (throwException)
+                    throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: length cannot exceed 255 bytes.");
+
+                return false;
+            }
+
+            if (destination.Length < domain.Length + 1)
+                return false;
+
             int keyOffset = 0;
             int labelStart;
             int labelEnd = domain.Length - 1;
@@ -140,7 +172,7 @@ namespace DnsServerCore.Dns.Trees
                     if (throwException)
                         throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: label length cannot be 0 byte.");
 
-                    return null;
+                    return false;
                 }
 
                 if (labelLength > 63)
@@ -148,12 +180,12 @@ namespace DnsServerCore.Dns.Trees
                     if (throwException)
                         throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: label length cannot exceed 63 bytes.");
 
-                    return null;
+                    return false;
                 }
 
                 if ((labelLength == 1) && (domain[labelStart + 1] == '*')) //[*]
                 {
-                    key[keyOffset++] = 1;
+                    destination[keyOffset++] = 1;
                 }
                 else
                 {
@@ -165,7 +197,7 @@ namespace DnsServerCore.Dns.Trees
                             if (throwException)
                                 throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: invalid character [" + labelChar + "] was found.");
 
-                            return null;
+                            return false;
                         }
 
                         labelKeyCode = _keyMap[labelChar];
@@ -174,19 +206,28 @@ namespace DnsServerCore.Dns.Trees
                             if (throwException)
                                 throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: invalid character [" + labelChar + "] was found.");
 
-                            return null;
+                            return false;
                         }
 
-                        key[keyOffset++] = labelKeyCode;
+                        destination[keyOffset++] = labelKeyCode;
                     }
                 }
 
-                key[keyOffset++] = 0; //[.]
+                destination[keyOffset++] = 0; //[.]
                 labelEnd = labelStart - 1;
             }
             while (labelStart > -1);
 
-            return key;
+            bytesWritten = keyOffset;
+            return true;
+        }
+
+        protected int WriteDomainKey(string domain, Span<byte> destination)
+        {
+            if (!TryWriteByteKey(domain, destination, out int bytesWritten, true))
+                throw new InvalidOperationException("Domain key buffer is too small.");
+
+            return bytesWritten;
         }
 
         protected static string ConvertKeyToLabel(byte[] key, int startIndex)
@@ -215,6 +256,50 @@ namespace DnsServerCore.Dns.Trees
 
         #region public
 
+        public bool TryGetSelfOrAncestor(string domain, out T value)
+        {
+            value = null;
+
+            if (domain is null)
+                return false;
+
+            Span<byte> keyBuffer = stackalloc byte[MaxDomainKeyLength];
+            if (!TryWriteByteKey(domain, keyBuffer, out int keyLength, false))
+                return false;
+
+            ReadOnlySpan<byte> key = keyBuffer.Slice(0, keyLength);
+            Node current = _root;
+            T found = null;
+            int i = 0;
+
+            while (true)
+            {
+                NodeValue nodeValue = current.Value;
+                if ((nodeValue is not null) && KeyMatchesZone(nodeValue.Key, key))
+                    found = nodeValue.Value;
+
+                if (i >= key.Length)
+                    break;
+
+                Node[] children = current.Children;
+                if (children is null)
+                    break;
+
+                Node child = Volatile.Read(ref children[key[i]]);
+                if (child is null)
+                    break;
+
+                current = child;
+                i++;
+            }
+
+            if (found is null)
+                return false;
+
+            value = found;
+            return true;
+        }
+
         public override bool TryRemove(string key, out T value)
         {
             if (TryRemove(key, out value, out Node currentNode))
@@ -224,6 +309,27 @@ namespace DnsServerCore.Dns.Trees
             }
 
             return false;
+        }
+
+        #endregion
+
+        #region private
+
+        private static bool KeyMatchesZone(byte[] stored, ReadOnlySpan<byte> key)
+        {
+            if (stored.Length == 0)
+                return key.Length == 0;
+
+            if (stored.Length > key.Length)
+                return false;
+
+            for (int i = 0; i < stored.Length; i++)
+            {
+                if (stored[i] != key[i])
+                    return false;
+            }
+
+            return true;
         }
 
         #endregion

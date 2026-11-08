@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using DnsServerCore.Dns.Zones;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 
@@ -89,7 +90,7 @@ namespace DnsServerCore.Dns.Trees
             return key;
         }
 
-        private static bool KeysMatch(byte[] mainKey, byte[] testKey, bool matchWildcard)
+        private static bool KeysMatch(ReadOnlySpan<byte> mainKey, ReadOnlySpan<byte> testKey, bool matchWildcard)
         {
             if (matchWildcard)
             {
@@ -163,7 +164,7 @@ namespace DnsServerCore.Dns.Trees
 
         #region protected
 
-        protected static bool IsKeySubDomain(byte[] mainKey, byte[] testKey, bool matchWildcard)
+        protected static bool IsKeySubDomain(ReadOnlySpan<byte> mainKey, ReadOnlySpan<byte> testKey, bool matchWildcard)
         {
             if (matchWildcard)
             {
@@ -216,7 +217,7 @@ namespace DnsServerCore.Dns.Trees
             }
         }
 
-        protected TNode FindZoneNode(byte[] key, bool matchWildcard, out Node currentNode, out Node closestSubDomainNode, out Node closestAuthorityNode, out TSubDomainZone closestSubDomain, out TSubDomainZone closestDelegation, out TApexZone closestAuthority)
+        protected TNode FindZoneNode(ReadOnlySpan<byte> key, bool matchWildcard, out Node currentNode, out Node closestSubDomainNode, out Node closestAuthorityNode, out TSubDomainZone closestSubDomain, out TSubDomainZone closestDelegation, out TApexZone closestAuthority)
         {
             currentNode = _root;
             closestSubDomainNode = null;

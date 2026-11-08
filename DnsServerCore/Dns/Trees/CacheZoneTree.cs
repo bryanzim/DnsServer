@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using DnsServerCore.Dns.Zones;
+using System;
 
 namespace DnsServerCore.Dns.Trees
 {
@@ -101,7 +102,8 @@ namespace DnsServerCore.Dns.Trees
 
         public CacheZone FindZone(string domain, out CacheZone closest, out CacheZone delegation)
         {
-            byte[] key = ConvertToByteKey(domain);
+            Span<byte> keyBuffer = stackalloc byte[MaxDomainKeyLength];
+            ReadOnlySpan<byte> key = keyBuffer.Slice(0, WriteDomainKey(domain, keyBuffer));
 
             CacheZone zoneValue = FindZoneNode(key, false, out _, out _, out _, out CacheZone closestSubDomain, out CacheZone closestDelegation, out _);
             if (zoneValue is null)

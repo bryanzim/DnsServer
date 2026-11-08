@@ -117,6 +117,15 @@ namespace DnsServerCore.Dns.ResourceRecords
             return 0u;
         }
 
+        public void TouchLastUsedOn(DateTime utcNow)
+        {
+            long age = utcNow.Ticks - _lastUsedOn.Ticks;
+            if ((age >= 0) && (age < TimeSpan.TicksPerSecond))
+                return;
+
+            _lastUsedOn = utcNow;
+        }
+
         #endregion
 
         #region properties

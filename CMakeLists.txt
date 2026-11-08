@@ -263,6 +263,28 @@ add_custom_target(publish
 )
 add_dependencies(publish dns_server)
 
+# dist/DnsServerSetup.exe for vs2026, dist/DnsServerSetup_clang.exe for the clang preset.
+# The portable archive and setup zip use the same suffix.
+set(_dns_installer_host 0)
+if(WIN32)
+	set(_dns_installer_host 1)
+endif()
+add_custom_target(installers
+	COMMAND ${CMAKE_COMMAND}
+		-DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+		-DBINARY_DIR=${CMAKE_BINARY_DIR}
+		-DDOTNET_EXECUTABLE=${DOTNET_EXECUTABLE}
+		-DCONFIGURATION=$<IF:$<CONFIG:Debug>,Debug,Release>
+		-DTOOLCHAIN=${DNS_TOOLCHAIN}
+		-DHOST_WINDOWS=${_dns_installer_host}
+		-P ${CMAKE_SOURCE_DIR}/cmake/PackageInstallers.cmake
+	WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+	USES_TERMINAL
+	VERBATIM
+	COMMENT "Package installers into dist"
+)
+add_dependencies(installers publish)
+
 message(STATUS "DNS toolchain: ${DNS_TOOLCHAIN}")
 if(DNS_TOOLCHAIN STREQUAL "clang")
 	message(STATUS "Clang: ${DNS_CLANG_CXX} (${_dns_clang_version})")

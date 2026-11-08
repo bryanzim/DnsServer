@@ -36,7 +36,32 @@ namespace DnsServerCore.Dns.Trees
 
         #region private
 
-        private static Node GetPreviousSubDomainZoneNode(byte[] key, Node currentNode, int baseDepth)
+        private static int CompareCanonical(byte[] x, ReadOnlySpan<byte> y)
+        {
+            int minLength = x.Length;
+
+            if (y.Length < minLength)
+                minLength = y.Length;
+
+            for (int i = 0; i < minLength; i++)
+            {
+                if (x[i] < y[i])
+                    return -1;
+
+                if (x[i] > y[i])
+                    return 1;
+            }
+
+            if (x.Length < y.Length)
+                return -1;
+
+            if (x.Length > y.Length)
+                return 1;
+
+            return 0;
+        }
+
+        private static Node GetPreviousSubDomainZoneNode(ReadOnlySpan<byte> key, Node currentNode, int baseDepth)
         {
             int k;
 
@@ -67,7 +92,7 @@ namespace DnsServerCore.Dns.Trees
             }
             else
             {
-                int x = DnsNSECRecordData.CanonicalComparison(currentValue.Key, key);
+                int x = CompareCanonical(currentValue.Key, key);
                 if (x == 0)
                 {
                     //current node value matches the key
@@ -188,7 +213,7 @@ namespace DnsServerCore.Dns.Trees
             return null;
         }
 
-        private static Node GetNextSubDomainZoneNode(byte[] key, Node currentNode, int baseDepth)
+        private static Node GetNextSubDomainZoneNode(ReadOnlySpan<byte> key, Node currentNode, int baseDepth)
         {
             int k;
 
@@ -240,7 +265,7 @@ namespace DnsServerCore.Dns.Trees
                 }
                 else
                 {
-                    int x = DnsNSECRecordData.CanonicalComparison(currentValue.Key, key);
+                    int x = CompareCanonical(currentValue.Key, key);
                     if (x == 0)
                     {
                         //current node value matches the key
@@ -317,7 +342,7 @@ namespace DnsServerCore.Dns.Trees
             return null;
         }
 
-        private static bool SubDomainExists(byte[] key, Node currentNode)
+        private static bool SubDomainExists(ReadOnlySpan<byte> key, Node currentNode)
         {
             Node[] children = currentNode.Children;
             if (children is not null)
@@ -798,7 +823,8 @@ namespace DnsServerCore.Dns.Trees
 
         public AuthZone FindZone(string domain, out SubDomainZone closest, out SubDomainZone delegation, out ApexZone authority, out bool hasSubDomains)
         {
-            byte[] key = ConvertToByteKey(domain);
+            Span<byte> keyBuffer = stackalloc byte[MaxDomainKeyLength];
+            ReadOnlySpan<byte> key = keyBuffer.Slice(0, WriteDomainKey(domain, keyBuffer));
 
             AuthZoneNode authZoneNode = FindZoneNode(key, true, out Node currentNode, out Node closestSubDomainNode, out _, out SubDomainZone closestSubDomain, out SubDomainZone closestDelegation, out ApexZone closestAuthority);
             if (authZoneNode is null)
@@ -885,7 +911,8 @@ namespace DnsServerCore.Dns.Trees
 
         public AuthZone FindPreviousSubDomainZone(string zoneName, string domain)
         {
-            byte[] key = ConvertToByteKey(domain);
+            Span<byte> keyBuffer = stackalloc byte[MaxDomainKeyLength];
+            ReadOnlySpan<byte> key = keyBuffer.Slice(0, WriteDomainKey(domain, keyBuffer));
 
             _ = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
             return FindAdjacentSubDomainZone(zoneName, key, currentNode, closestAuthorityNode, false);
@@ -893,18 +920,19 @@ namespace DnsServerCore.Dns.Trees
 
         public AuthZone FindNextSubDomainZone(string zoneName, string domain)
         {
-            byte[] key = ConvertToByteKey(domain);
+            Span<byte> keyBuffer = stackalloc byte[MaxDomainKeyLength];
+            ReadOnlySpan<byte> key = keyBuffer.Slice(0, WriteDomainKey(domain, keyBuffer));
 
             _ = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out _);
             return FindAdjacentSubDomainZone(zoneName, key, currentNode, closestAuthorityNode, true);
         }
 
-        private AuthZone FindAdjacentSubDomainZone(string zoneName, byte[] key, Node currentNode, Node closestAuthorityNode, bool findNext)
+        private AuthZone FindAdjacentSubDomainZone(string zoneName, ReadOnlySpan<byte> key, Node currentNode, Node closestAuthorityNode, bool findNext)
         {
             //a name that now belongs to a child zone still sits in the tree; keep walking until the neighbor belongs to this zone
             AnchorWalkToZone(zoneName, ref closestAuthorityNode);
 
-            byte[] currentKey = key;
+            ReadOnlySpan<byte> currentKey = key;
 
             while (true)
             {
@@ -998,7 +1026,8 @@ namespace DnsServerCore.Dns.Trees
         {
             List<DnsResourceRecord> nsec3Records = new List<DnsResourceRecord>(3 * 2);
 
-            byte[] key = ConvertToByteKey(domain);
+            Span<byte> keyBuffer = stackalloc byte[MaxDomainKeyLength];
+            ReadOnlySpan<byte> key = keyBuffer.Slice(0, WriteDomainKey(domain, keyBuffer));
             string closestEncloser;
 
             AuthZoneNode authZoneNode = FindZoneNode(key, isWildcardAnswer, out _, out _, out _, out SubDomainZone closestSubDomain, out _, out ApexZone closestAuthority);
@@ -1180,7 +1209,8 @@ namespace DnsServerCore.Dns.Trees
 
         private void NSecAddProofOfCoverFor(string domain, List<DnsResourceRecord> nsecRecords)
         {
-            byte[] key = ConvertToByteKey(domain);
+            Span<byte> keyBuffer = stackalloc byte[MaxDomainKeyLength];
+            ReadOnlySpan<byte> key = keyBuffer.Slice(0, WriteDomainKey(domain, keyBuffer));
 
             AuthZoneNode authZoneNode = FindZoneNode(key, false, out Node currentNode, out _, out Node closestAuthorityNode, out _, out _, out ApexZone closestAuthority);
             if (authZoneNode is not null)
