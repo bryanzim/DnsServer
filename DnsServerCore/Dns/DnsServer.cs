@@ -4770,7 +4770,7 @@ namespace DnsServerCore.Dns
                     DateTime utcNow = DateTime.UtcNow;
 
                     foreach (DnsResourceRecord record in authority)
-                        record.GetAuthGenericRecordInfo().LastUsedOn = utcNow;
+                        record.GetAuthGenericRecordInfo().TouchLastUsedOn(utcNow);
                 }
             }
 

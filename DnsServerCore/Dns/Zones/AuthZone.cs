@@ -62,7 +62,7 @@ namespace DnsServerCore.Dns.Zones
                     return Array.Empty<DnsResourceRecord>(); //record disabled
 
                 //update last used on
-                authRecordInfo.LastUsedOn = DateTime.UtcNow;
+                authRecordInfo.TouchLastUsedOn(DateTime.UtcNow);
 
                 return records;
             }
@@ -78,7 +78,7 @@ namespace DnsServerCore.Dns.Zones
                     continue; //record disabled
 
                 //update last used on
-                authRecordInfo.LastUsedOn = utcNow;
+                authRecordInfo.TouchLastUsedOn(utcNow);
 
                 newRecords.Add(record);
             }
@@ -114,7 +114,7 @@ namespace DnsServerCore.Dns.Zones
             {
                 if ((rrsigRecord.RDATA as DnsRRSIGRecordData).TypeCovered == type)
                 {
-                    rrsigRecord.GetAuthGenericRecordInfo().LastUsedOn = utcNow;
+                    rrsigRecord.GetAuthGenericRecordInfo().TouchLastUsedOn(utcNow);
                     newRecords.Add(rrsigRecord);
                 }
             }

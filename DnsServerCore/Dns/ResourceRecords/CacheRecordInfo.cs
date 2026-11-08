@@ -163,6 +163,19 @@ namespace DnsServerCore.Dns.ResourceRecords
 
         #endregion
 
+        #region public
+
+        public void TouchLastUsedOn(DateTime utcNow)
+        {
+            long age = utcNow.Ticks - _lastUsedOn.Ticks;
+            if ((age >= 0) && (age < TimeSpan.TicksPerSecond))
+                return;
+
+            _lastUsedOn = utcNow;
+        }
+
+        #endregion
+
         #region properties
 
         public IReadOnlyList<DnsResourceRecord> GlueRecords

@@ -109,7 +109,7 @@ namespace DnsServerCore.Dns.Zones
             DateTime utcNow = DateTime.UtcNow;
 
             foreach (DnsResourceRecord record in records)
-                record.GetCacheRecordInfo().LastUsedOn = utcNow;
+                record.GetCacheRecordInfo().TouchLastUsedOn(utcNow);
 
             if (records.Count > 1)
             {
