@@ -1,6 +1,6 @@
 # syntax=docker.io/docker/dockerfile:1
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
+FROM mcr.microsoft.com/dotnet/aspnet:11.0
 
 # Add the MS repo to install `libmsquic` to support DNS-over-QUIC:
 ADD --link https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb /

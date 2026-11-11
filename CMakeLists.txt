@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.2)
 
-# Technitium DNS Server is C# on .NET 10. Both presets compile it with the
+# Technitium DNS Server is C# on .NET 11. Both presets compile it with the
 # .NET SDK. The preset selects the native toolchain CMake configures:
 #   vs2026  ->  Visual Studio 18 2026 generator (MSVC toolset)
 #   clang   ->  Ninja + Clang (clang-cl on Windows)

@@ -68,7 +68,7 @@ if(HOST_WINDOWS)
 	dns_run(${CMAKE_COMMAND} -E env DOTNET_NOLOGO=1 DOTNET_CLI_TELEMETRY_OPTOUT=1
 		"${DOTNET_EXECUTABLE}" publish "${SOURCE_DIR}/DnsServerSystemTrayApp/DnsServerSystemTrayApp.csproj"
 			--configuration ${CONFIGURATION}
-			--framework net10.0-windows7.0
+			--framework net11.0-windows7.0
 			-p:PublishDir=${dns_win_publish}/
 			--verbosity minimal)
 
