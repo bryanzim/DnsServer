@@ -23,6 +23,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using TechnitiumLibrary.Net.Dns;
+using DnsResponseCode = TechnitiumLibrary.Net.Dns.DnsResponseCode;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
 namespace WhatIsMyDns

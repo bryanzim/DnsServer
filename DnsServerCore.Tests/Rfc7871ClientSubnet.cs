@@ -1,5 +1,6 @@
 using System.Net;
 using TechnitiumLibrary.Net.Dns;
+using DnsResponseCode = TechnitiumLibrary.Net.Dns.DnsResponseCode;
 using TechnitiumLibrary.Net.Dns.EDnsOptions;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 using Xunit;

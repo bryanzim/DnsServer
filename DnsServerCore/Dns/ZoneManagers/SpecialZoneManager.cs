@@ -22,6 +22,7 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using TechnitiumLibrary.Net.Dns;
+using DnsResponseCode = TechnitiumLibrary.Net.Dns.DnsResponseCode;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
 namespace DnsServerCore.Dns.ZoneManagers

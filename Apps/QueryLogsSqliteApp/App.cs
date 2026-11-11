@@ -31,6 +31,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using TechnitiumLibrary;
 using TechnitiumLibrary.Net.Dns;
+using DnsResponseCode = TechnitiumLibrary.Net.Dns.DnsResponseCode;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
 namespace QueryLogsSqlite

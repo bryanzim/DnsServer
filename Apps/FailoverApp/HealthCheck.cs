@@ -29,6 +29,7 @@ using System.Threading.Tasks;
 using TechnitiumLibrary;
 using TechnitiumLibrary.Net;
 using TechnitiumLibrary.Net.Dns;
+using DnsResponseCode = TechnitiumLibrary.Net.Dns.DnsResponseCode;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 using TechnitiumLibrary.Net.Http.Client;
 using TechnitiumLibrary.Net.Proxy;
