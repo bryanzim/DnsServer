@@ -702,7 +702,7 @@ namespace DnsServerCore
                 string webServiceTlsCertificatePath = request.QueryOrForm("webServiceTlsCertificatePath");
                 if (!string.IsNullOrEmpty(webServiceTlsCertificatePath))
                 {
-                    string webServiceTlsCertificatePassword = request.QueryOrForm("webServiceTlsCertificatePassword");
+                    _ = request.TryFormOrJson("webServiceTlsCertificatePassword", out string webServiceTlsCertificatePassword);
 
                     if ((webServiceTlsCertificatePassword is null) || (webServiceTlsCertificatePassword == "************"))
                         webServiceTlsCertificatePassword = _dnsWebService._webServiceTlsCertificatePassword;
@@ -786,7 +786,7 @@ namespace DnsServerCore
                 string dnsTlsCertificatePath = request.QueryOrForm("dnsTlsCertificatePath");
                 if (!string.IsNullOrEmpty(dnsTlsCertificatePath))
                 {
-                    string dnsTlsCertificatePassword = request.QueryOrForm("dnsTlsCertificatePassword");
+                    _ = request.TryFormOrJson("dnsTlsCertificatePassword", out string dnsTlsCertificatePassword);
 
                     if ((dnsTlsCertificatePassword is null) || (dnsTlsCertificatePassword == "************"))
                         dnsTlsCertificatePassword = _dnsWebService._dnsServer.DnsTlsCertificatePassword;
@@ -801,7 +801,7 @@ namespace DnsServerCore
                         ValidatePkcs12Certificate(_dnsWebService._log.ConvertToAbsolutePath(dnsTlsCertificatePath), dnsTlsCertificatePassword, "DNS Server TLS certificate file does not exists: ", "DNS Server TLS certificate file must be PKCS #12 formatted with .pfx or .p12 extension: ", "DNS Server TLS certificate file must contain a certificate with private key.");
                 }
 
-                if (request.TryQueryOrFormArray("tsigKeys", delegate (JsonElement jsonObject)
+                if (request.TryFormOrJsonArray("tsigKeys", delegate (JsonElement jsonObject)
                 {
                     string keyName = jsonObject.GetProperty("keyName").GetString().TrimEnd('.').ToLowerInvariant();
                     string sharedSecret = jsonObject.GetProperty("sharedSecret").GetString();
@@ -951,8 +951,8 @@ namespace DnsServerCore
                             if (proxyUsername.Length > 255)
                                 throw new ArgumentException("Proxy username length cannot exceed 255 characters.", nameof(proxyUsername));
 
-                            string proxyPassword = request.QueryOrForm("proxyPassword");
-                            if ((proxyPassword == PROXY_PASSWORD_HIDDEN) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
+                            _ = request.TryFormOrJson("proxyPassword", out string proxyPassword);
+                            if (((proxyPassword is null) || (proxyPassword == PROXY_PASSWORD_HIDDEN)) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
                                 proxyPassword = _dnsWebService._dnsServer.Proxy.Credential.Password;
 
                             if (proxyPassword?.Length > 255)
@@ -1646,7 +1646,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string webServiceTlsCertificatePassword = request.QueryOrForm("webServiceTlsCertificatePassword");
+                                _ = request.TryFormOrJson("webServiceTlsCertificatePassword", out string webServiceTlsCertificatePassword);
 
                                 if ((webServiceTlsCertificatePassword is null) || (webServiceTlsCertificatePassword == "************"))
                                     webServiceTlsCertificatePassword = _dnsWebService._webServiceTlsCertificatePassword;
@@ -1848,7 +1848,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string dnsTlsCertificatePassword = request.QueryOrForm("dnsTlsCertificatePassword");
+                                _ = request.TryFormOrJson("dnsTlsCertificatePassword", out string dnsTlsCertificatePassword);
 
                                 if ((dnsTlsCertificatePassword is null) || (dnsTlsCertificatePassword == "************"))
                                     dnsTlsCertificatePassword = _dnsWebService._dnsServer.DnsTlsCertificatePassword;
@@ -1867,7 +1867,7 @@ namespace DnsServerCore
 
                         #region tsig
 
-                        if (request.TryQueryOrFormArray("tsigKeys", delegate (JsonElement jsonObject)
+                        if (request.TryFormOrJsonArray("tsigKeys", delegate (JsonElement jsonObject)
                         {
                             string keyName = jsonObject.GetProperty("keyName").GetString().TrimEnd('.').ToLowerInvariant();
                             string sharedSecret = jsonObject.GetProperty("sharedSecret").GetString();
@@ -2166,8 +2166,8 @@ namespace DnsServerCore
                                     if (proxyUsername.Length > 255)
                                         throw new ArgumentException("Proxy username length cannot exceed 255 characters.", nameof(proxyUsername));
 
-                                    string proxyPassword = request.QueryOrForm("proxyPassword");
-                                    if ((proxyPassword == PROXY_PASSWORD_HIDDEN) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
+                                    _ = request.TryFormOrJson("proxyPassword", out string proxyPassword);
+                                    if (((proxyPassword is null) || (proxyPassword == PROXY_PASSWORD_HIDDEN)) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
                                         proxyPassword = _dnsWebService._dnsServer.Proxy.Credential.Password;
 
                                     if (proxyPassword?.Length > 255)

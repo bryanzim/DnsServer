@@ -1856,7 +1856,7 @@ namespace DnsServerCore
                                         proxyAddress = request.GetQueryOrForm("proxyAddress");
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
-                                        proxyPassword = request.QueryOrForm("proxyPassword");
+                                        _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
                                         break;
                                 }
 
@@ -2687,7 +2687,9 @@ namespace DnsServerCore
                 DnssecPrivateKeyType keyType = request.GetQueryOrFormEnum<DnssecPrivateKeyType>("keyType");
                 ushort rolloverDays = request.GetQueryOrForm("rolloverDays", ushort.Parse, (ushort)(keyType == DnssecPrivateKeyType.ZoneSigningKey ? 30 : 0));
                 string algorithm = request.GetQueryOrForm("algorithm");
-                string pemPrivateKey = request.GetQueryOrForm("pemPrivateKey", null);
+                _ = request.TryFormOrJson("pemPrivateKey", out string pemPrivateKey);
+                if (string.IsNullOrWhiteSpace(pemPrivateKey))
+                    pemPrivateKey = null;
 
                 DnssecPrivateKey privateKey;
 
@@ -4264,7 +4266,7 @@ namespace DnsServerCore
                                         proxyAddress = request.GetQueryOrForm("proxyAddress");
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
-                                        proxyPassword = request.QueryOrForm("proxyPassword");
+                                        _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
                                         break;
                                 }
                             }
@@ -5233,7 +5235,7 @@ namespace DnsServerCore
                                         proxyAddress = request.GetQueryOrForm("proxyAddress");
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
-                                        proxyPassword = request.QueryOrForm("proxyPassword");
+                                        _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
                                         break;
                                 }
                             }

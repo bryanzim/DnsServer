@@ -2173,7 +2173,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 
 REQUEST: To import a zone file while creating a `Primary` or `Forwarder` zone, use POST request with multi-part form data containing the zone file data.
 
@@ -3005,7 +3005,7 @@ WHERE:
 - `keyType`: The type of key for which the private key is to be generated. Valid values are [`KeySigningKey`, `ZoneSigningKey`].
 - `rolloverDays` (optional): The frequency in days that the DNS server must automatically rollover the private key in the zone. Valid range is 0-365 days where 0 disables rollover. Default value is 90 days for Zone Signing Key (ZSK) and 0 days for Key Signing Key (KSK).
 - `algorithm`: The algorithm to be used for signing. Valid values are [`RSA`, `ECDSA`, `EDDSA`].
-- `pemPrivateKey` (optional): Specifies a user generated private key in PEM format to add. When not specified a private key will be automatically generated.
+- `pemPrivateKey` (optional): Specifies a user generated private key in PEM format to add. When not specified a private key will be automatically generated. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `hashAlgorithm` (optional): The hash algorithm to be used when using `RSA` algorithm. Valid values are [`MD5`, `SHA1`, `SHA256`, `SHA512`]. This optional parameter is required when using `RSA` algorithm.
 - `keySize` (optional): The size of the generated private key in bits to be used when using `RSA` algorithm. This optional parameter is required when using `RSA` algorithm.
 - `curve` (optional): The name of the curve to be used when using `ECDSA` or `EDDSA` algorithm. Valid values are [`P256`, `P384`] for `ECDSA` algorithm and [`ED25519`, `ED448`] for `EDDSA` algorithm. This optional parameter is required when using `ECDSA` or `EDDSA` algorithm.
@@ -3252,7 +3252,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `appName` (optional): The name of the DNS app. This parameter is required for adding the `APP` record.
 - `classPath` (optional): This parameter is required for adding the `APP` record.
 - `recordData` (optional): This parameter is used for adding the `APP` record as per the DNS app requirements.
@@ -3964,7 +3964,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `appName` (optional): This parameter is required for updating the `APP` record.
 - `classPath` (optional): This parameter is required for updating the `APP` record.
 - `recordData` (optional): This parameter is used for updating the `APP` record as per the DNS app requirements.
@@ -5327,7 +5327,7 @@ This call allows to change the DNS server settings.
 Note! Any parameter passed with this API call will overwrite existing value for that parameter. If you wish to append new values instead then you should first call the Get DNS Settings API to get the existing value, append your new value to it, and then pass the updated value with this API call.
 
 URL:\
-`http://localhost:5380/api/settings/set?dnsServerDomain=server1&dnsServerLocalEndPoints=0.0.0.0:53,[::]:53&webServiceLocalAddresses=0.0.0.0,[::]&webServiceHttpPort=5380&webServiceEnableTls=false&webServiceTlsPort=53443&webServiceTlsCertificatePath=&webServiceTlsCertificatePassword=&enableDnsOverHttp=false&enableDnsOverTls=false&enableDnsOverHttps=false&dnsTlsCertificatePath=&dnsTlsCertificatePassword=&preferIPv6=false&logQueries=true&allowRecursion=true&allowRecursionOnlyForPrivateNetworks=true&randomizeName=true&cachePrefetchEligibility=2&cachePrefetchTrigger=9&proxyType=socks5&proxyAddress=192.168.10.2&proxyPort=9050&proxyUsername=username&proxyPassword=password&proxyBypass=127.0.0.0/8,169.254.0.0/16,fe80::/10,::1,localhost&forwarders=192.168.10.2&forwarderProtocol=Udp&useNxDomainForBlocking=false&blockListUrls=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts,https://mirror1.malwaredomains.com/files/justdomains,https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt,https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt`
+`http://localhost:5380/api/settings/set?dnsServerDomain=server1&dnsServerLocalEndPoints=0.0.0.0:53,[::]:53&webServiceLocalAddresses=0.0.0.0,[::]&webServiceHttpPort=5380&webServiceEnableTls=false&webServiceTlsPort=53443&webServiceTlsCertificatePath=&enableDnsOverHttp=false&enableDnsOverTls=false&enableDnsOverHttps=false&dnsTlsCertificatePath=&preferIPv6=false&logQueries=true&allowRecursion=true&allowRecursionOnlyForPrivateNetworks=true&randomizeName=true&cachePrefetchEligibility=2&cachePrefetchTrigger=9&proxyType=socks5&proxyAddress=192.168.10.2&proxyPort=9050&proxyUsername=username&proxyBypass=127.0.0.0/8,169.254.0.0/16,fe80::/10,::1,localhost&forwarders=192.168.10.2&forwarderProtocol=Udp&useNxDomainForBlocking=false&blockListUrls=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts,https://mirror1.malwaredomains.com/files/justdomains,https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt,https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt`
 
 OBSOLETE PATH:\
 `/api/setDnsSettings`
@@ -5392,7 +5392,7 @@ WHERE:
 - `webServiceReverseProxyAddresses` (optional):  A comma separated list of ACL entries which can be an IP address or a network address. Configure the ACL to define allowed reverse proxy servers such that client IP address from requests coming from these servers is read using the `webServiceRealIpHeader` option. Add ! character at the start to deny, e.g. !192.168.10.0/24 will deny entire subnet. The ACL is processed in the same order its listed. If no networks match, the default policy is to deny all.
 - `webServiceUseSelfSignedTlsCertificate` (optional): Set `true` for the web service to use an automatically generated self signed certificate when TLS certificate path is not specified.
 - `webServiceTlsCertificatePath` (optional): Specify a PKCS #12 certificate (.pfx) file path on the server. The certificate must contain private key. This certificate is used by the web console for HTTPS access.
-- `webServiceTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any.
+- `webServiceTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `webServiceRealIpHeader` (optional): The HTTP header that must be used to read client's actual IP address when the request comes from a reverse proxy with a private IP address.
 - `webServiceCspFrameAncestorsHeader` (optional): The Content Security Policy (CSP) Frame Ancestors header value that must be used when serving the Web Console.
 - `enableEDnsClientSubnetSourceAddress` (optional): Enable this option to read the client's source IP address from the EDNS Client Subnet (ECS) option in the DNS requests coming via DNS-over-UDP or DNS-over-TCP protocols. This option allows a DNS proxy to pass the client's source IP address via ECS option to the DNS Server. It is mandatory to configure `dnsReverseProxyNetworkACL` to allow requests coming from your DNS proxy server to work with this option.
@@ -5415,9 +5415,9 @@ WHERE:
 - `dnsOverQuicPort` (optional): The UDP port number for DNS-over-QUIC protocol. Initial value is `853`.
 - `dnsReverseProxyNetworkACL` (optional): A comma separated list of ACL entries which can be an IP address or a network address. Configure the ACL to allow only requests coming from your reverse proxy server for DNS-over-UDP-PROXY, DNS-over-TCP-PROXY, and DNS-over-HTTP protocols. Add ! character at the start to deny access, e.g. !192.168.10.0/24 will deny entire subnet. The ACL is processed in the same order its listed. If no networks match, the default policy is to deny all.
 - `dnsTlsCertificatePath` (optional): Specify a PKCS #12 certificate (.pfx) file path on the server. The certificate must contain private key. This certificate is used by the DNS-over-TLS and DNS-over-HTTPS optional protocols.
-- `dnsTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any.
+- `dnsTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `dnsOverHttpRealIpHeader` (optional): The HTTP header that must be used to read client's actual IP address when the request comes from a reverse proxy with a private IP address.
-- `tsigKeys` (optional, cluster parameter): A pipe `|` separated multi row list of TSIG key name, shared secret, and algorithm. Set this parameter to `false` to remove all existing keys. Supported algorithms are [`hmac-md5.sig-alg.reg.int`, `hmac-sha1`, `hmac-sha256`, `hmac-sha256-128`, `hmac-sha384`, `hmac-sha384-192`, `hmac-sha512`, `hmac-sha512-256`].
+- `tsigKeys` (optional, cluster parameter): A pipe `|` separated multi row list of TSIG key name, shared secret, and algorithm. Set this parameter to `false` to remove all existing keys. Supported algorithms are [`hmac-md5.sig-alg.reg.int`, `hmac-sha1`, `hmac-sha256`, `hmac-sha256-128`, `hmac-sha384`, `hmac-sha384-192`, `hmac-sha512`, `hmac-sha512-256`]. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `recursion` (optional, cluster parameter): Sets the recursion policy for the DNS server. Valid values are [`Deny`, `Allow`, `AllowOnlyForPrivateNetworks`, `UseSpecifiedNetworkACL`].
 - `recursionNetworkACL` (optional, cluster parameter): A comma separated Access Control List (ACL) of Network Access Control (NAC) entry. NAC is an IP address or network address to allow. Add `!` at the start of the NAC to deny access. The ACL is processed in the same order its listed. If no networks match, the default policy is to deny all except loopback. Set this parameter to `false` to remove existing values. These values are only used when `recursion` is set to `UseSpecifiedNetworkACL`.
 - `randomizeName` (optional, cluster parameter): Enables QNAME randomization [draft-vixie-dnsext-dns0x20-00](https://tools.ietf.org/html/draft-vixie-dnsext-dns0x20-00) when using UDP as the transport protocol. Initial value is `true`.
@@ -5452,7 +5452,7 @@ WHERE:
 - `proxyAddress` (optional, cluster parameter): The proxy server hostname or IP address.
 - `proxyPort` (optional, cluster parameter): The proxy server port.
 - `proxyUsername` (optional, cluster parameter): The proxy server username.
-- `proxyPassword` (optional, cluster parameter): The proxy server password.
+- `proxyPassword` (optional, cluster parameter): The proxy server password. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `proxyBypass` (optional, cluster parameter): A comma separated bypass list consisting of IP addresses, network addresses in CIDR format, or host/domain names to never use proxy for.
 - `forwarders` (optional, cluster parameter): A comma separated list of forwarders to be used by this DNS server. Set this parameter to `false` string to remove existing forwarders so that the DNS server does recursive resolution by itself.
 - `forwarderProtocol` (optional, cluster parameter): The forwarder DNS transport protocol to be used. Valid values are [`Udp`, `Tcp`, `Tls`, `Https`, `Quic`].

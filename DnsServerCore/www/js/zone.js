@@ -3002,6 +3002,7 @@ function updateAddZoneFormForwarderThisServer() {
 function addZone() {
     var divAddZoneAlert = $("#divAddZoneAlert");
     var zone = $("#txtAddZone").val();
+    var forwarderProxyPassword = null;
 
     if ((zone == null) || (zone === "")) {
         showAlert("warning", "Missing!", "Please enter a domain name to add zone.", divAddZoneAlert);
@@ -3079,7 +3080,8 @@ function addZone() {
                                 return;
                             }
 
-                            parameters += "&proxyAddress=" + encodeURIComponent(proxyAddress) + "&proxyPort=" + proxyPort + "&proxyUsername=" + encodeURIComponent(proxyUsername) + "&proxyPassword=" + encodeURIComponent(proxyPassword);
+                            parameters += "&proxyAddress=" + encodeURIComponent(proxyAddress) + "&proxyPort=" + proxyPort + "&proxyUsername=" + encodeURIComponent(proxyUsername);
+                            forwarderProxyPassword = proxyPassword;
                             break;
                     }
                 }
@@ -3131,6 +3133,13 @@ function addZone() {
                 formData.append("fileImportZone", fileAddZoneImportZone[0].files[0]);
             }
             break;
+    }
+
+    if (forwarderProxyPassword != null) {
+        if (formData == null)
+            formData = new FormData();
+
+        formData.append("proxyPassword", forwarderProxyPassword);
     }
 
     var node = $("#optZonesClusterNode").val();
@@ -7319,8 +7328,10 @@ function addDnssecPrivateKey(objBtn) {
     btn.button("loading");
 
     HTTPRequest({
-        url: "api/zones/dnssec/properties/addPrivateKey?zone=" + encodeURIComponent(zone) + "&keyType=" + keyType + "&algorithm=" + algorithm + "&pemPrivateKey=" + encodeURIComponent(pemPrivateKey) + "&rolloverDays=" + rolloverDays + additionalParameters + "&node=" + encodeURIComponent(node),
+        url: "api/zones/dnssec/properties/addPrivateKey?zone=" + encodeURIComponent(zone) + "&keyType=" + keyType + "&algorithm=" + algorithm + "&rolloverDays=" + rolloverDays + additionalParameters + "&node=" + encodeURIComponent(node),
         token: sessionData.token,
+        method: "POST",
+        data: "pemPrivateKey=" + encodeURIComponent(pemPrivateKey),
         success: function (responseJSON) {
             $("#divDnssecPropertiesAddKey").collapse("hide");
             $("#txtDnssecPropertiesPemPrivateKey").val("");

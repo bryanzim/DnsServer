@@ -512,5 +512,49 @@ namespace DnsServerCore
 
             return true;
         }
+
+        public static bool TryFormOrJsonArray<T>(this HttpRequest request, string parameter, Func<JsonElement, T> getObject, Func<ArraySegment<string>, T> parse, int colspan, out T[] array, params char[] separator)
+        {
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryReadArray(parameter, getObject, out array))
+                    return false;
+
+                if (array is null)
+                    array = [];
+
+                return true;
+            }
+
+            if (!request.HasFormContentType || !request.Form.ContainsKey(parameter))
+            {
+                array = null;
+                return false;
+            }
+
+            string value = request.Form[parameter];
+            if (string.IsNullOrEmpty(value) || value.Equals("false", StringComparison.OrdinalIgnoreCase))
+            {
+                array = [];
+                return true;
+            }
+
+            if ((separator is null) || (separator.Length == 0))
+                separator = COMMA_SEPARATOR;
+
+            string[] cells = value.Split(separator);
+
+            if ((cells.Length % colspan) != 0)
+                throw new DnsWebServiceException("Invalid value for parameter '" + parameter + "': expected each entry to have " + colspan + " values separated by '" + new string(separator) + "'.");
+
+            array = new T[cells.Length / colspan];
+
+            for (int i = 0, j = 0; i < cells.Length; i += colspan)
+                array[j++] = parse(new ArraySegment<string>(cells, i, colspan));
+
+            return true;
+        }
     }
 }
