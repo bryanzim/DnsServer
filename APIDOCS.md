@@ -18,7 +18,7 @@ The request header must be as shown below:
 
 `Authorization: Bearer <token>`
 
-The session token can also be passed as a query string or form data `token` parameter which is supported for backward compatibility reasons.
+The session token can also be passed as form data or JSON in a `token` parameter. A query-string `token` is accepted only for a single-use token created for a browser download.
 
 ## API Response Format
 
@@ -7438,7 +7438,7 @@ RESPONSE:
 The Remove Node process will ask the selected Secondary node to leave the Cluster gracefully. The Secondary now will then initiate Leave Cluster process as if the Leave Cluster action was performed on that node itself. This call can be made only at the Primary node.
 
 URL:\
-`http://localhost:5380/api/admin/cluster/primary/removeSecondary?token=X&secondaryNodeId=811905692`
+`http://localhost:5380/api/admin/cluster/primary/removeSecondary?secondaryNodeId=811905692`
 
 PERMISSIONS:\
 Administration: Delete
@@ -7485,7 +7485,7 @@ RESPONSE:
 The Delete Node process will immediately delete the selected Secondary node entry from the Cluster without asking the node to leave graceful. This call can be made only at the Primary node.
 
 URL:\
-`http://localhost:5380/api/admin/cluster/primary/deleteSecondary?token=X&secondaryNodeId=811905692`
+`http://localhost:5380/api/admin/cluster/primary/deleteSecondary?secondaryNodeId=811905692`
 
 PERMISSIONS:\
 Administration: Delete

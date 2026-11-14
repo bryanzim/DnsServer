@@ -2576,8 +2576,10 @@ namespace DnsServerCore
             });
         }
 
-        private static string GetAuthorizationToken(HttpRequest request)
+        private static string GetAuthorizationToken(HttpRequest request, out bool fromQueryString)
         {
+            fromQueryString = false;
+
             StringValues authorization = request.Headers.Authorization;
             string token = null;
 
@@ -2590,12 +2592,46 @@ namespace DnsServerCore
                 }
             }
 
-            if (token is null)
-                token = request.QueryOrForm("token");
+            if (!string.IsNullOrEmpty(token))
+                return token;
 
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryGetProperty("token", out JsonElement jsonValue))
+                    return null;
+
+                switch (jsonValue.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        return jsonValue.GetString();
+
+                    case JsonValueKind.Number:
+                    case JsonValueKind.True:
+                    case JsonValueKind.False:
+                        return jsonValue.ToString();
+
+                    case JsonValueKind.Null:
+                        return null;
+
+                    default:
+                        throw new InvalidOperationException();
+                }
+            }
+
+            if (request.HasFormContentType)
+            {
+                token = request.Form["token"];
+                if (!string.IsNullOrEmpty(token))
+                    return token;
+            }
+
+            token = request.Query["token"];
             if (string.IsNullOrEmpty(token))
                 return null;
 
+            fromQueryString = true;
             return token;
         }
 
@@ -2603,8 +2639,11 @@ namespace DnsServerCore
         {
             HttpRequest request = context.Request;
 
-            session = _authManager.GetSession(GetAuthorizationToken(request));
+            session = _authManager.GetSession(GetAuthorizationToken(request, out bool fromQueryString));
             if ((session is null) || session.User.Disabled)
+                return false;
+
+            if (fromQueryString && (session.Type != UserSessionType.SingleUse))
                 return false;
 
             if (session.Type == UserSessionType.SingleUse)

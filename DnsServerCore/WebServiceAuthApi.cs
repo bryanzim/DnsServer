@@ -891,9 +891,16 @@ namespace DnsServerCore
 
             public void Logout(HttpContext context)
             {
-                string token = GetAuthorizationToken(context.Request);
+                string token = GetAuthorizationToken(context.Request, out bool fromQueryString);
                 if (token is null)
                     return;
+
+                if (fromQueryString)
+                {
+                    UserSession existingSession = _dnsWebService._authManager.GetSession(token);
+                    if ((existingSession is null) || (existingSession.Type != UserSessionType.SingleUse))
+                        return;
+                }
 
                 UserSession session = _dnsWebService._authManager.DeleteSession(token);
                 if (session is not null)
