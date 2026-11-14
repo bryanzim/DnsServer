@@ -823,9 +823,9 @@ namespace DnsServerCore
             {
                 HttpRequest request = context.Request;
 
-                string username = request.GetQueryOrForm("user");
-                string password = request.GetQueryOrForm("pass");
-                string totp = request.GetQueryOrForm("totp", null);
+                string username = request.GetFormOrJson("user");
+                string password = request.GetFormOrJson("pass");
+                string totp = request.GetFormOrJson("totp", null);
                 string tokenName = (sessionType == UserSessionType.ApiToken) ? request.GetQueryOrForm("tokenName") : null;
                 bool includeInfo = (sessionType == UserSessionType.Standard) && request.GetQueryOrForm("includeInfo", bool.Parse, false);
                 IPEndPoint remoteEP = _dnsWebService.GetRemoteEndPoint(context);
@@ -924,10 +924,10 @@ namespace DnsServerCore
                 User sessionUser = _dnsWebService.GetSessionUser(context, true);
                 HttpRequest request = context.Request;
 
-                string password = request.GetQueryOrForm("pass");
-                string totp = request.GetQueryOrForm("totp", null);
+                string password = request.GetFormOrJson("pass");
+                string totp = request.GetFormOrJson("totp", null);
                 IPEndPoint remoteEP = _dnsWebService.GetRemoteEndPoint(context);
-                string newPassword = request.GetQueryOrForm("newPass");
+                string newPassword = request.GetFormOrJson("newPass");
                 int iterations = request.GetQueryOrForm("iterations", int.Parse, User.DEFAULT_ITERATIONS);
 
                 sessionUser = await _dnsWebService._authManager.ChangePasswordAsync(sessionUser.Username, password, totp, remoteEP.Address, newPassword, iterations);
@@ -970,7 +970,7 @@ namespace DnsServerCore
                 User sessionUser = _dnsWebService.GetSessionUser(context, true);
                 HttpRequest request = context.Request;
 
-                string totp = request.GetQueryOrForm("totp");
+                string totp = request.GetFormOrJson("totp");
 
                 sessionUser.EnableTOTP(totp);
 
@@ -1195,7 +1195,7 @@ namespace DnsServerCore
 
                 string username = request.GetQueryOrForm("user");
                 string displayName = request.GetQueryOrForm("displayName", username);
-                string password = request.GetQueryOrForm("pass");
+                string password = request.GetFormOrJson("pass");
 
                 User user = _dnsWebService._authManager.CreateUser(displayName, username, password);
 

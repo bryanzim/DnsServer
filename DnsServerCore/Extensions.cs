@@ -112,6 +112,61 @@ namespace DnsServerCore
             return value;
         }
 
+        public static string FormOrJson(this HttpRequest request, string parameter)
+        {
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryGetProperty(parameter, out JsonElement jsonValue))
+                    return null;
+
+                switch (jsonValue.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        return jsonValue.GetString();
+
+                    case JsonValueKind.Number:
+                    case JsonValueKind.True:
+                    case JsonValueKind.False:
+                        return jsonValue.ToString();
+
+                    case JsonValueKind.Null:
+                        return null;
+
+                    default:
+                        throw new InvalidOperationException();
+                }
+            }
+
+            if (!request.HasFormContentType)
+                return null;
+
+            string value = request.Form[parameter];
+            if (string.IsNullOrEmpty(value))
+                return null;
+
+            return value;
+        }
+
+        public static string GetFormOrJson(this HttpRequest request, string parameter)
+        {
+            string value = request.FormOrJson(parameter);
+            if (string.IsNullOrEmpty(value))
+                throw new DnsWebServiceException("Parameter '" + parameter + "' missing.");
+
+            return value;
+        }
+
+        public static string GetFormOrJson(this HttpRequest request, string parameter, string defaultValue)
+        {
+            string value = request.FormOrJson(parameter);
+            if (string.IsNullOrEmpty(value))
+                return defaultValue;
+
+            return value;
+        }
+
         public static bool TryQueryOrForm(this HttpRequest request, string parameter, out string value)
         {
             value = request.QueryOrForm(parameter);
