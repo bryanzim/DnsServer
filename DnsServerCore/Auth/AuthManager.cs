@@ -1140,7 +1140,7 @@ namespace DnsServerCore.Auth
                 case UserType.Local:
                 default:
                     //local authentication
-                    if (!user.PasswordHash.Equals(user.GetPasswordHashFor(password), StringComparison.Ordinal))
+                    if (!user.PasswordEquals(password))
                         await ThrowAuthFailedExceptionAsync();
 
                     //proceed to TOTP
