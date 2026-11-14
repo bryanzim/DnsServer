@@ -203,7 +203,8 @@ namespace DnsRebindingProtection
 
             bool answerChanged = TryDetectRebinding(response.Answer, out List<DnsResourceRecord> protectedAnswer, out string answerDomain);
             List<DnsResourceRecord> protectedAdditional = null;
-            bool additionalChanged = (response.Additional is not null) && TryDetectRebinding(response.Additional, out protectedAdditional, out string additionalDomain);
+            string additionalDomain = null;
+            bool additionalChanged = (response.Additional is not null) && TryDetectRebinding(response.Additional, out protectedAdditional, out additionalDomain);
 
             if (answerChanged || additionalChanged)
             {

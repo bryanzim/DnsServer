@@ -35,6 +35,7 @@ namespace LogExporter.Strategy
         #region variables
 
         const string _appName = "Technitium DNS Server";
+        const string _sdId = "meta";
         const string DEFAUL_PROTOCOL = "udp";
         const int DEFAULT_PORT = 514;
 
