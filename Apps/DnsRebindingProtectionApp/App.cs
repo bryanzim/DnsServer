@@ -187,11 +187,44 @@ namespace DnsRebindingProtection
             if (!changed)
                 return false;
 
+            //removing a mandatory hint leaves a record WriteRecordData refuses to send
+            if (SvcParamsAreInconsistent(svcb, filteredParams))
+                return true;
+
             DnsSVCBRecordData filteredData = new DnsSVCBRecordData(svcb.SvcPriority, svcb.TargetName, filteredParams);
             filteredData.AutoIpv4Hint = svcb.AutoIpv4Hint;
             filteredData.AutoIpv6Hint = svcb.AutoIpv6Hint;
             filteredRecord = new DnsResourceRecord(record.Name, record.Type, record.Class, record.TTL, filteredData);
             return true;
+        }
+
+        private static bool SvcParamsAreInconsistent(DnsSVCBRecordData original, Dictionary<DnsSvcParamKey, DnsSvcParamValue> filteredParams)
+        {
+            if (original.SvcPriority == 0)
+                return false;
+
+            if (filteredParams.ContainsKey(DnsSvcParamKey.No_Default_ALPN) && !filteredParams.ContainsKey(DnsSvcParamKey.ALPN))
+                return true;
+
+            if (!filteredParams.TryGetValue(DnsSvcParamKey.Mandatory, out DnsSvcParamValue mandatoryValue))
+                return false;
+
+            if (mandatoryValue is not DnsSvcMandatoryParamValue mandatory || (mandatory.Keys is null))
+                return true;
+
+            foreach (DnsSvcParamKey key in mandatory.Keys)
+            {
+                if ((key == DnsSvcParamKey.IPv4Hint) && original.AutoIpv4Hint)
+                    continue;
+
+                if ((key == DnsSvcParamKey.IPv6Hint) && original.AutoIpv6Hint)
+                    continue;
+
+                if (!filteredParams.ContainsKey(key))
+                    return true;
+            }
+
+            return false;
         }
 
         private bool TryDetectRebinding(IReadOnlyList<DnsResourceRecord> answer, out List<DnsResourceRecord> protectedAnswer, out string domain)
