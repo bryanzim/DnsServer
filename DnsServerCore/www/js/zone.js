@@ -6725,8 +6725,10 @@ function signPrimaryZone() {
     btn.button("loading");
 
     HTTPRequest({
-        url: "api/zones/dnssec/sign?zone=" + encodeURIComponent(zone) + "&algorithm=" + algorithm + "&pemKskPrivateKey=" + encodeURIComponent(pemKskPrivateKey) + "&pemZskPrivateKey=" + encodeURIComponent(pemZskPrivateKey) + "&dnsKeyTtl=" + dnsKeyTtl + "&zskRolloverDays=" + zskRolloverDays + "&nxProof=" + nxProof + additionalParameters + "&node=" + encodeURIComponent(node),
+        url: "api/zones/dnssec/sign?zone=" + encodeURIComponent(zone) + "&algorithm=" + algorithm + "&dnsKeyTtl=" + dnsKeyTtl + "&zskRolloverDays=" + zskRolloverDays + "&nxProof=" + nxProof + additionalParameters + "&node=" + encodeURIComponent(node),
         token: sessionData.token,
+        method: "POST",
+        data: "pemKskPrivateKey=" + encodeURIComponent(pemKskPrivateKey) + "&pemZskPrivateKey=" + encodeURIComponent(pemZskPrivateKey),
         success: function (responseJSON) {
             btn.button("reset");
             $("#modalDnssecSignZone").modal("hide");

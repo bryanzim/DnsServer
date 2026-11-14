@@ -828,7 +828,7 @@ namespace DnsServerCore
                 string totp = request.GetFormOrJson("totp", null);
                 string tokenName = (sessionType == UserSessionType.ApiToken) ? request.GetQueryOrForm("tokenName") : null;
                 bool includeInfo = (sessionType == UserSessionType.Standard) && request.GetQueryOrForm("includeInfo", bool.Parse, false);
-                IPEndPoint remoteEP = _dnsWebService.GetRemoteEndPoint(context);
+                IPEndPoint remoteEP = new IPEndPoint(DnsWebService.SelectRateLimitAddress(context.Connection.RemoteIpAddress), context.Connection.RemotePort);
 
                 UserSession session = await _dnsWebService._authManager.CreateSessionAsync(sessionType, tokenName, username, password, totp, remoteEP.Address, request.Headers.UserAgent);
 
@@ -929,8 +929,9 @@ namespace DnsServerCore
                 IPEndPoint remoteEP = _dnsWebService.GetRemoteEndPoint(context);
                 string newPassword = request.GetFormOrJson("newPass");
                 int iterations = request.GetQueryOrForm("iterations", int.Parse, User.DEFAULT_ITERATIONS);
+                IPAddress rateLimitAddress = DnsWebService.SelectRateLimitAddress(context.Connection.RemoteIpAddress);
 
-                sessionUser = await _dnsWebService._authManager.ChangePasswordAsync(sessionUser.Username, password, totp, remoteEP.Address, newPassword, iterations);
+                sessionUser = await _dnsWebService._authManager.ChangePasswordAsync(sessionUser.Username, password, totp, rateLimitAddress, newPassword, iterations);
 
                 _dnsWebService._log.Write(remoteEP, "[" + sessionUser.Username + "] Password was changed successfully.");
 

@@ -2069,6 +2069,21 @@ namespace DnsServerCore
             return remoteAddress.Equals(IPAddress.Loopback) || remoteAddress.Equals(IPAddress.IPv6Loopback);
         }
 
+        internal static IPAddress SelectRateLimitAddress(IPAddress connectionAddress)
+        {
+            if (connectionAddress is null)
+                return IPAddress.Loopback;
+
+            if (connectionAddress.IsIPv4MappedToIPv6)
+                connectionAddress = connectionAddress.MapToIPv4();
+
+            //the TCP peer is the bucket; a reverse-proxy header can name a different address on every attempt
+            if ((connectionAddress.AddressFamily != AddressFamily.InterNetwork) && (connectionAddress.AddressFamily != AddressFamily.InterNetworkV6))
+                return IPAddress.Loopback;
+
+            return connectionAddress;
+        }
+
         private IPEndPoint GetRemoteEndPoint(HttpContext context)
         {
             try

@@ -72,6 +72,11 @@ namespace DnsServerCore
             return null;
         }
 
+        internal static string NormalizeOptionalPem(string pem)
+        {
+            return string.IsNullOrWhiteSpace(pem) ? null : pem;
+        }
+
         class WebServiceZonesApi
         {
             #region variables
@@ -2262,8 +2267,10 @@ namespace DnsServerCore
                     throw new DnsWebServiceException("Access was denied.");
 
                 string algorithm = request.GetQueryOrForm("algorithm");
-                string pemKskPrivateKey = request.GetQueryOrForm("pemKskPrivateKey", null);
-                string pemZskPrivateKey = request.GetQueryOrForm("pemZskPrivateKey", null);
+                _ = request.TryFormOrJson("pemKskPrivateKey", out string pemKskPrivateKey);
+                _ = request.TryFormOrJson("pemZskPrivateKey", out string pemZskPrivateKey);
+                pemKskPrivateKey = NormalizeOptionalPem(pemKskPrivateKey);
+                pemZskPrivateKey = NormalizeOptionalPem(pemZskPrivateKey);
                 uint dnsKeyTtl = request.GetQueryOrForm("dnsKeyTtl", ZoneFile.ParseTtl, 3600u);
                 ushort zskRolloverDays = request.GetQueryOrForm("zskRolloverDays", ushort.Parse, Convert.ToUInt16(pemZskPrivateKey is null ? 30 : 0));
 
@@ -2720,8 +2727,7 @@ namespace DnsServerCore
                 ushort rolloverDays = request.GetQueryOrForm("rolloverDays", ushort.Parse, (ushort)(keyType == DnssecPrivateKeyType.ZoneSigningKey ? 30 : 0));
                 string algorithm = request.GetQueryOrForm("algorithm");
                 _ = request.TryFormOrJson("pemPrivateKey", out string pemPrivateKey);
-                if (string.IsNullOrWhiteSpace(pemPrivateKey))
-                    pemPrivateKey = null;
+                pemPrivateKey = NormalizeOptionalPem(pemPrivateKey);
 
                 DnssecPrivateKey privateKey;
 

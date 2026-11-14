@@ -2601,6 +2601,26 @@ namespace DnsServerCore.Dns
             }
         }
 
+        internal static IPAddress SelectForwardedClientAddress(IPAddress connectionAddress, IPAddress headerAddress, bool trustHeader)
+        {
+            if ((connectionAddress is not null) && connectionAddress.IsIPv4MappedToIPv6)
+                connectionAddress = connectionAddress.MapToIPv4();
+
+            if ((headerAddress is not null) && headerAddress.IsIPv4MappedToIPv6)
+                headerAddress = headerAddress.MapToIPv4();
+
+            if (!trustHeader || (headerAddress is null))
+                return connectionAddress;
+
+            //loopback and unspecified addresses would skip rate limits and zone query access
+            bool privilegedHeader = IPAddress.IsLoopback(headerAddress) || headerAddress.Equals(IPAddress.Any) || headerAddress.Equals(IPAddress.IPv6Any);
+            bool localConnection = (connectionAddress is null) || IPAddress.IsLoopback(connectionAddress);
+            if (privilegedHeader && !localConnection)
+                return connectionAddress;
+
+            return headerAddress;
+        }
+
         private async Task ProcessDoHRequestAsync(HttpContext context, CancellationToken cancellationToken)
         {
             IPEndPoint remoteEP = null;
@@ -2629,16 +2649,21 @@ namespace DnsServerCore.Dns
 
                 if ((remoteEP is null) || NetworkAccessControl.IsAddressAllowed(remoteEP.Address, _dnsReverseProxyNetworkACL))
                 {
+                    IPAddress headerAddress = null;
+
                     //try to get client's actual IP from X-Real-IP header, if any
                     if (!string.IsNullOrEmpty(_dnsOverHttpRealIpHeader))
                     {
                         string xRealIp = context.Request.Headers[_dnsOverHttpRealIpHeader];
                         if (IPAddress.TryParse(xRealIp, out IPAddress address))
-                            remoteEP = new IPEndPoint(address, 0);
+                            headerAddress = address;
                     }
 
-                    if (remoteEP is null)
+                    IPAddress clientAddress = SelectForwardedClientAddress(remoteEP?.Address, headerAddress, true);
+                    if (clientAddress is null)
                         remoteEP = IPENDPOINT_ANY_0;
+                    else
+                        remoteEP = new IPEndPoint(clientAddress, remoteEP?.Port ?? 0);
                 }
                 else
                 {

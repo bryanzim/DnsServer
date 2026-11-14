@@ -2703,8 +2703,8 @@ WHERE:
 - `node` (optional): The node domain name for which the this API call is intended. When unspecified, the current node is used. This parameter can be used only when Clustering is initialized.
 - `zone`: The name of the primary zone to sign.
 - `algorithm`: The algorithm to be used for signing. Valid values are [`RSA`, `ECDSA`, `EDDSA`].
-- `pemKskPrivateKey` (optional): The user specified private key in PEM format for Key Signing Key (KSK). When this parameter is specified, the private key specified is used instead of automatically generating it.
-- `pemZskPrivateKey` (optional): The user specified private key in PEM format for Zone Signing Key (ZSK). When this parameter is specified, the private key specified is used instead of automatically generating it.
+- `pemKskPrivateKey` (optional): The user specified private key in PEM format for Key Signing Key (KSK). When this parameter is specified, the private key specified is used instead of automatically generating it. This parameter must be sent as form data or JSON. It is not accepted from the query string.
+- `pemZskPrivateKey` (optional): The user specified private key in PEM format for Zone Signing Key (ZSK). When this parameter is specified, the private key specified is used instead of automatically generating it. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `hashAlgorithm` (optional): The hash algorithm to be used when using `RSA` algorithm. Valid values are [`MD5`, `SHA1`, `SHA256`, `SHA512`]. This optional parameter is required when using `RSA` algorithm.
 - `kskKeySize` (optional): The size of the Key Signing Key (KSK) in bits to be used when using `RSA` algorithm. This optional parameter is required when using `RSA` algorithm.
 - `zskKeySize` (optional): The size of the Zone Signing Key (ZSK) in bits to be used when using `RSA` algorithm. This optional parameter is required when using `RSA` algorithm.
