@@ -20,6 +20,7 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\DnsServerCore\DnsServerCore.csproj" />
+		<ProjectReference Include="..\Apps\Dns64App\Dns64App.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

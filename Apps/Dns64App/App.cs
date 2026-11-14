@@ -41,6 +41,26 @@ namespace Dns64
 
         readonly static JsonDocumentOptions _jsonParseOptions = new JsonDocumentOptions() { CommentHandling = JsonCommentHandling.Skip };
 
+        //RFC 6052 section 3.1
+        readonly static NetworkAddress _wellKnownPrefix = NetworkAddress.Parse("64:ff9b::/96");
+        readonly static NetworkAddress[] _nonGlobalIpv4 =
+        [
+            NetworkAddress.Parse("0.0.0.0/8"),
+            NetworkAddress.Parse("10.0.0.0/8"),
+            NetworkAddress.Parse("100.64.0.0/10"),
+            NetworkAddress.Parse("127.0.0.0/8"),
+            NetworkAddress.Parse("169.254.0.0/16"),
+            NetworkAddress.Parse("172.16.0.0/12"),
+            NetworkAddress.Parse("192.0.0.0/24"),
+            NetworkAddress.Parse("192.0.2.0/24"),
+            NetworkAddress.Parse("192.168.0.0/16"),
+            NetworkAddress.Parse("198.18.0.0/15"),
+            NetworkAddress.Parse("198.51.100.0/24"),
+            NetworkAddress.Parse("203.0.113.0/24"),
+            NetworkAddress.Parse("224.0.0.0/4"),
+            NetworkAddress.Parse("240.0.0.0/4")
+        ];
+
         IDnsServer _dnsServer;
 
         byte _appPreference;
@@ -174,6 +194,8 @@ namespace Dns64
 
             DnsDatagram aRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(question.Name, DnsResourceRecordType.A, DnsClass.IN)]);
             DnsDatagram newResponse = await _dnsServer.DirectQueryAsync(aRequest, remoteEP, 2000);
+            if (newResponse?.Answer is null)
+                return response;
 
             uint soaTtl;
             {
@@ -204,7 +226,7 @@ namespace Dns64
                     }
                 }
 
-                if (dns64Prefix is null)
+                if ((dns64Prefix is null) || !MayEmbedIpv4(ipv4Address, dns64Prefix))
                     continue;
 
                 IPAddress ipv6Address = ipv4Address.MapToIPv6(dns64Prefix);
@@ -286,6 +308,24 @@ namespace Dns64
         #endregion
 
         #region properties
+
+        //RFC 6052 section 3.1: 64:ff9b::/96 must not represent an IPv4 address that is not global unicast
+        public static bool MayEmbedIpv4(IPAddress ipv4Address, NetworkAddress ipv6Prefix)
+        {
+            if ((ipv4Address is null) || (ipv4Address.AddressFamily != AddressFamily.InterNetwork) || (ipv6Prefix is null))
+                return false;
+
+            if (!ipv6Prefix.Equals(_wellKnownPrefix))
+                return true;
+
+            foreach (NetworkAddress nonGlobal in _nonGlobalIpv4)
+            {
+                if (nonGlobal.Contains(ipv4Address))
+                    return false;
+            }
+
+            return true;
+        }
 
         public string Description
         { get { return "Enables DNS64 function for both authoritative and recursive resolver responses for use by IPv6 only clients."; } }
