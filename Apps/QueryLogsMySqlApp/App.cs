@@ -249,11 +249,14 @@ namespace QueryLogsMySql
             if (_databaseUnusable)
                 return true;
 
+            bool connected = false;
+
             try
             {
                 await using (MySqlConnection connection = new MySqlConnection(_connectionString + $" Database={_databaseName};"))
                 {
                     await connection.OpenAsync();
+                    connected = true;
 
                     await using (MySqlCommand command = connection.CreateCommand())
                     {
@@ -359,7 +362,7 @@ namespace QueryLogsMySql
             }
             catch (Exception ex)
             {
-                if (IsUnusableDatabase(ex))
+                if (IsUnusableDatabase(ex, connected))
                 {
                     _databaseUnusable = true;
                     _enableLogging = false;
@@ -374,16 +377,27 @@ namespace QueryLogsMySql
             }
         }
 
-        private static bool IsUnusableDatabase(Exception ex)
+        private static bool IsUnusableDatabase(Exception ex, bool statementTimeoutIsTransient)
         {
+            bool timedOut = false;
+
             for (Exception? current = ex; current is not null; current = current.InnerException)
             {
-                if (current is SocketException or TimeoutException)
+                if (current is TimeoutException)
+                {
+                    timedOut = true;
+                    continue;
+                }
+
+                if (current is SocketException)
                     return true;
 
                 if (current is MySqlException mysql && mysql.ErrorCode is MySqlErrorCode.AccessDenied or MySqlErrorCode.DatabaseAccessDenied or MySqlErrorCode.SpecifiedAccessDeniedError or MySqlErrorCode.TableAccessDenied or MySqlErrorCode.UnknownDatabase or MySqlErrorCode.NoSuchTable or MySqlErrorCode.NoDatabaseSelected or MySqlErrorCode.UnableToConnectToHost or MySqlErrorCode.HandshakeError)
                     return true;
             }
+
+            if (timedOut)
+                return !statementTimeoutIsTransient;
 
             return false;
         }

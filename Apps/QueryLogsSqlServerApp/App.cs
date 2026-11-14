@@ -249,11 +249,14 @@ namespace QueryLogsSqlServer
             if (_databaseUnusable)
                 return true;
 
+            bool connected = false;
+
             try
             {
                 await using (SqlConnection connection = new SqlConnection(_connectionString + $" Initial Catalog={_databaseName};"))
                 {
                     await connection.OpenAsync();
+                    connected = true;
 
                     await using (SqlCommand command = connection.CreateCommand())
                     {
@@ -359,7 +362,7 @@ namespace QueryLogsSqlServer
             }
             catch (Exception ex)
             {
-                if (IsUnusableDatabase(ex))
+                if (IsUnusableDatabase(ex, connected))
                 {
                     _databaseUnusable = true;
                     _enableLogging = false;
@@ -374,18 +377,29 @@ namespace QueryLogsSqlServer
             }
         }
 
-        private static bool IsUnusableDatabase(Exception ex)
+        private static bool IsUnusableDatabase(Exception ex, bool statementTimeoutIsTransient)
         {
+            bool timedOut = false;
+
             for (Exception? current = ex; current is not null; current = current.InnerException)
             {
-                if (current is SocketException or TimeoutException)
+                if (current is TimeoutException)
+                {
+                    timedOut = true;
+                    continue;
+                }
+
+                if (current is SocketException)
                     return true;
 
                 if (current is SqlException sql)
                 {
                     switch (sql.Number)
                     {
-                        case -2: //timeout
+                        case -2: //execution timeout, or connection timeout before the session is open
+                            timedOut = true;
+                            break;
+
                         case -1:
                         case 2: //server not found
                         case 40:
@@ -406,6 +420,9 @@ namespace QueryLogsSqlServer
                     }
                 }
             }
+
+            if (timedOut)
+                return !statementTimeoutIsTransient;
 
             return false;
         }

@@ -252,10 +252,14 @@ namespace QueryLogsPostgreSql
             if (_databaseUnusable)
                 return true;
 
+            bool connected = false;
+
             try
             {
                 await using (NpgsqlConnection connection = await _dataSource.OpenConnectionAsync())
                 {
+                    connected = true;
+
                     await using (NpgsqlCommand command = connection.CreateCommand())
                     {
                         sb.Length = 0;
@@ -360,7 +364,7 @@ namespace QueryLogsPostgreSql
             }
             catch (Exception ex)
             {
-                if (IsUnusableDatabase(ex))
+                if (IsUnusableDatabase(ex, connected))
                 {
                     _databaseUnusable = true;
                     _enableLogging = false;
@@ -375,11 +379,20 @@ namespace QueryLogsPostgreSql
             }
         }
 
-        private static bool IsUnusableDatabase(Exception ex)
+        private static bool IsUnusableDatabase(Exception ex, bool statementTimeoutIsTransient)
         {
+            bool driverFailure = false;
+            bool timedOut = false;
+
             for (Exception? current = ex; current is not null; current = current.InnerException)
             {
-                if (current is SocketException or TimeoutException)
+                if (current is TimeoutException)
+                {
+                    timedOut = true;
+                    continue;
+                }
+
+                if (current is SocketException)
                     return true;
 
                 if (current is PostgresException postgres)
@@ -403,11 +416,14 @@ namespace QueryLogsPostgreSql
                 }
                 else if (current is NpgsqlException)
                 {
-                    return true;
+                    driverFailure = true;
                 }
             }
 
-            return false;
+            if (timedOut)
+                return !statementTimeoutIsTransient;
+
+            return driverFailure;
         }
 
         #endregion
