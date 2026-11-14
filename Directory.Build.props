@@ -1,0 +1,10 @@
+<Project>
+	<!-- Set before the SDK so TargetDir is not baked as bin\$(Platform)\$(Configuration). C++ probes are not C# projects. -->
+	<PropertyGroup Condition="'$(MSBuildProjectExtension)' == '.csproj'">
+		<PlatformTarget>AnyCPU</PlatformTarget>
+		<BaseOutputPath>bin\</BaseOutputPath>
+		<OutputPath>$(MSBuildProjectDirectory)\bin\$(Configuration)\</OutputPath>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+	</PropertyGroup>
+</Project>

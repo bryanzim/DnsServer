@@ -189,8 +189,8 @@ if(CMAKE_GENERATOR STREQUAL "Visual Studio 18 2026")
 			string(REPLACE "\\" "/" _dns_path "${_dns_path}")
 			set(_dns_abs "${CMAKE_SOURCE_DIR}/${_dns_path}")
 			include_external_msproject(${_dns_name} "${_dns_abs}"
-				TYPE "{${_dns_type}}"
-				GUID "{${_dns_guid}}"
+				TYPE "${_dns_type}"
+				GUID "${_dns_guid}"
 				PLATFORM "Any CPU")
 			set_target_properties(${_dns_name} PROPERTIES
 				MAP_IMPORTED_CONFIG_DEBUG "Debug"
