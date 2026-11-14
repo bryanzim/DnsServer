@@ -118,12 +118,16 @@ namespace Dns64
             if (request.DnssecOk)
                 return response;
 
-            if (response.RCODE != DnsResponseCode.NoError)
+            if ((request.Question.Count != 1) || (request.Question[0].Type != DnsResourceRecordType.AAAA))
                 return response;
 
-            DnsQuestionRecord question = request.Question[0];
-            if (question.Type != DnsResourceRecordType.AAAA)
+            //RFC 6147 section 5.1.2: NXDOMAIN is returned unchanged. Another RCODE from the AAAA lookup is treated as an empty answer.
+            //REFUSED is this server declining the query. Upstream refusals arrive as SERVFAIL. DirectQuery forces recursion, so a refusal must not be synthesized.
+            if ((response.RCODE == DnsResponseCode.NxDomain) || (response.RCODE == DnsResponseCode.Refused))
                 return response;
+
+            bool aaaaAnswerIsEmpty = response.RCODE != DnsResponseCode.NoError;
+            DnsQuestionRecord question = request.Question[0];
 
             IPAddress remoteIP = remoteEP.Address;
             NetworkAddress network = null;
@@ -141,11 +145,12 @@ namespace Dns64
             if ((groupName is null) || !_groups.TryGetValue(groupName, out Group group) || !group.EnableDns64)
                 return response;
 
-            List<DnsResourceRecord> newAnswer = new List<DnsResourceRecord>(response.Answer.Count);
+            List<DnsResourceRecord> newAnswer = new List<DnsResourceRecord>(aaaaAnswerIsEmpty ? 4 : response.Answer.Count);
 
             bool synthesizeAAAA = true;
 
-            if (group.ExcludedIpv6.Length == 0)
+            //RFC 6147 section 5.1.2: the answer section of an error other than NXDOMAIN is ignored
+            if (!aaaaAnswerIsEmpty && (group.ExcludedIpv6.Length == 0))
             {
                 //no exclusions configured
                 foreach (DnsResourceRecord answer in response.Answer)
@@ -156,7 +161,7 @@ namespace Dns64
                         synthesizeAAAA = false; //found an AAAA record so no need to synthesize AAAA
                 }
             }
-            else
+            else if (!aaaaAnswerIsEmpty)
             {
                 //check for exclusions
                 foreach (DnsResourceRecord answer in response.Answer)
@@ -237,7 +242,11 @@ namespace Dns64
 
             if (!synthesizedAAAA)
             {
-                //an AAAA NODATA must stay NODATA; an excluded AAAA answer is still replaced below
+                //RFC 6147 section 5.1.6: an A-query error is the response. An empty A answer is also the response when the AAAA answer was itself an error.
+                if (aaaaAnswerIsEmpty || (newResponse.RCODE != DnsResponseCode.NoError))
+                    return SynthesizedResponse(newResponse, newAnswer);
+
+                //an AAAA NODATA stays NODATA; an excluded AAAA answer is still replaced below
                 bool originalHadAAAA = false;
 
                 foreach (DnsResourceRecord originalAnswer in response.Answer)
@@ -253,8 +262,13 @@ namespace Dns64
                     return response;
             }
 
-            //RFC 6147 section 5.5: a synthesized AAAA is not DNSSEC secure, so the AD bit from the NODATA answer must not be copied
-            return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, newResponse.RCODE, response.Question, newAnswer, newResponse.Authority, newResponse.Additional) { Tag = response.Tag };
+            return SynthesizedResponse(newResponse, newAnswer);
+
+            //RFC 6147 section 5.5: a synthesized AAAA is not DNSSEC secure, so the AD bit must not be copied
+            DnsDatagram SynthesizedResponse(DnsDatagram aResponse, List<DnsResourceRecord> answer)
+            {
+                return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, aResponse.RCODE, response.Question, answer, aResponse.Authority, aResponse.Additional) { Tag = response.Tag };
+            }
         }
 
         public Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed)
