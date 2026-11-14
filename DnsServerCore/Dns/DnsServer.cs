@@ -2926,6 +2926,9 @@ namespace DnsServerCore.Dns
                 catch (Exception ex)
                 {
                     _log.Write(remoteEP, protocol, ex);
+
+                    //a failed filter must not return the records it was supposed to inspect
+                    return new DnsDatagram(request.Identifier, true, request.OPCODE, false, false, request.RecursionDesired, response.RecursionAvailable, false, request.CheckingDisabled, DnsResponseCode.ServerFailure, request.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None) { Tag = response.Tag };
                 }
             }
 
