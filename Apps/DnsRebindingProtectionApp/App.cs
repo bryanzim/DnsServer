@@ -121,6 +121,8 @@ namespace DnsRebindingProtection
                 if (IsRebindingAttempt(record))
                 {
                     //rebinding attempt detected!
+                    domain = record.Name.ToLowerInvariant();
+
                     //prepare protected answer
                     protectedAnswer = new List<DnsResourceRecord>(answer.Count);
 
@@ -131,12 +133,11 @@ namespace DnsRebindingProtection
                     //copy remaining records with check
                     for (int j = i + 1; j < answer.Count; j++)
                     {
-                        record = answer[j];
-                        if (!IsRebindingAttempt(record))
-                            protectedAnswer.Add(record);
+                        DnsResourceRecord remaining = answer[j];
+                        if (!IsRebindingAttempt(remaining))
+                            protectedAnswer.Add(remaining);
                     }
 
-                    domain = record.Name.ToLowerInvariant();
                     return true;
                 }
             }
