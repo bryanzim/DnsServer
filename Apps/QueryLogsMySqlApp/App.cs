@@ -23,6 +23,7 @@ using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -53,6 +54,7 @@ namespace QueryLogsMySql
         Channel<LogEntry>? _channel;
         ChannelWriter<LogEntry>? _channelWriter;
         Thread? _consumerThread;
+        volatile bool _databaseUnusable;
         const int BULK_INSERT_COUNT = 1000;
         const int BULK_INSERT_ERROR_DELAY = 10000;
         const int BULK_REMOVE_COUNT = 10000;
@@ -206,7 +208,7 @@ namespace QueryLogsMySql
                     List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
                     StringBuilder sb = new StringBuilder(4096);
 
-                    while (!_disposed && await channelReader.WaitToReadAsync())
+                    while (!_disposed && !_databaseUnusable && await channelReader.WaitToReadAsync())
                     {
                         while (!_disposed && (logs.Count < BULK_INSERT_COUNT) && channelReader.TryRead(out LogEntry log))
                         {
@@ -220,7 +222,7 @@ namespace QueryLogsMySql
                             logs.Clear();
                     }
 
-                    if (!_disposed && (logs.Count > 0))
+                    if (!_disposed && !_databaseUnusable && (logs.Count > 0))
                         await BulkInsertLogsAsync(logs, sb);
                 }
                 catch (Exception ex)
@@ -244,6 +246,9 @@ namespace QueryLogsMySql
 
         private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs, StringBuilder sb)
         {
+            if (_databaseUnusable)
+                return true;
+
             try
             {
                 await using (MySqlConnection connection = new MySqlConnection(_connectionString + $" Database={_databaseName};"))
@@ -354,11 +359,33 @@ namespace QueryLogsMySql
             }
             catch (Exception ex)
             {
+                if (IsUnusableDatabase(ex))
+                {
+                    _databaseUnusable = true;
+                    _enableLogging = false;
+                    _dnsServer?.WriteLog("Query Logs (MySQL) stopped writing because the database is unreachable or rejected the login. Correct the database settings and restart the server.", ex);
+                    return true;
+                }
+
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
                 return false;
             }
+        }
+
+        private static bool IsUnusableDatabase(Exception ex)
+        {
+            for (Exception? current = ex; current is not null; current = current.InnerException)
+            {
+                if (current is SocketException or TimeoutException)
+                    return true;
+
+                if (current is MySqlException mysql && mysql.ErrorCode is MySqlErrorCode.AccessDenied or MySqlErrorCode.DatabaseAccessDenied or MySqlErrorCode.SpecifiedAccessDeniedError or MySqlErrorCode.TableAccessDenied or MySqlErrorCode.UnknownDatabase or MySqlErrorCode.NoSuchTable or MySqlErrorCode.NoDatabaseSelected or MySqlErrorCode.UnableToConnectToHost or MySqlErrorCode.HandshakeError)
+                    return true;
+            }
+
+            return false;
         }
 
         #endregion
@@ -791,7 +818,7 @@ CREATE TABLE IF NOT EXISTS dns_logs
 
         public Task InsertLogAsync(DateTime timestamp, DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, DnsDatagram response)
         {
-            if (_enableLogging)
+            if (_enableLogging && !_databaseUnusable)
                 _channelWriter?.TryWrite(new LogEntry(timestamp, request, remoteEP, protocol, response));
 
             return Task.CompletedTask;
