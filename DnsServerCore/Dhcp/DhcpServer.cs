@@ -555,7 +555,7 @@ namespace DnsServerCore.Dhcp
                                 if (string.IsNullOrWhiteSpace(clientDomainName))
                                 {
                                     if ((request.HostName is not null) && !string.IsNullOrWhiteSpace(request.HostName.HostName))
-                                        clientDomainName = GetSanitizedHostName(request.HostName.HostName) + "." + scope.DomainName;
+                                        clientDomainName = GetDynamicDnsName(request.HostName.HostName, scope.DomainName);
                                 }
                             }
 
@@ -676,7 +676,7 @@ namespace DnsServerCore.Dhcp
                             if (string.IsNullOrWhiteSpace(clientDomainName))
                             {
                                 if ((request.HostName is not null) && !string.IsNullOrWhiteSpace(request.HostName.HostName))
-                                    clientDomainName = GetSanitizedHostName(request.HostName.HostName) + "." + scope.DomainName;
+                                    clientDomainName = GetDynamicDnsName(request.HostName.HostName, scope.DomainName);
                             }
 
                             bool clientNoDnsUpdate = (request.ClientFullyQualifiedDomainName is not null) && request.ClientFullyQualifiedDomainName.Flags.HasFlag(ClientFullyQualifiedDomainNameFlags.NoDnsUpdate);
@@ -1001,6 +1001,55 @@ namespace DnsServerCore.Dhcp
             return sb.ToString();
         }
 
+        internal static string GetDynamicDnsName(string clientName, string scopeDomain)
+        {
+            if (string.IsNullOrWhiteSpace(clientName) || string.IsNullOrWhiteSpace(scopeDomain))
+                return null;
+
+            string suffix = "." + scopeDomain.TrimEnd('.');
+            string value = clientName.Trim().TrimEnd('.');
+            string label = value;
+
+            if (value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) && (value.Length > suffix.Length))
+                label = value.Substring(0, value.Length - suffix.Length);
+
+            //a client may supply only one host label; extra labels and a wildcard are not published
+            int dot = label.IndexOf('.');
+            if (dot >= 0)
+                label = label.Substring(0, dot);
+
+            label = SanitizeHostLabel(label);
+            if (label is null)
+                return null;
+
+            string dnsName = label + suffix;
+            if (!DnsClient.IsDomainNameValid(dnsName) || dnsName.Contains('*'))
+                return null;
+
+            return dnsName;
+        }
+
+        private static string SanitizeHostLabel(string label)
+        {
+            if (string.IsNullOrEmpty(label))
+                return null;
+
+            StringBuilder sb = new StringBuilder(label.Length);
+
+            foreach (char c in label)
+            {
+                if (((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || ((c >= '0') && (c <= '9')) || (c == '-') || (c == '_'))
+                    sb.Append(c);
+                else if (c == ' ')
+                    sb.Append('-');
+            }
+
+            if ((sb.Length == 0) || (sb.Length > 63))
+                return null;
+
+            return sb.ToString();
+        }
+
         internal static string GetReservedLeaseHostLabel(string reservedLeaseHostName, string domainName)
         {
             string hostName = GetSanitizedHostName(reservedLeaseHostName);
@@ -1087,6 +1136,17 @@ namespace DnsServerCore.Dhcp
 
             if (!domain.EndsWith("." + scope.DomainName, StringComparison.OrdinalIgnoreCase))
                 return; //domain does not end with scope domain name
+
+            if (domain.Contains('*'))
+                return; //a wildcard answers every name that does not already have a record
+
+            if (!isReservedLease)
+            {
+                //dynamic clients publish one host label; a multi-label name is not a hostname
+                string dynamicName = GetDynamicDnsName(domain, scope.DomainName);
+                if ((dynamicName is null) || !dynamicName.Equals(domain, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
 
             string zoneName = null;
             bool addedAddressRecord = false;
@@ -1178,6 +1238,22 @@ namespace DnsServerCore.Dhcp
                 }
 
                 zoneName = zoneInfo.Name;
+
+                if (!isReservedLease)
+                {
+                    //a name that already has records is not free for a dynamic client to claim, even when it has no A
+                    List<DnsResourceRecord> existingAtName = new List<DnsResourceRecord>();
+                    _dnsServer.AuthZoneManager.ListAllRecords(zoneName, domain, existingAtName);
+
+                    foreach (DnsResourceRecord existingAtNameRecord in existingAtName)
+                    {
+                        if (existingAtNameRecord.Type != DnsResourceRecordType.A)
+                        {
+                            _log.Write("DHCP Server cannot update DNS: '" + domain + "' already has a " + existingAtNameRecord.Type + " record.");
+                            return;
+                        }
+                    }
+                }
 
                 if (!isReservedLease && !scope.DnsOverwriteForDynamicLease)
                 {

@@ -609,26 +609,16 @@ namespace DnsServerCore.Dhcp
                 if ((request.HostName is null) || string.IsNullOrWhiteSpace(request.HostName.HostName))
                     return null; //server unable to decide a name for client
 
-                clientDomainName = DhcpServer.GetSanitizedHostName(request.HostName.HostName) + "." + _domainName;
-            }
-            else if (request.ClientFullyQualifiedDomainName.DomainName.Contains('.'))
-            {
-                //client domain is fqdn
-                if (request.ClientFullyQualifiedDomainName.DomainName.EndsWith("." + _domainName, StringComparison.OrdinalIgnoreCase))
-                {
-                    clientDomainName = request.ClientFullyQualifiedDomainName.DomainName;
-                }
-                else
-                {
-                    string[] parts = request.ClientFullyQualifiedDomainName.DomainName.Split('.');
-                    clientDomainName = parts[0] + "." + _domainName;
-                }
+                clientDomainName = DhcpServer.GetDynamicDnsName(request.HostName.HostName, _domainName);
             }
             else
             {
-                //client domain is just hostname
-                clientDomainName = request.ClientFullyQualifiedDomainName.DomainName + "." + _domainName;
+                //publish one host label under the scope domain; do not trust a client FQDN that already ends with the zone
+                clientDomainName = DhcpServer.GetDynamicDnsName(request.ClientFullyQualifiedDomainName.DomainName, _domainName);
             }
+
+            if (clientDomainName is null)
+                return null;
 
             return new ClientFullyQualifiedDomainNameOption(responseFlags, 255, 255, clientDomainName);
         }
