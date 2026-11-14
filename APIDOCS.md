@@ -5254,7 +5254,7 @@ RESPONSE:
 		"tsigKeys": [
 			{
 				"keyName": "home",
-				"sharedSecret": "E9crgbHbzgEI+e+/pBmARRif70ScKf2sc/FjrgnCWyc=",
+				"sharedSecret": "************",
 				"algorithmName": "hmac-sha256"
 			}
 		],
@@ -5417,7 +5417,7 @@ WHERE:
 - `dnsTlsCertificatePath` (optional): Specify a PKCS #12 certificate (.pfx) file path on the server. The certificate must contain private key. This certificate is used by the DNS-over-TLS and DNS-over-HTTPS optional protocols.
 - `dnsTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `dnsOverHttpRealIpHeader` (optional): The HTTP header that must be used to read client's actual IP address when the request comes from a reverse proxy with a private IP address.
-- `tsigKeys` (optional, cluster parameter): A pipe `|` separated multi row list of TSIG key name, shared secret, and algorithm. Set this parameter to `false` to remove all existing keys. Supported algorithms are [`hmac-md5.sig-alg.reg.int`, `hmac-sha1`, `hmac-sha256`, `hmac-sha256-128`, `hmac-sha384`, `hmac-sha384-192`, `hmac-sha512`, `hmac-sha512-256`]. This parameter must be sent as form data or JSON. It is not accepted from the query string.
+- `tsigKeys` (optional, cluster parameter): A pipe `|` separated multi row list of TSIG key name, shared secret, and algorithm. Set this parameter to `false` to remove all existing keys. Supported algorithms are [`hmac-md5.sig-alg.reg.int`, `hmac-sha1`, `hmac-sha256`, `hmac-sha256-128`, `hmac-sha384`, `hmac-sha384-192`, `hmac-sha512`, `hmac-sha512-256`]. The settings response returns `************` instead of the shared secret. Post that same value to keep the stored secret. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `recursion` (optional, cluster parameter): Sets the recursion policy for the DNS server. Valid values are [`Deny`, `Allow`, `AllowOnlyForPrivateNetworks`, `UseSpecifiedNetworkACL`].
 - `recursionNetworkACL` (optional, cluster parameter): A comma separated Access Control List (ACL) of Network Access Control (NAC) entry. NAC is an IP address or network address to allow. Add `!` at the start of the NAC to deny access. The ACL is processed in the same order its listed. If no networks match, the default policy is to deny all except loopback. Set this parameter to `false` to remove existing values. These values are only used when `recursion` is set to `UseSpecifiedNetworkACL`.
 - `randomizeName` (optional, cluster parameter): Enables QNAME randomization [draft-vixie-dnsext-dns0x20-00](https://tools.ietf.org/html/draft-vixie-dnsext-dns0x20-00) when using UDP as the transport protocol. Initial value is `true`.
