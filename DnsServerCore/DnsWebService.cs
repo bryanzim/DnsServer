@@ -1731,7 +1731,10 @@ namespace DnsServerCore
                     options.Authority = _authManager.SsoAuthority.AbsoluteUri;
                     options.ClientId = _authManager.SsoClientId;
                     options.ClientSecret = _authManager.SsoClientSecret;
-                    options.RequireHttpsMetadata = false;
+
+                    //an http authority is an explicit choice; an https authority must not be downgraded
+                    bool requireHttpsMetadata = !_authManager.SsoAuthority.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
+                    options.RequireHttpsMetadata = requireHttpsMetadata;
                     options.ResponseType = OpenIdConnectResponseType.Code;
                     options.ResponseMode = OpenIdConnectResponseMode.FormPost;
 
@@ -1769,7 +1772,7 @@ namespace DnsServerCore
                     options.CallbackPath = new PathString("/sso/callback");
 
                     if (_authManager.SsoMetadataAddress is not null)
-                        options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(_authManager.SsoMetadataAddress.AbsoluteUri, new OpenIdConnectConfigurationRetriever(), new HttpDocumentRetriever(_ssoHttpClient) { RequireHttps = false });
+                        options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(_authManager.SsoMetadataAddress.AbsoluteUri, new OpenIdConnectConfigurationRetriever(), new HttpDocumentRetriever(_ssoHttpClient) { RequireHttps = requireHttpsMetadata });
 
                     options.Events = new OpenIdConnectEvents
                     {
