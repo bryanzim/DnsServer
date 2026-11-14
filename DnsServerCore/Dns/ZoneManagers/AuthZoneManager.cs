@@ -2896,7 +2896,13 @@ namespace DnsServerCore.Dns.ZoneManagers
                         if (glueRecords is not null)
                         {
                             foreach (DnsResourceRecord glueRecord in glueRecords)
+                            {
+                                //in-zone glue is already in the zone contents; RFC 5936 says the same record is sent once
+                                if (ZoneTransferContains(xfrRecords, glueRecord) || ZoneWillEmit(records, glueRecord))
+                                    continue;
+
                                 xfrRecords.Add(glueRecord);
+                            }
                         }
                         break;
 
@@ -2910,6 +2916,37 @@ namespace DnsServerCore.Dns.ZoneManagers
             xfrRecords.Add(soaRecord);
 
             return xfrRecords;
+
+            static bool ZoneTransferContains(List<DnsResourceRecord> xfrRecords, DnsResourceRecord glueRecord)
+            {
+                foreach (DnsResourceRecord record in xfrRecords)
+                {
+                    if (SameRecordData(record, glueRecord))
+                        return true;
+                }
+
+                return false;
+            }
+
+            static bool ZoneWillEmit(List<DnsResourceRecord> records, DnsResourceRecord glueRecord)
+            {
+                foreach (DnsResourceRecord record in records)
+                {
+                    GenericRecordInfo info = record.GetAuthGenericRecordInfo();
+                    if (info.Disabled || (record.Type == DnsResourceRecordType.SOA))
+                        continue;
+
+                    if (SameRecordData(record, glueRecord))
+                        return true;
+                }
+
+                return false;
+            }
+
+            static bool SameRecordData(DnsResourceRecord left, DnsResourceRecord right)
+            {
+                return (left.Type == right.Type) && (left.Class == right.Class) && left.Name.Equals(right.Name, StringComparison.OrdinalIgnoreCase) && left.RDATA.Equals(right.RDATA);
+            }
         }
 
         public IReadOnlyList<DnsResourceRecord> QueryIncrementalZoneTransferRecords(string zoneName, DnsResourceRecord clientSoaRecord)
