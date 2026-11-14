@@ -57,9 +57,12 @@ namespace QueryLogsSqlite
         Channel<LogEntry>? _channel;
         ChannelWriter<LogEntry>? _channelWriter;
         Thread? _consumerThread;
+        volatile bool _databaseUnusable;
         const int BULK_INSERT_COUNT = 1000;
         const int BULK_INSERT_ERROR_DELAY = 10000;
         const int BULK_REMOVE_COUNT = 10000;
+        const int SQLITE_CORRUPT = 11; // database disk image is malformed
+        const int SQLITE_NOTADB = 26;
 
         readonly Timer _cleanupTimer;
         const int CLEAN_UP_TIMER_INITIAL_INTERVAL = 5 * 1000;
@@ -226,7 +229,7 @@ namespace QueryLogsSqlite
                 {
                     List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
 
-                    while (!_disposed && await channelReader.WaitToReadAsync())
+                    while (!_disposed && !_databaseUnusable && await channelReader.WaitToReadAsync())
                     {
                         while (!_disposed && (logs.Count < BULK_INSERT_COUNT) && channelReader.TryRead(out LogEntry log))
                         {
@@ -240,7 +243,7 @@ namespace QueryLogsSqlite
                             logs.Clear();
                     }
 
-                    if (!_disposed && (logs.Count > 0))
+                    if (!_disposed && !_databaseUnusable && (logs.Count > 0))
                         await BulkInsertLogsAsync(logs);
                 }
                 catch (Exception ex)
@@ -264,6 +267,9 @@ namespace QueryLogsSqlite
 
         private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs)
         {
+            if (_databaseUnusable)
+                return true;
+
             try
             {
                 await using (SqliteConnection connection = new SqliteConnection(_connectionString))
@@ -361,6 +367,14 @@ namespace QueryLogsSqlite
             }
             catch (Exception ex)
             {
+                if (ex is SqliteException sqliteEx && sqliteEx.SqliteErrorCode is SQLITE_CORRUPT or SQLITE_NOTADB)
+                {
+                    _databaseUnusable = true;
+                    _enableLogging = false;
+                    _dnsServer?.WriteLog("Query Logs (SQLite) stopped writing because the database is corrupt. Replace the database file and restart the server.", ex);
+                    return true;
+                }
+
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
@@ -585,7 +599,7 @@ CREATE TABLE IF NOT EXISTS dns_logs
 
         public Task InsertLogAsync(DateTime timestamp, DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, DnsDatagram response)
         {
-            if (_enableLogging)
+            if (_enableLogging && !_databaseUnusable)
                 _channelWriter?.TryWrite(new LogEntry(timestamp, request, remoteEP, protocol, response));
 
             return Task.CompletedTask;
