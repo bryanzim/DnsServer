@@ -1286,7 +1286,7 @@ namespace DnsServerCore
                         user.DisableTOTP();
                     }
 
-                    string newPassword = request.QueryOrForm("newPass");
+                    string newPassword = request.FormOrJson("newPass");
                     if (!string.IsNullOrWhiteSpace(newPassword))
                     {
                         int iterations = request.GetQueryOrForm("iterations", int.Parse, User.DEFAULT_ITERATIONS);
@@ -1947,7 +1947,7 @@ namespace DnsServerCore
                     }
                 }
 
-                if (request.TryQueryOrForm("ssoClientSecret", out string ssoClientSecret))
+                if (request.TryFormOrJson("ssoClientSecret", out string ssoClientSecret))
                 {
                     if ((ssoClientSecret != "************") && (_dnsWebService._authManager.SsoClientSecret != ssoClientSecret))
                     {
@@ -2170,7 +2170,7 @@ namespace DnsServerCore
                 if (request.TryQueryOrForm("ldapBindUsername", out string ldapBindUsername))
                     _dnsWebService._authManager.LdapBindUsername = ldapBindUsername;
 
-                if (request.TryQueryOrForm("ldapBindPassword", out string ldapBindPassword))
+                if (request.TryFormOrJson("ldapBindPassword", out string ldapBindPassword))
                 {
                     if (ldapBindPassword != "************")
                         _dnsWebService._authManager.LdapBindPassword = ldapBindPassword;
@@ -2223,7 +2223,9 @@ namespace DnsServerCore
                 LdapAuthSslOption ldapSslOption = context.Request.GetQueryOrFormEnum("ldapSslOption", _dnsWebService._authManager.LdapSslOption);
                 bool ldapIgnoreSslErrors = context.Request.GetQueryOrForm("ldapIgnoreSslErrors", bool.Parse, _dnsWebService._authManager.LdapIgnoreSslErrors);
                 string ldapBindUsername = context.Request.GetQueryOrForm("ldapBindUsername", _dnsWebService._authManager.LdapBindUsername);
-                string ldapBindPassword = context.Request.GetQueryOrForm("ldapBindPassword", _dnsWebService._authManager.LdapBindPassword);
+                string ldapBindPassword = context.Request.FormOrJson("ldapBindPassword");
+                if (string.IsNullOrEmpty(ldapBindPassword))
+                    ldapBindPassword = _dnsWebService._authManager.LdapBindPassword;
                 string ldapSearchBase = context.Request.GetQueryOrForm("ldapSearchBase", _dnsWebService._authManager.LdapSearchBase);
                 string ldapUserSearchFilter = context.Request.GetQueryOrForm("ldapUserSearchFilter", _dnsWebService._authManager.LdapUserSearchFilter);
                 string ldapGroupAttribute = context.Request.GetQueryOrForm("ldapGroupAttribute", _dnsWebService._authManager.LdapGroupAttribute);

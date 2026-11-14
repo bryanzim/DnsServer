@@ -427,7 +427,9 @@ Allows changing the password for the current logged in user account.
 NOTE: It is highly recommended to change the `admin` user password on first use to avoid security related issues.
 
 URL:\
-`http://localhost:5380/api/user/changePassword?pass=password&newPass=newpassword`
+`http://localhost:5380/api/user/changePassword`
+
+The `pass`, `newPass`, and `totp` parameters must be sent as form data or JSON. They are not accepted from the query string.
 
 OBSOLETE PATH:\
 `/api/changePassword`
@@ -6422,7 +6424,7 @@ WHERE:
 - `totpEnabled` (optional): Set to `false` to disable 2FA for the user account. The parameter cannot have a `true` value. For SSO users, 2FA is managed by SSO provider and cannot be enabled with this API call.
 - `disabled` (optional): Set `true` to disable the user account and delete all its active sessions.
 - `sessionTimeoutSeconds` (optional): A session time out value in seconds for the user account.
-- `newPass` (optional): A new password to reset the user account password. For SSO users, the password is managed by SSO provider and cannot be changed with this API call.
+- `newPass` (optional): A new password to reset the user account password. This parameter must be sent as form data or JSON. It is not accepted from the query string. For SSO users, the password is managed by SSO provider and cannot be changed with this API call.
 - `iterations` (optional): The number of iterations for PBKDF2 SHA256 password hashing. This is only used with the `newPass` option.
 - `memberOfGroups` (optional): A list of comma separated group names that the user must be set as a member. For SSO users, the group membership is managed by SSO provider if SSO Group Map was configured and cannot be changed with this API call in that case.
 
@@ -7114,7 +7116,7 @@ WHERE:
 - `ssoEnabled` (optional): Set to `true` to allow Single Sign-On (SSO) with OpenID Connect (OIDC).
 - `ssoAuthority` (optional): The OpenID Connect (OIDC) Authority URL.
 - `ssoClientId` (optional): The OpenID Connect (OIDC) Client ID.
-- `ssoClientSecret` (optional): The OpenID Connect (OIDC) Client Secret.
+- `ssoClientSecret` (optional): The OpenID Connect (OIDC) Client Secret. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `ssoMetadataAddress` (optional): The OpenID Connect (OIDC) metadata discovery URL to be used instead of the default one. Configure this option only if the Single Sign-On (SSO) provider uses a different discovery URL.
 - `ssoAllowSignup` (optional): Set to `true` to allow automatically provisioning of user accounts for new users signing in via Single Sign-On (SSO). Keep this option set to `false` if you do not expect new SSO users to sign up.
 - `ssoAllowSignupOnlyForMappedUsers` (optional): Set to `true` to allow a new user to sign up via Single Sign-On (SSO) only when the user is a member of at least one Remote Group that is mapped to a Local Group in the Group Map option below. This option allows SSO administrators to restrict SSO users to control who can sign up and get access based on their group memberships.

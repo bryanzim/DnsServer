@@ -149,6 +149,45 @@ namespace DnsServerCore
             return value;
         }
 
+        public static bool TryFormOrJson(this HttpRequest request, string parameter, out string value)
+        {
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryGetProperty(parameter, out JsonElement jsonValue) || (jsonValue.ValueKind == JsonValueKind.Null))
+                {
+                    value = null;
+                    return false;
+                }
+
+                switch (jsonValue.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        value = jsonValue.GetString();
+                        return value is not null;
+
+                    case JsonValueKind.Number:
+                    case JsonValueKind.True:
+                    case JsonValueKind.False:
+                        value = jsonValue.ToString();
+                        return true;
+
+                    default:
+                        throw new InvalidOperationException();
+                }
+            }
+
+            if (!request.HasFormContentType || !request.Form.ContainsKey(parameter))
+            {
+                value = null;
+                return false;
+            }
+
+            value = request.Form[parameter];
+            return true;
+        }
+
         public static string GetFormOrJson(this HttpRequest request, string parameter)
         {
             string value = request.FormOrJson(parameter);
