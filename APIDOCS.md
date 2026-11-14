@@ -2173,7 +2173,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option. This parameter must be sent as form data or JSON. It is not accepted from the query string.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option. This parameter must be sent as form data or JSON. It is not accepted from the query string. A value of `************` is not stored.
 
 REQUEST: To import a zone file while creating a `Primary` or `Forwarder` zone, use POST request with multi-part form data containing the zone file data.
 
@@ -3252,7 +3252,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string. The records API returns `************` when a password is stored. Post that same value to keep the stored password. An empty value clears it.
 - `appName` (optional): The name of the DNS app. This parameter is required for adding the `APP` record.
 - `classPath` (optional): This parameter is required for adding the `APP` record.
 - `recordData` (optional): This parameter is used for adding the `APP` record as per the DNS app requirements.
@@ -3964,7 +3964,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string. The records API returns `************` when a password is stored. Post that same value to keep the stored password of the forwarder being updated. An empty value clears it.
 - `appName` (optional): This parameter is required for updating the `APP` record.
 - `classPath` (optional): This parameter is required for updating the `APP` record.
 - `recordData` (optional): This parameter is used for updating the `APP` record as per the DNS app requirements.

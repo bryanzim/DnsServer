@@ -62,6 +62,27 @@ namespace DnsServerCore.Tests
             Assert.Equal(((DnsSOARecordData)soa.RDATA).Expire, expire.Expire);
         }
 
+        [Fact]
+        public async System.Threading.Tasks.Task GlueAddressDoesNotAuthorizeZoneTransfer()
+        {
+            const string zone = "glue-acl.example";
+            _dns.CreateZone(zone);
+
+            string nameServer = "ns2." + zone;
+            _dns.Add(zone, zone, DnsResourceRecordType.NS, new DnsNSRecordData(nameServer));
+            _dns.Add(zone, nameServer, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.51")));
+            Glue(zone, zone, nameServer, "192.0.2.50");
+
+            DnsDatagram request = new DnsDatagram(1, false, DnsOpcode.StandardQuery, false, false, false, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(zone, DnsResourceRecordType.AXFR, DnsClass.IN)]);
+
+            DnsDatagram glueResponse = await _dns.Server.DirectQueryAsync(request, new IPEndPoint(IPAddress.Parse("192.0.2.50"), 53), 10000);
+            Assert.Equal(DnsResponseCode.Refused, glueResponse.RCODE);
+
+            DnsDatagram resolvedResponse = await _dns.Server.DirectQueryAsync(request, new IPEndPoint(IPAddress.Parse("192.0.2.51"), 53), 10000);
+            Assert.Equal(DnsResponseCode.NoError, resolvedResponse.RCODE);
+            Assert.Equal(DnsResourceRecordType.SOA, DnsTest.AllAnswers(resolvedResponse)[0].Type);
+        }
+
         void Glue(string zone, string owner, string nameServer, string address)
         {
             foreach (DnsResourceRecord record in _dns.Server.AuthZoneManager.GetRecords(zone, owner, DnsResourceRecordType.NS))

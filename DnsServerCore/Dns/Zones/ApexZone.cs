@@ -1170,7 +1170,8 @@ namespace DnsServerCore.Dns.Zones
                 if (primaryNameServer.Equals((nsRecord.RDATA as DnsNSRecordData).NameServer, StringComparison.OrdinalIgnoreCase))
                     continue; //skip primary name server
 
-                await ResolveNameServerAddressesAsync(nsRecord, nameServers);
+                //glue on the NS record is not an authorization to transfer the zone; a secondary known only by glue belongs in the network ACL
+                await ResolveNameServerAddressesAsync((nsRecord.RDATA as DnsNSRecordData).NameServer, 53, DnsTransportProtocol.Udp, nameServers);
             }
 
             return nameServers;
@@ -1187,7 +1188,7 @@ namespace DnsServerCore.Dns.Zones
                 if (nsRecord.GetAuthGenericRecordInfo().Disabled)
                     continue;
 
-                await ResolveNameServerAddressesAsync(nsRecord, nameServers);
+                await ResolveNameServerAddressesAsync((nsRecord.RDATA as DnsNSRecordData).NameServer, 53, DnsTransportProtocol.Udp, nameServers);
             }
 
             return nameServers;

@@ -4031,7 +4031,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     return true;
 
                 case AuthZoneQueryAccess.AllowOnlyPrivateNetworks:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     switch (remoteIP.AddressFamily)
@@ -4045,25 +4045,25 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
 
                 case AuthZoneQueryAccess.AllowOnlyZoneNameServers:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return await IsZoneNameServerAllowedAsync();
 
                 case AuthZoneQueryAccess.UseSpecifiedNetworkACL:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return NetworkAccessControl.IsAddressAllowed(remoteIP, apexZone.QueryAccessNetworkACL);
 
                 case AuthZoneQueryAccess.AllowZoneNameServersAndUseSpecifiedNetworkACL:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return NetworkAccessControl.IsAddressAllowed(remoteIP, apexZone.QueryAccessNetworkACL) || await IsZoneNameServerAllowedAsync();
 
                 default:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return false;

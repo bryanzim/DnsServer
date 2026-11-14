@@ -41,6 +41,37 @@ namespace DnsServerCore
 {
     public partial class DnsWebService
     {
+        internal const string ForwarderProxyPasswordHidden = "************";
+
+        internal static string SelectForwarderProxyPassword(string postedPassword, string storedPassword)
+        {
+            //an empty value clears the password; the placeholder keeps the stored one
+            if (string.IsNullOrEmpty(postedPassword))
+                return null;
+
+            if (postedPassword == ForwarderProxyPasswordHidden)
+                return string.IsNullOrEmpty(storedPassword) ? null : storedPassword;
+
+            return postedPassword;
+        }
+
+        internal static string FindForwarderProxyPassword(IReadOnlyList<DnsResourceRecord> records, DnsTransportProtocol protocol, string forwarder)
+        {
+            if ((records is null) || (forwarder is null))
+                return null;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (record.RDATA is not DnsForwarderRecordData data)
+                    continue;
+
+                if ((data.Protocol == protocol) && data.Forwarder.Equals(forwarder, StringComparison.OrdinalIgnoreCase))
+                    return data.ProxyPassword;
+            }
+
+            return null;
+        }
+
         class WebServiceZonesApi
         {
             #region variables
@@ -845,7 +876,7 @@ namespace DnsServerCore
                                         jsonWriter.WriteString("proxyAddress", rdata.ProxyAddress);
                                         jsonWriter.WriteNumber("proxyPort", rdata.ProxyPort);
                                         jsonWriter.WriteString("proxyUsername", rdata.ProxyUsername);
-                                        jsonWriter.WriteString("proxyPassword", rdata.ProxyPassword);
+                                        jsonWriter.WriteString("proxyPassword", string.IsNullOrEmpty(rdata.ProxyPassword) ? "" : ForwarderProxyPasswordHidden);
                                         break;
                                 }
                             }
@@ -1857,6 +1888,7 @@ namespace DnsServerCore
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
                                         _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
+                                        proxyPassword = SelectForwarderProxyPassword(proxyPassword, null);
                                         break;
                                 }
 
@@ -3072,6 +3104,11 @@ namespace DnsServerCore
                 _dnsWebService._dnsServer.CacheZoneManager.DeleteZone(zoneInfo.Name);
             }
 
+            string FindForwarderProxyPassword(string zoneName, string domain, DnsTransportProtocol protocol, string forwarder)
+            {
+                return DnsWebService.FindForwarderProxyPassword(_dnsWebService._dnsServer.AuthZoneManager.GetRecords(zoneName, domain, DnsResourceRecordType.FWD), protocol, forwarder);
+            }
+
             private void ThrowIfClusterManagedZone(AuthZoneInfo zoneInfo, string action)
             {
                 if (!_dnsWebService._clusterManager.ClusterInitialized)
@@ -4267,6 +4304,7 @@ namespace DnsServerCore
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
                                         _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
+                                        proxyPassword = SelectForwarderProxyPassword(proxyPassword, FindForwarderProxyPassword(zoneInfo.Name, domain, protocol, forwarder));
                                         break;
                                 }
                             }
@@ -5236,6 +5274,7 @@ namespace DnsServerCore
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
                                         _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
+                                        proxyPassword = SelectForwarderProxyPassword(proxyPassword, FindForwarderProxyPassword(zoneInfo.Name, domain, protocol, forwarder));
                                         break;
                                 }
                             }

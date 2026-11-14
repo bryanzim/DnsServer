@@ -2057,6 +2057,18 @@ namespace DnsServerCore
             }
         }
 
+        internal static bool IsConnectionLoopback(IPAddress remoteAddress)
+        {
+            if (remoteAddress is null)
+                return false;
+
+            if (remoteAddress.IsIPv4MappedToIPv6)
+                remoteAddress = remoteAddress.MapToIPv4();
+
+            //only the TCP connection counts; a reverse-proxy header can claim 127.0.0.1 from any allowed peer
+            return remoteAddress.Equals(IPAddress.Loopback) || remoteAddress.Equals(IPAddress.IPv6Loopback);
+        }
+
         private IPEndPoint GetRemoteEndPoint(HttpContext context)
         {
             try
@@ -2438,12 +2450,10 @@ namespace DnsServerCore
                     {
                         if (!TryValidateSession(context, out UserSession _))
                         {
-                            IPAddress remoteAddress = GetRemoteEndPoint(context).Address;
-
-                            if (!remoteAddress.Equals(IPAddress.Loopback) && !remoteAddress.Equals(IPAddress.IPv6Loopback))
+                            if (!IsConnectionLoopback(context.Connection.RemoteIpAddress))
                                 throw new InvalidTokenWebServiceException("Invalid token or session expired.");
 
-                            //allow unauthenticated call from localhost
+                            //allow unauthenticated call from a local connection
                         }
 
                         needsJsonResponseObject = false;

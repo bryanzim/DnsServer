@@ -3057,6 +3057,51 @@ namespace DnsServerCore.Dns
             }
         }
 
+        internal static bool IsUpdatePolicyPermitted(string recordName, DnsResourceRecordType recordType, IReadOnlyDictionary<string, IReadOnlyList<DnsResourceRecordType>> policyMap)
+        {
+            if ((recordName is null) || (policyMap is null))
+                return false;
+
+            foreach (KeyValuePair<string, IReadOnlyList<DnsResourceRecordType>> policy in policyMap)
+            {
+                if (policy.Value is null)
+                    continue;
+
+                if (
+                      recordName.Equals(policy.Key, StringComparison.OrdinalIgnoreCase) ||
+                      (policy.Key.StartsWith("*.", StringComparison.Ordinal) && recordName.EndsWith(policy.Key.Substring(1), StringComparison.OrdinalIgnoreCase))
+                   )
+                {
+                    foreach (DnsResourceRecordType allowedType in policy.Value)
+                    {
+                        if ((allowedType == DnsResourceRecordType.ANY) || (allowedType == recordType))
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        internal static bool IsUpdateMessagePermitted(IReadOnlyList<DnsResourceRecord> prerequisites, IReadOnlyList<DnsResourceRecord> updates, IReadOnlyDictionary<string, IReadOnlyList<DnsResourceRecordType>> policyMap)
+        {
+            return SectionPermitted(prerequisites, policyMap) && SectionPermitted(updates, policyMap);
+
+            static bool SectionPermitted(IReadOnlyList<DnsResourceRecord> records, IReadOnlyDictionary<string, IReadOnlyList<DnsResourceRecordType>> policyMap)
+            {
+                if (records is null)
+                    return true;
+
+                foreach (DnsResourceRecord record in records)
+                {
+                    if (!IsUpdatePolicyPermitted(record.Name, record.Type, policyMap))
+                        return false;
+                }
+
+                return true;
+            }
+        }
+
         private async Task<DnsDatagram> ProcessNotifyQueryAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol)
         {
             if ((request.Question.Count != 1) || (request.Question[0].Type != DnsResourceRecordType.SOA))
@@ -3192,38 +3237,26 @@ namespace DnsServerCore.Dns
                         return false;
                     }
 
-                    //check policy
-                    foreach (DnsResourceRecord uRecord in request.Authority)
+                    //prerequisites can name other records, so they follow the same policy as the update
+                    if (!IsSectionPermitted(request.Answer) || !IsSectionPermitted(request.Authority))
+                        return false;
+
+                    bool IsSectionPermitted(IReadOnlyList<DnsResourceRecord> records)
                     {
-                        bool isPermitted = false;
+                        if (records is null)
+                            return true;
 
-                        foreach (KeyValuePair<string, IReadOnlyList<DnsResourceRecordType>> policy in policyMap)
+                        foreach (DnsResourceRecord record in records)
                         {
-                            if (
-                                  uRecord.Name.Equals(policy.Key, StringComparison.OrdinalIgnoreCase) ||
-                                  (policy.Key.StartsWith("*.", StringComparison.Ordinal) && uRecord.Name.EndsWith(policy.Key.Substring(1), StringComparison.OrdinalIgnoreCase))
-                               )
-                            {
-                                foreach (DnsResourceRecordType allowedType in policy.Value)
-                                {
-                                    if ((allowedType == DnsResourceRecordType.ANY) || (allowedType == uRecord.Type))
-                                    {
-                                        isPermitted = true;
-                                        break;
-                                    }
-                                }
+                            if (IsUpdatePolicyPermitted(record.Name, record.Type, policyMap))
+                                continue;
 
-                                if (isPermitted)
-                                    break;
-                            }
-                        }
-
-                        if (!isPermitted)
-                        {
-                            _log.Write(remoteEP, protocol, "DNS Server refused a zone UPDATE request [" + uRecord.Name.ToLowerInvariant() + " " + uRecord.Type.ToString() + " " + uRecord.Class.ToString() + "] due to Dynamic Updates Security Policy for zone: " + zoneInfo.DisplayName);
+                            _log.Write(remoteEP, protocol, "DNS Server refused a zone UPDATE request [" + record.Name.ToLowerInvariant() + " " + record.Type.ToString() + " " + record.Class.ToString() + "] due to Dynamic Updates Security Policy for zone: " + zoneInfo.DisplayName);
 
                             return false;
                         }
+
+                        return true;
                     }
                 }
 
@@ -4032,7 +4065,11 @@ namespace DnsServerCore.Dns
             if (remoteEP is null)
                 authResponse = _authZoneManager.Query(request, isRecursionAllowed);
             else
-                authResponse = await _authZoneManager.QueryAsync(request, remoteEP.Address, isRecursionAllowed);
+            {
+                //the shared 0.0.0.0 endpoint is an internal query; a packet from that address is not
+                IPAddress queryAccessAddress = ReferenceEquals(remoteEP, IPENDPOINT_ANY_0) ? IPAddress.Loopback : remoteEP.Address;
+                authResponse = await _authZoneManager.QueryAsync(request, queryAccessAddress, isRecursionAllowed);
+            }
 
             if (request.RecursionDesired && isRecursionAllowed && _locallyServedDnsZones)
             {
@@ -5154,6 +5191,31 @@ namespace DnsServerCore.Dns
             return response;
         }
 
+        internal static NetworkAddress SelectClientSubnet(IPAddress clientAddress, IPAddress ecsAddress, byte ecsPrefixLength, byte maximumPrefixLength)
+        {
+            if ((clientAddress is null) || (ecsAddress is null) || (ecsPrefixLength == 0) || (maximumPrefixLength == 0))
+                return null;
+
+            if (clientAddress.IsIPv4MappedToIPv6)
+                clientAddress = clientAddress.MapToIPv4();
+
+            if (ecsAddress.IsIPv4MappedToIPv6)
+                ecsAddress = ecsAddress.MapToIPv4();
+
+            if (clientAddress.AddressFamily != ecsAddress.AddressFamily)
+                return null;
+
+            NetworkAddress stated = new NetworkAddress(ecsAddress, ecsPrefixLength);
+            if (!stated.Contains(clientAddress))
+                return null;
+
+            byte prefixLength = Math.Min(ecsPrefixLength, maximumPrefixLength);
+            if (prefixLength == ecsPrefixLength)
+                return stated;
+
+            return new NetworkAddress(ecsAddress, prefixLength);
+        }
+
         private async Task<DnsDatagram> RecursiveResolveAsync(DnsDatagram request, IPEndPoint remoteEP, IReadOnlyList<DnsResourceRecord> conditionalForwarders, bool dnssecValidation, bool cachePrefetchOperation, bool skipDnsAppAuthoritativeRequestHandlers, int clientTimeout, DnsClient.ResolverContext context)
         {
             DnsQuestionRecord question = request.Question[0];
@@ -5227,18 +5289,38 @@ namespace DnsServerCore.Dns
                 }
                 else
                 {
-                    //use ECS from client request
-                    switch (requestECS.Family)
-                    {
-                        case EDnsClientSubnetAddressFamily.IPv4:
-                            eDnsClientSubnet = new NetworkAddress(requestECS.Address, Math.Min(requestECS.SourcePrefixLength, _eDnsClientSubnetIPv4PrefixLength));
-                            request.SetShadowEDnsClientSubnetOption(eDnsClientSubnet);
-                            break;
+                    IPAddress clientAddress = remoteEP.Address;
+                    if (clientAddress.IsIPv4MappedToIPv6)
+                        clientAddress = clientAddress.MapToIPv4();
 
-                        case EDnsClientSubnetAddressFamily.IPv6:
-                            eDnsClientSubnet = new NetworkAddress(requestECS.Address, Math.Min(requestECS.SourcePrefixLength, _eDnsClientSubnetIPv6PrefixLength));
-                            request.SetShadowEDnsClientSubnetOption(eDnsClientSubnet);
-                            break;
+                    byte maximumPrefixLength = clientAddress.AddressFamily == AddressFamily.InterNetwork ? _eDnsClientSubnetIPv4PrefixLength : _eDnsClientSubnetIPv6PrefixLength;
+                    eDnsClientSubnet = SelectClientSubnet(clientAddress, requestECS.Address, requestECS.SourcePrefixLength, maximumPrefixLength);
+                    if (eDnsClientSubnet is not null)
+                    {
+                        request.SetShadowEDnsClientSubnetOption(eDnsClientSubnet);
+                    }
+                    else if (!NetUtilities.IsPrivateIP(clientAddress))
+                    {
+                        switch (clientAddress.AddressFamily)
+                        {
+                            case AddressFamily.InterNetwork:
+                                eDnsClientSubnet = new NetworkAddress(clientAddress, _eDnsClientSubnetIPv4PrefixLength);
+                                request.SetShadowEDnsClientSubnetOption(eDnsClientSubnet);
+                                break;
+
+                            case AddressFamily.InterNetworkV6:
+                                eDnsClientSubnet = new NetworkAddress(clientAddress, _eDnsClientSubnetIPv6PrefixLength);
+                                request.SetShadowEDnsClientSubnetOption(eDnsClientSubnet);
+                                break;
+
+                            default:
+                                request.ShadowHideEDnsClientSubnetOption();
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        request.ShadowHideEDnsClientSubnetOption();
                     }
                 }
             }
