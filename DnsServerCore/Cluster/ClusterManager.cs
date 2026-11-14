@@ -496,10 +496,7 @@ namespace DnsServerCore.Cluster
                 foreach (UserSession session in _dnsWebService.AuthManager.Sessions)
                 {
                     if (session.Type == UserSessionType.ClusterApiToken)
-                    {
                         _dnsWebService.AuthManager.DeleteSession(session.Token);
-                        break;
-                    }
                 }
             }
 

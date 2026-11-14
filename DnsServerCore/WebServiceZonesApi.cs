@@ -1339,6 +1339,7 @@ namespace DnsServerCore
 
                     bool disabled = false;
                     string comments = null;
+                    bool useSerialDateScheme = false;
 
                     if (record.Tag is string tagValue)
                     {
@@ -1354,6 +1355,9 @@ namespace DnsServerCore
 
                                 if (json.TryGetProperty("comments", out JsonElement jsonComments) && (jsonComments.ValueKind == JsonValueKind.String))
                                     comments = jsonComments.GetString();
+
+                                if (json.TryGetProperty("useSerialDateScheme", out JsonElement jsonUseSerialDateScheme))
+                                    useSerialDateScheme = jsonUseSerialDateScheme.ValueKind == JsonValueKind.True;
                             }
                             catch
                             {
@@ -1377,16 +1381,12 @@ namespace DnsServerCore
 
                         case DnsResourceRecordType.NS:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new NSRecordInfo
                                 {
-                                    NSRecordInfo rrInfo = new NSRecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Disabled = disabled;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Disabled = disabled,
+                                    Comments = comments
+                                };
 
                                 record.SyncGlueRecords(records);
 
@@ -1396,15 +1396,12 @@ namespace DnsServerCore
 
                         case DnsResourceRecordType.SOA:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new SOARecordInfo
                                 {
-                                    SOARecordInfo rrInfo = new SOARecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Comments = comments,
+                                    UseSoaSerialDateScheme = useSerialDateScheme
+                                };
 
                                 newRecords.Add(record);
                             }
@@ -1413,16 +1410,12 @@ namespace DnsServerCore
                         case DnsResourceRecordType.SVCB:
                         case DnsResourceRecordType.HTTPS:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new SVCBRecordInfo
                                 {
-                                    SVCBRecordInfo rrInfo = new SVCBRecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Disabled = disabled;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Disabled = disabled,
+                                    Comments = comments
+                                };
 
                                 if (record.RDATA is DnsSVCBRecordData rdata && (rdata.AutoIpv4Hint || rdata.AutoIpv6Hint))
                                 {
@@ -1447,16 +1440,12 @@ namespace DnsServerCore
 
                         default:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new GenericRecordInfo
                                 {
-                                    GenericRecordInfo rrInfo = new GenericRecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Disabled = disabled;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Disabled = disabled,
+                                    Comments = comments
+                                };
 
                                 newRecords.Add(record);
                             }
@@ -2120,15 +2109,23 @@ namespace DnsServerCore
 
                         GenericRecordInfo recordInfo = record.GetAuthGenericRecordInfo();
 
-                        if (recordInfo.Disabled || ((recordInfo.Comments is not null) && recordInfo.Comments.TrimStart().StartsWith('{')))
+                        if (recordInfo.Disabled || ((recordInfo.Comments is not null) && recordInfo.Comments.TrimStart().StartsWith('{')) || (recordInfo is SOARecordInfo soaRecordInfo && soaRecordInfo.UseSoaSerialDateScheme))
                         {
                             using (MemoryStream mS = new MemoryStream())
                             {
                                 Utf8JsonWriter jsonWriter = new Utf8JsonWriter(mS);
 
                                 jsonWriter.WriteStartObject();
-                                jsonWriter.WriteBoolean("disabled", recordInfo.Disabled);
-                                jsonWriter.WriteString("comments", recordInfo.Comments);
+
+                                if (recordInfo.Disabled)
+                                    jsonWriter.WriteBoolean("disabled", recordInfo.Disabled);
+
+                                if (!string.IsNullOrEmpty(recordInfo.Comments))
+                                    jsonWriter.WriteString("comments", recordInfo.Comments);
+
+                                if (recordInfo is SOARecordInfo soaRecordInfo1 && soaRecordInfo1.UseSoaSerialDateScheme)
+                                    jsonWriter.WriteBoolean("useSerialDateScheme", soaRecordInfo1.UseSoaSerialDateScheme);
+
                                 jsonWriter.WriteEndObject();
 
                                 jsonWriter.Flush();

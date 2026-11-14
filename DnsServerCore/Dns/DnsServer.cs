@@ -502,6 +502,10 @@ namespace DnsServerCore.Dns
 
                 EnableDnsOverHttpHelpRedirect = true;
 
+                string strDnsReverseProxyNetworkACL = Environment.GetEnvironmentVariable("DNS_SERVER_REVERSE_PROXY_NETWORK_ACL");
+                if (!string.IsNullOrEmpty(strDnsReverseProxyNetworkACL))
+                    DnsReverseProxyNetworkACL = strDnsReverseProxyNetworkACL.Split(NetworkAccessControl.Parse, ',');
+
                 //recursion
                 string strRecursion = Environment.GetEnvironmentVariable("DNS_SERVER_RECURSION");
                 if (!string.IsNullOrEmpty(strRecursion))
@@ -1090,7 +1094,7 @@ namespace DnsServerCore.Dns
 
             uint failureRecordTtl = bR.ReadUInt32();
             if (!isConfigTransfer)
-                _cacheZoneManager.FailureRecordTtl = failureRecordTtl;
+                _cacheZoneManager.FailureRecordTtl = Math.Clamp(failureRecordTtl, TechnitiumLibrary.Net.Dns.DnsCache.FAILURE_RECORD_TTL_MIN, TechnitiumLibrary.Net.Dns.DnsCache.FAILURE_RECORD_TTL_MAX);
 
             if (version >= 7)
             {

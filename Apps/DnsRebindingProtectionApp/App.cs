@@ -27,6 +27,7 @@ using System.Threading.Tasks;
 using TechnitiumLibrary;
 using TechnitiumLibrary.Net;
 using TechnitiumLibrary.Net.Dns;
+using TechnitiumLibrary.Net.Dns.EDnsOptions;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
 namespace DnsRebindingProtection
@@ -38,6 +39,7 @@ namespace DnsRebindingProtection
         readonly static JsonDocumentOptions _jsonParseOptions = new JsonDocumentOptions() { CommentHandling = JsonCommentHandling.Skip };
 
         bool _enableProtection;
+        bool _enableEdeReport = true;
         NetworkAddress[] _bypassNetworks;
         HashSet<NetworkAddress> _privateNetworks;
         HashSet<string> _privateDomains;
@@ -111,7 +113,7 @@ namespace DnsRebindingProtection
             return false;
         }
 
-        private bool TryDetectRebinding(IReadOnlyList<DnsResourceRecord> answer, out List<DnsResourceRecord> protectedAnswer)
+        private bool TryDetectRebinding(IReadOnlyList<DnsResourceRecord> answer, out List<DnsResourceRecord> protectedAnswer, out string domain)
         {
             for (int i = 0; i < answer.Count; i++)
             {
@@ -134,11 +136,13 @@ namespace DnsRebindingProtection
                             protectedAnswer.Add(record);
                     }
 
+                    domain = record.Name.ToLowerInvariant();
                     return true;
                 }
             }
 
             protectedAnswer = null;
+            domain = null;
             return false;
         }
 
@@ -152,6 +156,7 @@ namespace DnsRebindingProtection
             JsonElement jsonConfig = jsonDocument.RootElement;
 
             _enableProtection = jsonConfig.GetPropertyValue("enableProtection", true);
+            _enableEdeReport = jsonConfig.GetPropertyValue("enableEdeReport", true);
             _privateNetworks = new HashSet<NetworkAddress>(jsonConfig.ReadArray("privateNetworks", NetworkAddress.Parse));
             _privateDomains = new HashSet<string>(jsonConfig.ReadArray("privateDomains"), StringComparer.OrdinalIgnoreCase);
 
@@ -165,6 +170,13 @@ namespace DnsRebindingProtection
 
                 //update config for new feature
                 config = config.Replace("\"privateNetworks\"", "\"bypassNetworks\": [\r\n  ],\r\n  \"privateNetworks\"");
+                await File.WriteAllTextAsync(Path.Combine(dnsServer.ApplicationFolder, "dnsApp.config"), config);
+            }
+
+            if (!jsonConfig.TryGetProperty("enableEdeReport", out _))
+            {
+                //update config
+                config = config.Replace("\"bypassNetworks\"", "\"enableEdeReport\": true,\r\n  \"bypassNetworks\"");
                 await File.WriteAllTextAsync(Path.Combine(dnsServer.ApplicationFolder, "dnsApp.config"), config);
             }
         }
@@ -189,12 +201,31 @@ namespace DnsRebindingProtection
                     return Task.FromResult(response);
             }
 
-            bool answerChanged = TryDetectRebinding(response.Answer, out List<DnsResourceRecord> protectedAnswer);
+            bool answerChanged = TryDetectRebinding(response.Answer, out List<DnsResourceRecord> protectedAnswer, out string answerDomain);
             List<DnsResourceRecord> protectedAdditional = null;
-            bool additionalChanged = (response.Additional is not null) && TryDetectRebinding(response.Additional, out protectedAdditional);
+            bool additionalChanged = (response.Additional is not null) && TryDetectRebinding(response.Additional, out protectedAdditional, out string additionalDomain);
 
             if (answerChanged || additionalChanged)
-                return Task.FromResult(response.Clone(answerChanged ? protectedAnswer : response.Answer, response.Authority, additionalChanged ? protectedAdditional : response.Additional));
+            {
+                DnsDatagram newResponse = response.Clone(answerChanged ? protectedAnswer : response.Answer, response.Authority, additionalChanged ? protectedAdditional : response.Additional);
+
+                if (_enableEdeReport && (newResponse.EDNS is not null))
+                {
+                    string domain = answerChanged ? answerDomain : additionalDomain;
+                    EDnsOption option = new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, new EDnsExtendedDnsErrorOptionData(EDnsExtendedDnsErrorCode.Filtered, $"source=dns-rebinding-protection-app; domain={domain};"));
+
+                    List<EDnsOption> options;
+
+                    if (newResponse.EDNS.Options.Count == 0)
+                        options = [option];
+                    else
+                        options = [.. newResponse.EDNS.Options, option];
+
+                    newResponse = newResponse.CloneWithEDnsOptions(options);
+                }
+
+                return Task.FromResult(newResponse);
+            }
 
             return Task.FromResult(response);
         }
