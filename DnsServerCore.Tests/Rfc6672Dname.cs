@@ -253,6 +253,40 @@ namespace DnsServerCore.Tests
         }
 
         [Fact]
+        public void IncrementalTransferLeavesExistingRecordsUnchangedWhenANameServerIsIllegal()
+        {
+            const string zone = "dname-ixfr-keep.example";
+            const string alias = "alias." + zone;
+            const string removed = "removed." + zone;
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+            _dns.Set(zone, alias, DnsResourceRecordType.DNAME, new DnsDNAMERecordData("dst.example.net"));
+            _dns.Add(zone, removed, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.3")));
+
+            DnsResourceRecord current = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            DnsSOARecordData soa = (DnsSOARecordData)current.RDATA;
+            DnsResourceRecord updated = new DnsResourceRecord(current.Name, DnsResourceRecordType.SOA, current.Class, current.TTL, new DnsSOARecordData(soa.PrimaryNameServer, soa.ResponsiblePerson, soa.Serial + 1, soa.Refresh, soa.Retry, soa.Expire, soa.Minimum));
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.SyncIncrementalZoneTransferRecords(zone, new DnsResourceRecord[]
+            {
+                updated,
+                current,
+                new DnsResourceRecord(removed, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.3"))),
+                updated,
+                new DnsResourceRecord(alias, DnsResourceRecordType.NS, DnsClass.IN, 300, new DnsNSRecordData("ns1.example.net")),
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.4"))),
+                updated
+            }));
+
+            Assert.Contains(alias, error.Message);
+            Assert.Equal(soa.Serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, alias, DnsResourceRecordType.DNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, alias, DnsResourceRecordType.NS));
+            Assert.Equal(IPAddress.Parse("192.0.2.3"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, removed, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+        }
+
+        [Fact]
         public async Task ZoneTransferKeepsAnApexDnameBesideNameServers()
         {
             const string zone = "dname-axfr-apex.example";

@@ -943,16 +943,21 @@ namespace DnsServerCore.Dns.Zones
 
         void RejectProhibitedChange(Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntries, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> addedEntries)
         {
-            List<DnsResourceRecordType> types = new List<DnsResourceRecordType>(_entries.Count);
+            RejectProhibitedChange(_name, this is ApexZone, _entries, deletedEntries, addedEntries);
+        }
 
-            foreach (DnsResourceRecordType type in _entries.Keys)
+        internal static void RejectProhibitedChange(string ownerName, bool atApex, IReadOnlyDictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> existingEntries, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntries, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> addedEntries)
+        {
+            List<DnsResourceRecordType> types = new List<DnsResourceRecordType>(existingEntries.Count);
+
+            foreach (DnsResourceRecordType type in existingEntries.Keys)
                 types.Add(type);
 
             if (deletedEntries is not null)
             {
                 foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntry in deletedEntries)
                 {
-                    if (!_entries.TryGetValue(deletedEntry.Key, out IReadOnlyList<DnsResourceRecord> existingRecords))
+                    if (!existingEntries.TryGetValue(deletedEntry.Key, out IReadOnlyList<DnsResourceRecord> existingRecords))
                         continue;
 
                     int remaining = 0;
@@ -988,7 +993,7 @@ namespace DnsServerCore.Dns.Zones
                 }
             }
 
-            RejectProhibitedRrsets(_name, this is ApexZone, types);
+            RejectProhibitedRrsets(ownerName, atApex, types);
         }
 
         //RFC 6672 section 2.3: DNAME and NS share a name only at the zone apex.

@@ -3074,6 +3074,22 @@ namespace DnsServerCore.Dns.ZoneManagers
                 }
             }
 
+            //refuse the transfer before any name is removed or replaced
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> xfrEntry in xfrRecordsGroupedByDomain)
+            {
+                string domain = xfrEntry.Key.ToLowerInvariant();
+
+                if (ZoneTransferNameIsSkipped(zoneName, domain, rootZone, zoneEnd, delegatedNames))
+                    continue;
+
+                string ownerName = domain;
+
+                if (TryGetAuthZone(zoneName, domain, out AuthZone existing))
+                    ownerName = existing.Name;
+
+                AuthZone.RejectProhibitedRrsets(ownerName, domain.Equals(zoneName, StringComparison.OrdinalIgnoreCase), xfrEntry.Value.Keys);
+            }
+
             //sync records
             List<DnsResourceRecord> currentRecords = new List<DnsResourceRecord>();
             ListAllZoneRecords(zoneName, currentRecords);
@@ -3092,35 +3108,8 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 string domain = xfrEntry.Key.ToLowerInvariant();
 
-                if (!rootZone && !domain.Equals(zoneName, StringComparison.OrdinalIgnoreCase) && !domain.EndsWith(zoneEnd, StringComparison.OrdinalIgnoreCase))
-                    continue; //skip out of bailiwick records
-
-                if (IsNameInChildZone(zoneName, domain))
-                    continue; //this server already hosts that child zone
-
-                if ((domain.Length > zoneName.Length) && !delegatedNames.Contains(domain))
-                {
-                    //domain is not zone apex and not delegation subdomain
-                    //check if domain is in delegated zone
-                    string parent = domain;
-                    bool belongsToDelegatedZone = false;
-
-                    while (true)
-                    {
-                        parent = GetParentZone(parent);
-                        if ((parent is null) || (parent.Length == zoneName.Length))
-                            break; //record belongs to zone
-
-                        if (delegatedNames.Contains(parent))
-                        {
-                            belongsToDelegatedZone = true;
-                            break;
-                        }
-                    }
-
-                    if (belongsToDelegatedZone)
-                        continue;
-                }
+                if (ZoneTransferNameIsSkipped(zoneName, domain, rootZone, zoneEnd, delegatedNames))
+                    continue;
 
                 AuthZone zone = GetOrAddSubDomainZone(zoneName, domain);
 
@@ -3164,8 +3153,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             List<DnsResourceRecord> deletedGlueRecords = new List<DnsResourceRecord>();
             List<DnsResourceRecord> addedRecords = new List<DnsResourceRecord>();
             List<DnsResourceRecord> addedGlueRecords = new List<DnsResourceRecord>();
+            List<IncrementalDifference> differences = new List<IncrementalDifference>();
 
-            //read and apply difference sequences
+            //read difference sequences
             int index = 1;
             int count = condensedXfrRecords.Count - 1;
 
@@ -3241,10 +3231,28 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if (currentSoa.Serial != deletedSoa.Serial)
                     throw new InvalidOperationException("Current SOA serial does not match with the IXFR difference sequence deleted SOA.");
 
-                //sync difference sequence
-                if (deletedRecords.Count > 0)
+                differences.Add(new IncrementalDifference(new List<DnsResourceRecord>(deletedRecords), new List<DnsResourceRecord>(deletedGlueRecords), new List<DnsResourceRecord>(addedRecords), new List<DnsResourceRecord>(addedGlueRecords), addedSoaRecord));
+
+                //check next difference sequence
+                currentSoa = addedSoaRecord.RDATA as DnsSOARecordData;
+
+                deletedRecords.Clear();
+                deletedGlueRecords.Clear();
+                addedRecords.Clear();
+                addedGlueRecords.Clear();
+            }
+
+            //refuse the transfer before any difference is applied
+            Dictionary<string, List<DnsResourceRecord>> transferredRecords = new Dictionary<string, List<DnsResourceRecord>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (IncrementalDifference difference in differences)
+                RejectProhibitedIncrementalRecords(zoneName, difference.DeletedRecords, difference.AddedRecords, transferredRecords);
+
+            foreach (IncrementalDifference difference in differences)
+            {
+                if (difference.DeletedRecords.Count > 0)
                 {
-                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> deletedEntry in DnsResourceRecord.GroupRecords(deletedRecords))
+                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> deletedEntry in DnsResourceRecord.GroupRecords(difference.DeletedRecords))
                     {
                         if (IsNameInChildZone(zoneName, deletedEntry.Key))
                             continue; //this server already hosts that child zone
@@ -3265,9 +3273,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                 }
 
-                if (addedRecords.Count > 0)
+                if (difference.AddedRecords.Count > 0)
                 {
-                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> addedEntry in DnsResourceRecord.GroupRecords(addedRecords))
+                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> addedEntry in DnsResourceRecord.GroupRecords(difference.AddedRecords))
                     {
                         if (IsNameInChildZone(zoneName, addedEntry.Key))
                             continue; //this server already hosts that child zone
@@ -3281,27 +3289,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                 }
 
-                if ((deletedGlueRecords.Count > 0) || (addedGlueRecords.Count > 0))
+                if ((difference.DeletedGlueRecords.Count > 0) || (difference.AddedGlueRecords.Count > 0))
                 {
                     foreach (AuthZone zone in _root.GetApexZoneWithSubDomainZones(zoneName))
-                        zone.SyncGlueRecords(deletedGlueRecords, addedGlueRecords);
+                        zone.SyncGlueRecords(difference.DeletedGlueRecords, difference.AddedGlueRecords);
                 }
 
                 {
                     AuthZone zone = GetOrAddSubDomainZone(zoneName, zoneName);
 
-                    addedSoaRecord.CopyRecordInfoFrom(currentSoaRecord);
+                    difference.AddedSoaRecord.CopyRecordInfoFrom(currentSoaRecord);
 
-                    zone.LoadRecords(DnsResourceRecordType.SOA, new DnsResourceRecord[] { addedSoaRecord });
+                    zone.LoadRecords(DnsResourceRecordType.SOA, new DnsResourceRecord[] { difference.AddedSoaRecord });
                 }
-
-                //check next difference sequence
-                currentSoa = addedSoaRecord.RDATA as DnsSOARecordData;
-
-                deletedRecords.Clear();
-                deletedGlueRecords.Clear();
-                addedRecords.Clear();
-                addedGlueRecords.Clear();
             }
 
             apexZone.UpdateDnssecStatus();
@@ -3315,6 +3315,170 @@ namespace DnsServerCore.Dns.ZoneManagers
                 historyRecords.Add(xfrRecords[i]);
 
             return historyRecords;
+        }
+
+        private bool ZoneTransferNameIsSkipped(string zoneName, string domain, bool rootZone, string zoneEnd, HashSet<string> delegatedNames)
+        {
+            domain = domain.ToLowerInvariant();
+
+            if (!rootZone && !domain.Equals(zoneName, StringComparison.OrdinalIgnoreCase) && !domain.EndsWith(zoneEnd, StringComparison.OrdinalIgnoreCase))
+                return true; //skip out of bailiwick records
+
+            if (IsNameInChildZone(zoneName, domain))
+                return true; //this server already hosts that child zone
+
+            if ((domain.Length > zoneName.Length) && !delegatedNames.Contains(domain))
+            {
+                //domain is not zone apex and not delegation subdomain
+                //check if domain is in delegated zone
+                string parent = domain;
+
+                while (true)
+                {
+                    parent = GetParentZone(parent);
+                    if ((parent is null) || (parent.Length == zoneName.Length))
+                        break; //record belongs to zone
+
+                    if (delegatedNames.Contains(parent))
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void RejectProhibitedIncrementalRecords(string zoneName, List<DnsResourceRecord> deletedRecords, List<DnsResourceRecord> addedRecords, Dictionary<string, List<DnsResourceRecord>> shadow)
+        {
+            if (deletedRecords.Count > 0)
+            {
+                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> deletedEntry in DnsResourceRecord.GroupRecords(deletedRecords))
+                {
+                    if (IsNameInChildZone(zoneName, deletedEntry.Key))
+                        continue;
+
+                    List<DnsResourceRecord> records = TransferShadow(zoneName, deletedEntry.Key, shadow);
+                    AuthZone.RejectProhibitedChange(TransferOwnerName(zoneName, deletedEntry.Key), deletedEntry.Key.Equals(zoneName, StringComparison.OrdinalIgnoreCase), GroupTransferRecords(records), deletedEntry.Value, null);
+                    RemoveTransferRecords(records, deletedEntry.Value);
+                }
+            }
+
+            if (addedRecords.Count > 0)
+            {
+                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> addedEntry in DnsResourceRecord.GroupRecords(addedRecords))
+                {
+                    if (IsNameInChildZone(zoneName, addedEntry.Key))
+                        continue;
+
+                    List<DnsResourceRecord> records = TransferShadow(zoneName, addedEntry.Key, shadow);
+                    AuthZone.RejectProhibitedChange(TransferOwnerName(zoneName, addedEntry.Key), addedEntry.Key.Equals(zoneName, StringComparison.OrdinalIgnoreCase), GroupTransferRecords(records), null, addedEntry.Value);
+                    AddTransferRecords(records, addedEntry.Value);
+                }
+            }
+        }
+
+        private List<DnsResourceRecord> TransferShadow(string zoneName, string domain, Dictionary<string, List<DnsResourceRecord>> shadow)
+        {
+            if (!shadow.TryGetValue(domain, out List<DnsResourceRecord> records))
+            {
+                records = new List<DnsResourceRecord>();
+                ListAllRecords(zoneName, domain, records);
+                shadow.Add(domain, records);
+            }
+
+            return records;
+        }
+
+        private string TransferOwnerName(string zoneName, string domain)
+        {
+            if (TryGetAuthZone(zoneName, domain, out AuthZone existing))
+                return existing.Name;
+
+            return domain;
+        }
+
+        private static Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> GroupTransferRecords(List<DnsResourceRecord> records)
+        {
+            Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> grouped = new Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>();
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (!grouped.TryGetValue(record.Type, out List<DnsResourceRecord> typed))
+                {
+                    typed = new List<DnsResourceRecord>();
+                    grouped.Add(record.Type, typed);
+                }
+
+                typed.Add(record);
+            }
+
+            Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> existing = new Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>(grouped.Count);
+
+            foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> entry in grouped)
+                existing.Add(entry.Key, entry.Value);
+
+            return existing;
+        }
+
+        private static void RemoveTransferRecords(List<DnsResourceRecord> records, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntries)
+        {
+            foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntry in deletedEntries)
+            {
+                for (int i = records.Count - 1; i >= 0; i--)
+                {
+                    if (records[i].Type != deletedEntry.Key)
+                        continue;
+
+                    foreach (DnsResourceRecord deletedRecord in deletedEntry.Value)
+                    {
+                        if (records[i].RDATA.Equals(deletedRecord.RDATA))
+                        {
+                            records.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void AddTransferRecords(List<DnsResourceRecord> records, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> addedEntries)
+        {
+            foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> addedEntry in addedEntries)
+            {
+                foreach (DnsResourceRecord addedRecord in addedEntry.Value)
+                {
+                    bool exists = false;
+
+                    foreach (DnsResourceRecord existingRecord in records)
+                    {
+                        if ((existingRecord.Type == addedRecord.Type) && existingRecord.RDATA.Equals(addedRecord.RDATA))
+                        {
+                            exists = true;
+                            break;
+                        }
+                    }
+
+                    if (!exists)
+                        records.Add(addedRecord);
+                }
+            }
+        }
+
+        private sealed class IncrementalDifference
+        {
+            public readonly List<DnsResourceRecord> DeletedRecords;
+            public readonly List<DnsResourceRecord> DeletedGlueRecords;
+            public readonly List<DnsResourceRecord> AddedRecords;
+            public readonly List<DnsResourceRecord> AddedGlueRecords;
+            public readonly DnsResourceRecord AddedSoaRecord;
+
+            public IncrementalDifference(List<DnsResourceRecord> deletedRecords, List<DnsResourceRecord> deletedGlueRecords, List<DnsResourceRecord> addedRecords, List<DnsResourceRecord> addedGlueRecords, DnsResourceRecord addedSoaRecord)
+            {
+                DeletedRecords = deletedRecords;
+                DeletedGlueRecords = deletedGlueRecords;
+                AddedRecords = addedRecords;
+                AddedGlueRecords = addedGlueRecords;
+                AddedSoaRecord = addedSoaRecord;
+            }
         }
 
         private static List<DnsResourceRecord> CondenseIncrementalZoneTransferRecords(string zoneName, DnsResourceRecord currentSoaRecord, IReadOnlyList<DnsResourceRecord> xfrRecords)

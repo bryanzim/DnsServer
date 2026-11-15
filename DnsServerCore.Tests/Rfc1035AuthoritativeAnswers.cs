@@ -206,6 +206,39 @@ namespace DnsServerCore.Tests
         }
 
         [Fact]
+        public void ZoneTransferLeavesExistingRecordsUnchangedWhenACnameIsIllegal()
+        {
+            const string zone = "cname-axfr-keep.example";
+            const string stay = "stay." + zone;
+            const string removed = "removed." + zone;
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, stay, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.1")));
+            _dns.Add(zone, removed, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.2")));
+
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            DnsSOARecordData soaData = (DnsSOARecordData)soa.RDATA;
+            DnsResourceRecord updated = new DnsResourceRecord(soa.Name, DnsResourceRecordType.SOA, soa.Class, soa.TTL, new DnsSOARecordData(soaData.PrimaryNameServer, soaData.ResponsiblePerson, soaData.Serial + 1, soaData.Refresh, soaData.Retry, soaData.Expire, soaData.Minimum));
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.SyncZoneTransferRecords(zone, new DnsResourceRecord[]
+            {
+                updated,
+                new DnsResourceRecord(stay, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.9"))),
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example")),
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.8"))),
+                updated
+            }));
+
+            Assert.Contains(name, error.Message);
+            Assert.Equal(soaData.Serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+            Assert.Equal(IPAddress.Parse("192.0.2.1"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, stay, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Equal(IPAddress.Parse("192.0.2.2"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, removed, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.CNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A));
+        }
+
+        [Fact]
         public async Task MailExchangeIncludesTheInZoneAddress()
         {
             const string zone = "mx.example";
