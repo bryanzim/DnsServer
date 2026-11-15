@@ -23,6 +23,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -53,6 +54,7 @@ namespace QueryLogsSqlServer
         Channel<LogEntry>? _channel;
         ChannelWriter<LogEntry>? _channelWriter;
         Thread? _consumerThread;
+        volatile bool _databaseUnusable;
         const int BULK_INSERT_COUNT = 190; //sql server supports a maximum of 2100 parameters per query
         const int BULK_INSERT_ERROR_DELAY = 10000;
         const int BULK_REMOVE_COUNT = 10000;
@@ -206,7 +208,7 @@ namespace QueryLogsSqlServer
                     List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
                     StringBuilder sb = new StringBuilder(4096);
 
-                    while (!_disposed && await channelReader.WaitToReadAsync())
+                    while (!_disposed && !_databaseUnusable && await channelReader.WaitToReadAsync())
                     {
                         while (!_disposed && (logs.Count < BULK_INSERT_COUNT) && channelReader.TryRead(out LogEntry log))
                         {
@@ -220,7 +222,7 @@ namespace QueryLogsSqlServer
                             logs.Clear();
                     }
 
-                    if (!_disposed && (logs.Count > 0))
+                    if (!_disposed && !_databaseUnusable && (logs.Count > 0))
                         await BulkInsertLogsAsync(logs, sb);
                 }
                 catch (Exception ex)
@@ -244,11 +246,17 @@ namespace QueryLogsSqlServer
 
         private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs, StringBuilder sb)
         {
+            if (_databaseUnusable)
+                return true;
+
+            bool connected = false;
+
             try
             {
                 await using (SqlConnection connection = new SqlConnection(_connectionString + $" Initial Catalog={_databaseName};"))
                 {
                     await connection.OpenAsync();
+                    connected = true;
 
                     await using (SqlCommand command = connection.CreateCommand())
                     {
@@ -354,11 +362,69 @@ namespace QueryLogsSqlServer
             }
             catch (Exception ex)
             {
+                if (IsUnusableDatabase(ex, connected))
+                {
+                    _databaseUnusable = true;
+                    _enableLogging = false;
+                    _dnsServer?.WriteLog("Query Logs (SQL Server) stopped writing because the database is unreachable or rejected the login. Correct the database settings and restart the server.", ex);
+                    return true;
+                }
+
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
                 return false;
             }
+        }
+
+        private static bool IsUnusableDatabase(Exception ex, bool statementTimeoutIsTransient)
+        {
+            bool timedOut = false;
+
+            for (Exception? current = ex; current is not null; current = current.InnerException)
+            {
+                if (current is TimeoutException)
+                {
+                    timedOut = true;
+                    continue;
+                }
+
+                if (current is SocketException)
+                    return true;
+
+                if (current is SqlException sql)
+                {
+                    switch (sql.Number)
+                    {
+                        case -2: //execution timeout, or connection timeout before the session is open
+                            timedOut = true;
+                            break;
+
+                        case -1:
+                        case 2: //server not found
+                        case 40:
+                        case 53: //network path not found
+                        case 208: //invalid object name
+                        case 229: //permission denied
+                        case 233: //connection closed
+                        case 4060: //cannot open database
+                        case 4064:
+                        case 18452:
+                        case 18456: //login failed
+                        case 18470:
+                        case 10053:
+                        case 10054:
+                        case 10060:
+                        case 10061:
+                            return true;
+                    }
+                }
+            }
+
+            if (timedOut)
+                return !statementTimeoutIsTransient;
+
+            return false;
         }
 
         #endregion
@@ -683,7 +749,7 @@ END
 
         public Task InsertLogAsync(DateTime timestamp, DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, DnsDatagram response)
         {
-            if (_enableLogging)
+            if (_enableLogging && !_databaseUnusable)
                 _channelWriter?.TryWrite(new LogEntry(timestamp, request, remoteEP, protocol, response));
 
             return Task.CompletedTask;

@@ -298,6 +298,29 @@ namespace DnsServerCore.Auth
             }
         }
 
+        public bool PasswordEquals(string password)
+        {
+            return PasswordHashEquals(_passwordHash, GetPasswordHashFor(password));
+        }
+
+        private static bool PasswordHashEquals(string storedHash, string computedHash)
+        {
+            if (string.IsNullOrEmpty(storedHash) || string.IsNullOrEmpty(computedHash))
+                return false;
+
+            try
+            {
+                byte[] storedBytes = Convert.FromHexString(storedHash);
+                byte[] computedBytes = Convert.FromHexString(computedHash);
+
+                return CryptographicOperations.FixedTimeEquals(storedBytes, computedBytes);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+
         public void ChangePassword(string newPassword, int iterations = DEFAULT_ITERATIONS)
         {
             switch (_type)
@@ -328,7 +351,7 @@ namespace DnsServerCore.Auth
                 return false; //function is only for 'admin' user to cache hashing result
 
             if (_hasDefaultCredentials is null)
-                _hasDefaultCredentials = _passwordHash.Equals(GetPasswordHashFor("admin"), StringComparison.Ordinal);
+                _hasDefaultCredentials = PasswordEquals("admin");
 
             return _hasDefaultCredentials.Value;
         }

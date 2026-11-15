@@ -678,6 +678,11 @@ namespace DnsServerCore.Dns.Applications
             }
         }
 
+        internal void InstallRecordHandlerForTests(string appName, string classPath, IDnsAppRecordRequestHandler handler)
+        {
+            _applications[appName] = new DnsApplication(appName, classPath, handler);
+        }
+
         #endregion
 
         #region properties

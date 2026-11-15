@@ -112,6 +112,100 @@ namespace DnsServerCore
             return value;
         }
 
+        public static string FormOrJson(this HttpRequest request, string parameter)
+        {
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryGetProperty(parameter, out JsonElement jsonValue))
+                    return null;
+
+                switch (jsonValue.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        return jsonValue.GetString();
+
+                    case JsonValueKind.Number:
+                    case JsonValueKind.True:
+                    case JsonValueKind.False:
+                        return jsonValue.ToString();
+
+                    case JsonValueKind.Null:
+                        return null;
+
+                    default:
+                        throw new InvalidOperationException();
+                }
+            }
+
+            if (!request.HasFormContentType)
+                return null;
+
+            string value = request.Form[parameter];
+            if (string.IsNullOrEmpty(value))
+                return null;
+
+            return value;
+        }
+
+        public static bool TryFormOrJson(this HttpRequest request, string parameter, out string value)
+        {
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryGetProperty(parameter, out JsonElement jsonValue) || (jsonValue.ValueKind == JsonValueKind.Null))
+                {
+                    value = null;
+                    return false;
+                }
+
+                switch (jsonValue.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        value = jsonValue.GetString();
+                        return value is not null;
+
+                    case JsonValueKind.Number:
+                    case JsonValueKind.True:
+                    case JsonValueKind.False:
+                        value = jsonValue.ToString();
+                        return true;
+
+                    default:
+                        throw new InvalidOperationException();
+                }
+            }
+
+            if (!request.HasFormContentType || !request.Form.ContainsKey(parameter))
+            {
+                value = null;
+                return false;
+            }
+
+            value = request.Form[parameter];
+            return true;
+        }
+
+        public static string GetFormOrJson(this HttpRequest request, string parameter)
+        {
+            string value = request.FormOrJson(parameter);
+            if (string.IsNullOrEmpty(value))
+                throw new DnsWebServiceException("Parameter '" + parameter + "' missing.");
+
+            return value;
+        }
+
+        public static string GetFormOrJson(this HttpRequest request, string parameter, string defaultValue)
+        {
+            string value = request.FormOrJson(parameter);
+            if (string.IsNullOrEmpty(value))
+                return defaultValue;
+
+            return value;
+        }
+
         public static bool TryQueryOrForm(this HttpRequest request, string parameter, out string value)
         {
             value = request.QueryOrForm(parameter);
@@ -398,6 +492,50 @@ namespace DnsServerCore
             }
 
             if ((value.Length == 0) || value.Equals("false", StringComparison.OrdinalIgnoreCase))
+            {
+                array = [];
+                return true;
+            }
+
+            if ((separator is null) || (separator.Length == 0))
+                separator = COMMA_SEPARATOR;
+
+            string[] cells = value.Split(separator);
+
+            if ((cells.Length % colspan) != 0)
+                throw new DnsWebServiceException("Invalid value for parameter '" + parameter + "': expected each entry to have " + colspan + " values separated by '" + new string(separator) + "'.");
+
+            array = new T[cells.Length / colspan];
+
+            for (int i = 0, j = 0; i < cells.Length; i += colspan)
+                array[j++] = parse(new ArraySegment<string>(cells, i, colspan));
+
+            return true;
+        }
+
+        public static bool TryFormOrJsonArray<T>(this HttpRequest request, string parameter, Func<JsonElement, T> getObject, Func<ArraySegment<string>, T> parse, int colspan, out T[] array, params char[] separator)
+        {
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryReadArray(parameter, getObject, out array))
+                    return false;
+
+                if (array is null)
+                    array = [];
+
+                return true;
+            }
+
+            if (!request.HasFormContentType || !request.Form.ContainsKey(parameter))
+            {
+                array = null;
+                return false;
+            }
+
+            string value = request.Form[parameter];
+            if (string.IsNullOrEmpty(value) || value.Equals("false", StringComparison.OrdinalIgnoreCase))
             {
                 array = [];
                 return true;

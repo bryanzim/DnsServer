@@ -127,9 +127,9 @@ Longest prefix match. The most specific IPv4 network match determines the DNS64 
 
 **Explanation:**
 
-- All IPv4 addresses use `64:ff9b::/96` prefix (well-known prefix from RFC 6052)
-- RFC 1918 private addresses (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) are excluded
-- Public range 203.0.113.0/24 uses custom prefix `2001:db8:64::/96`
+- All global IPv4 addresses use `64:ff9b::/96` (the well-known prefix from RFC 6052)
+- RFC 6052 section 3.1: that prefix must not represent a non-global IPv4 address. The default map excludes this host (`0.0.0.0/8`), RFC 1918, shared address space (`100.64.0.0/10`), loopback, link-local, IETF protocol assignments (`192.0.0.0/24`), documentation ranges, benchmarking space, and `240.0.0.0/4`. Synthesis also refuses those addresses when the selected prefix is the well-known prefix.
+- A network-specific prefix may still embed a private range when that range is mapped explicitly, as with `203.0.113.0/24` below
 
 ### IPv6 Exclusion List
 
@@ -168,9 +168,20 @@ Prevents synthesis when legitimate IPv6 addresses already exist but should not b
       "enableDns64": true,
       "dns64PrefixMap": {
         "0.0.0.0/0": "64:ff9b::/96",
+        "0.0.0.0/8": null,
         "10.0.0.0/8": null,
+        "100.64.0.0/10": null,
+        "127.0.0.0/8": null,
+        "169.254.0.0/16": null,
         "172.16.0.0/12": null,
-        "192.168.0.0/16": null
+        "192.0.0.0/24": null,
+        "192.0.2.0/24": null,
+        "192.168.0.0/16": null,
+        "198.18.0.0/15": null,
+        "198.51.100.0/24": null,
+        "203.0.113.0/24": null,
+        "224.0.0.0/4": null,
+        "240.0.0.0/4": null
       },
       "excludedIpv6": [
         "::ffff:0:0/96"
@@ -289,21 +300,25 @@ DNS64 deployed without corresponding NAT64 infrastructure.
 
 ### Private IPv4 Addresses Being Synthesized
 
-**Symptoms:** RFC 1918 private addresses (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) are converted to IPv6.
+**Symptoms:** A non-global IPv4 address is converted to IPv6. This includes RFC 1918, loopback, link-local (`169.254.0.0/16`, including the cloud metadata address `169.254.169.254`), shared address space, and `0.0.0.0/8`.
 
 **Resolution:**
 
-Add exclusions to `dns64PrefixMap`:
+The well-known prefix `64:ff9b::/96` refuses those addresses (RFC 6052 section 3.1). A network-specific prefix embeds them only when `dns64PrefixMap` maps that range to a prefix. To keep them out of a network-specific prefix, map the range to `null`:
 
 ```json
 "dns64PrefixMap": {
+  "0.0.0.0/8": null,
   "10.0.0.0/8": null,
+  "100.64.0.0/10": null,
+  "127.0.0.0/8": null,
+  "169.254.0.0/16": null,
   "172.16.0.0/12": null,
   "192.168.0.0/16": null
 }
 ```
 
-Private IPv4 addresses should generally not be translated unless dual-stack NAT64 is explicitly configured.
+Private IPv4 addresses should generally not be translated unless a network-specific NAT64 prefix is explicitly configured for that range.
 
 ### Reverse DNS (PTR) Queries Failing
 

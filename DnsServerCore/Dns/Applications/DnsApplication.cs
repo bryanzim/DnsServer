@@ -162,6 +162,20 @@ namespace DnsServerCore.Dns.Applications
             _dnsPostProcessors = dnsPostProcessors;
         }
 
+        internal DnsApplication(string name, string classPath, IDnsAppRecordRequestHandler handler)
+        {
+            _name = name;
+            _version = new Version(0, 0);
+            _dnsApplications = new Dictionary<string, IDnsApplication>();
+            _dnsAppRecordRequestHandlers = new Dictionary<string, IDnsAppRecordRequestHandler> { { classPath, handler } };
+            _dnsRequestControllers = new Dictionary<string, IDnsRequestController>();
+            _dnsAuthoritativeRequestHandlers = new Dictionary<string, IDnsAuthoritativeRequestHandler>();
+            _dnsRequestBlockingHandlers = new Dictionary<string, IDnsRequestBlockingHandler>();
+            _dnsQueryLoggers = new Dictionary<string, IDnsQueryLogger>();
+            _dnsQueryLogs = new Dictionary<string, IDnsQueryLogs>();
+            _dnsPostProcessors = new Dictionary<string, IDnsPostProcessor>();
+        }
+
         #endregion
 
         #region IDisposable

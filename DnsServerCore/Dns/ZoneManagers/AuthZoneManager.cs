@@ -17,6 +17,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
+using DnsServerCore.ApplicationCommon;
 using DnsServerCore.Dns.Dnssec;
 using DnsServerCore.Dns.ResourceRecords;
 using DnsServerCore.Dns.Trees;
@@ -325,17 +326,20 @@ namespace DnsServerCore.Dns.ZoneManagers
             return minExpiryTtl;
         }
 
-        private void LoadAndInitZone(AuthZoneInfo zoneInfo, IReadOnlyList<DnsResourceRecord> records)
+        internal void LoadAndInitZone(AuthZoneInfo zoneInfo, IReadOnlyList<DnsResourceRecord> records)
         {
             ApexZone apexZone = zoneInfo.ApexZone;
             List<DnsResourceRecord> recordsMovedToChild = new List<DnsResourceRecord>();
             List<string> childZonesToSave = new List<string>();
+            List<KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>> namesForChildZones = new List<KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>>();
 
             //load records
             foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> zoneEntry in DnsResourceRecord.GroupRecords(records))
             {
                 if (apexZone.Name.Equals(zoneEntry.Key, StringComparison.OrdinalIgnoreCase))
                 {
+                    AuthZone.RejectProhibitedRrsets(zoneEntry.Key, true, zoneEntry.Value.Keys);
+
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
                         apexZone.LoadRecords(rrsetEntry.Key, rrsetEntry.Value);
                 }
@@ -346,13 +350,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (IsNameInChildZone(apexZone.Name, zoneEntry.Key))
                     {
                         if ((apexZone is PrimaryZone) || (apexZone is ForwarderZone))
-                            GiveLoadedNameToChildZone(zoneEntry.Key, zoneEntry.Value, recordsMovedToChild, childZonesToSave);
+                        {
+                            //A later illegal name must not leave this record in a child zone the failed load does not remove.
+                            RejectLoadedNameForChildZone(zoneEntry.Key, zoneEntry.Value);
+                            namesForChildZones.Add(new KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>(zoneEntry.Key, zoneEntry.Value));
+                        }
 
                         continue;
                     }
 
                     if (_root.TryGet(apexZone.Name, zoneEntry.Key, out AuthZone existingZone) && (existingZone is SubDomainZone existingSubDomainZone) && !existingSubDomainZone.AuthoritativeZone.Name.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
                         continue; //name was already loaded for another zone
+
+                    AuthZone.RejectProhibitedRrsets(zoneEntry.Key, false, zoneEntry.Value.Keys);
 
                     AuthZone authZone = GetOrAddSubDomainZone(apexZone.Name, zoneEntry.Key);
 
@@ -363,6 +373,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                         subDomainZone.AutoUpdateState();
                 }
             }
+
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> childName in namesForChildZones)
+                GiveLoadedNameToChildZone(childName.Key, childName.Value, recordsMovedToChild, childZonesToSave);
 
             //update dnssec status
             apexZone.UpdateDnssecStatus();
@@ -888,6 +901,20 @@ namespace DnsServerCore.Dns.ZoneManagers
             return domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase);
         }
 
+        private void RejectLoadedNameForChildZone(string domain, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> rrsets)
+        {
+            _ = _root.FindZone(domain, out _, out _, out ApexZone childZone, out _);
+
+            if ((childZone is null) || domain.Equals(childZone.Name, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if ((childZone is not PrimaryZone) && (childZone is not ForwarderZone))
+                return;
+
+            if (!TryGetAuthZone(childZone.Name, domain, out _))
+                AuthZone.RejectProhibitedRrsets(domain, false, rrsets.Keys);
+        }
+
         private void GiveLoadedNameToChildZone(string domain, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> rrsets, List<DnsResourceRecord> recordsMovedToChild, List<string> childZonesToSave)
         {
             _ = _root.FindZone(domain, out _, out _, out ApexZone childZone, out _);
@@ -900,6 +927,8 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             if (!TryGetAuthZone(childZone.Name, domain, out _))
             {
+                AuthZone.RejectProhibitedRrsets(domain, false, rrsets.Keys);
+
                 AuthZone authZone;
 
                 try
@@ -2896,7 +2925,13 @@ namespace DnsServerCore.Dns.ZoneManagers
                         if (glueRecords is not null)
                         {
                             foreach (DnsResourceRecord glueRecord in glueRecords)
+                            {
+                                //in-zone glue is already in the zone contents; RFC 5936 says the same record is sent once
+                                if (ZoneTransferContains(xfrRecords, glueRecord) || ZoneWillEmit(records, glueRecord))
+                                    continue;
+
                                 xfrRecords.Add(glueRecord);
+                            }
                         }
                         break;
 
@@ -2910,6 +2945,37 @@ namespace DnsServerCore.Dns.ZoneManagers
             xfrRecords.Add(soaRecord);
 
             return xfrRecords;
+
+            static bool ZoneTransferContains(List<DnsResourceRecord> xfrRecords, DnsResourceRecord glueRecord)
+            {
+                foreach (DnsResourceRecord record in xfrRecords)
+                {
+                    if (SameRecordData(record, glueRecord))
+                        return true;
+                }
+
+                return false;
+            }
+
+            static bool ZoneWillEmit(List<DnsResourceRecord> records, DnsResourceRecord glueRecord)
+            {
+                foreach (DnsResourceRecord record in records)
+                {
+                    GenericRecordInfo info = record.GetAuthGenericRecordInfo();
+                    if (info.Disabled || (record.Type == DnsResourceRecordType.SOA))
+                        continue;
+
+                    if (SameRecordData(record, glueRecord))
+                        return true;
+                }
+
+                return false;
+            }
+
+            static bool SameRecordData(DnsResourceRecord left, DnsResourceRecord right)
+            {
+                return (left.Type == right.Type) && (left.Class == right.Class) && left.Name.Equals(right.Name, StringComparison.OrdinalIgnoreCase) && left.RDATA.Equals(right.RDATA);
+            }
         }
 
         public IReadOnlyList<DnsResourceRecord> QueryIncrementalZoneTransferRecords(string zoneName, DnsResourceRecord clientSoaRecord)
@@ -2988,45 +3054,63 @@ namespace DnsServerCore.Dns.ZoneManagers
             if ((xfrRecords.Count < 2) || (xfrRecords[0].Type != DnsResourceRecordType.SOA) || !xfrRecords[0].Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || !xfrRecords[xfrRecords.Count - 1].Equals(xfrRecords[0]))
                 throw new DnsServerException("Invalid AXFR response was received.");
 
-            List<DnsResourceRecord> latestRecords = new List<DnsResourceRecord>(xfrRecords.Count);
-            List<DnsResourceRecord> allGlueRecords = new List<DnsResourceRecord>(4);
+            if (!_root.TryGet(zoneName, out ApexZone apexZone))
+                throw new InvalidOperationException();
 
-            if (zoneName.Length == 0)
+            Dictionary<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> xfrRecordsGroupedByDomain = DnsResourceRecord.GroupRecords(xfrRecords, true);
+
+            //find delegations and attach glue records
+            bool rootZone = zoneName.Length == 0;
+            string zoneEnd = "." + zoneName;
+            HashSet<string> delegatedNames = new HashSet<string>();
+
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> xfrEntry in xfrRecordsGroupedByDomain)
             {
-                //root zone: every name is in-bailiwick, so addresses are zone data rather than glue
-                for (int i = 1; i < xfrRecords.Count; i++)
-                {
-                    DnsResourceRecord record = xfrRecords[i];
+                string domain = xfrEntry.Key;
 
-                    if (!latestRecords.Contains(record))
-                        latestRecords.Add(record);
+                if (!rootZone && !domain.Equals(zoneName, StringComparison.OrdinalIgnoreCase) && !domain.EndsWith(zoneEnd, StringComparison.OrdinalIgnoreCase))
+                    continue; //skip out of bailiwick records
+
+                if (xfrEntry.Value.TryGetValue(DnsResourceRecordType.NS, out List<DnsResourceRecord> nsRRSet))
+                {
+                    foreach (DnsResourceRecord nsRecord in nsRRSet)
+                    {
+                        if (nsRecord.Name.Length > zoneName.Length)
+                            delegatedNames.Add(nsRecord.Name.ToLowerInvariant());
+
+                        string nsDomain = (nsRecord.RDATA as DnsNSRecordData).NameServer;
+
+                        if (xfrRecordsGroupedByDomain.TryGetValue(nsDomain, out Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> glueEntry))
+                        {
+                            List<DnsResourceRecord> allGlueRecords = new List<DnsResourceRecord>(2);
+
+                            if (glueEntry.TryGetValue(DnsResourceRecordType.A, out List<DnsResourceRecord> aRRSet))
+                                allGlueRecords.AddRange(aRRSet);
+
+                            if (glueEntry.TryGetValue(DnsResourceRecordType.AAAA, out List<DnsResourceRecord> aaaaRRSet))
+                                allGlueRecords.AddRange(aaaaRRSet);
+
+                            if (allGlueRecords.Count > 0)
+                                nsRecord.GetAuthNSRecordInfo().GlueRecords = allGlueRecords;
+                        }
+                    }
                 }
             }
-            else
-            {
-                for (int i = 1; i < xfrRecords.Count; i++)
-                {
-                    DnsResourceRecord record = xfrRecords[i];
 
-                    if (record.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase) || record.Name.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (!latestRecords.Contains(record))
-                            latestRecords.Add(record);
-                    }
-                    else if (!allGlueRecords.Contains(record))
-                    {
-                        allGlueRecords.Add(record);
-                    }
-                }
-            }
-
-            if (allGlueRecords.Count > 0)
+            //refuse the transfer before any name is removed or replaced
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> xfrEntry in xfrRecordsGroupedByDomain)
             {
-                foreach (DnsResourceRecord record in latestRecords)
-                {
-                    if (record.Type == DnsResourceRecordType.NS)
-                        record.SyncGlueRecords(allGlueRecords);
-                }
+                string domain = xfrEntry.Key.ToLowerInvariant();
+
+                if (ZoneTransferNameIsSkipped(zoneName, domain, rootZone, zoneEnd, delegatedNames))
+                    continue;
+
+                string ownerName = domain;
+
+                if (TryGetAuthZone(zoneName, domain, out AuthZone existing))
+                    ownerName = existing.Name;
+
+                AuthZone.RejectProhibitedRrsets(ownerName, domain.Equals(zoneName, StringComparison.OrdinalIgnoreCase), xfrEntry.Value.Keys);
             }
 
             //sync records
@@ -3034,31 +3118,29 @@ namespace DnsServerCore.Dns.ZoneManagers
             ListAllZoneRecords(zoneName, currentRecords);
 
             Dictionary<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> currentRecordsGroupedByDomain = DnsResourceRecord.GroupRecords(currentRecords);
-            Dictionary<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> latestRecordsGroupedByDomain = DnsResourceRecord.GroupRecords(latestRecords);
 
             //remove domains that do not exists in new records
-            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> currentDomain in currentRecordsGroupedByDomain)
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> currentEntry in currentRecordsGroupedByDomain)
             {
-                if (!latestRecordsGroupedByDomain.ContainsKey(currentDomain.Key))
-                    _root.TryRemove(currentDomain.Key, out SubDomainZone _);
+                if (!xfrRecordsGroupedByDomain.ContainsKey(currentEntry.Key))
+                    _root.TryRemove(currentEntry.Key, out SubDomainZone _);
             }
 
             //sync new records
-            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> latestEntries in latestRecordsGroupedByDomain)
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> xfrEntry in xfrRecordsGroupedByDomain)
             {
-                if (IsNameInChildZone(zoneName, latestEntries.Key))
-                    continue; //this server already hosts that child zone
+                string domain = xfrEntry.Key.ToLowerInvariant();
 
-                AuthZone zone = GetOrAddSubDomainZone(zoneName, latestEntries.Key);
+                if (ZoneTransferNameIsSkipped(zoneName, domain, rootZone, zoneEnd, delegatedNames))
+                    continue;
+
+                AuthZone zone = GetOrAddSubDomainZone(zoneName, domain);
 
                 if (zone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
-                    zone.SyncRecords(latestEntries.Value);
+                    zone.SyncRecords(xfrEntry.Value);
                 else if ((zone is SubDomainZone subDomainZone) && subDomainZone.AuthoritativeZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
-                    zone.SyncRecords(latestEntries.Value);
+                    zone.SyncRecords(xfrEntry.Value);
             }
-
-            if (!_root.TryGet(zoneName, out ApexZone apexZone))
-                throw new InvalidOperationException();
 
             apexZone.UpdateDnssecStatus();
 
@@ -3094,8 +3176,9 @@ namespace DnsServerCore.Dns.ZoneManagers
             List<DnsResourceRecord> deletedGlueRecords = new List<DnsResourceRecord>();
             List<DnsResourceRecord> addedRecords = new List<DnsResourceRecord>();
             List<DnsResourceRecord> addedGlueRecords = new List<DnsResourceRecord>();
+            List<IncrementalDifference> differences = new List<IncrementalDifference>();
 
-            //read and apply difference sequences
+            //read difference sequences
             int index = 1;
             int count = condensedXfrRecords.Count - 1;
 
@@ -3171,10 +3254,28 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if (currentSoa.Serial != deletedSoa.Serial)
                     throw new InvalidOperationException("Current SOA serial does not match with the IXFR difference sequence deleted SOA.");
 
-                //sync difference sequence
-                if (deletedRecords.Count > 0)
+                differences.Add(new IncrementalDifference(new List<DnsResourceRecord>(deletedRecords), new List<DnsResourceRecord>(deletedGlueRecords), new List<DnsResourceRecord>(addedRecords), new List<DnsResourceRecord>(addedGlueRecords), addedSoaRecord));
+
+                //check next difference sequence
+                currentSoa = addedSoaRecord.RDATA as DnsSOARecordData;
+
+                deletedRecords.Clear();
+                deletedGlueRecords.Clear();
+                addedRecords.Clear();
+                addedGlueRecords.Clear();
+            }
+
+            //refuse the transfer before any difference is applied
+            Dictionary<string, List<DnsResourceRecord>> transferredRecords = new Dictionary<string, List<DnsResourceRecord>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (IncrementalDifference difference in differences)
+                RejectProhibitedIncrementalRecords(zoneName, difference.DeletedRecords, difference.AddedRecords, transferredRecords);
+
+            foreach (IncrementalDifference difference in differences)
+            {
+                if (difference.DeletedRecords.Count > 0)
                 {
-                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> deletedEntry in DnsResourceRecord.GroupRecords(deletedRecords))
+                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> deletedEntry in DnsResourceRecord.GroupRecords(difference.DeletedRecords))
                     {
                         if (IsNameInChildZone(zoneName, deletedEntry.Key))
                             continue; //this server already hosts that child zone
@@ -3195,9 +3296,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                 }
 
-                if (addedRecords.Count > 0)
+                if (difference.AddedRecords.Count > 0)
                 {
-                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> addedEntry in DnsResourceRecord.GroupRecords(addedRecords))
+                    foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> addedEntry in DnsResourceRecord.GroupRecords(difference.AddedRecords))
                     {
                         if (IsNameInChildZone(zoneName, addedEntry.Key))
                             continue; //this server already hosts that child zone
@@ -3211,27 +3312,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
                 }
 
-                if ((deletedGlueRecords.Count > 0) || (addedGlueRecords.Count > 0))
+                if ((difference.DeletedGlueRecords.Count > 0) || (difference.AddedGlueRecords.Count > 0))
                 {
                     foreach (AuthZone zone in _root.GetApexZoneWithSubDomainZones(zoneName))
-                        zone.SyncGlueRecords(deletedGlueRecords, addedGlueRecords);
+                        zone.SyncGlueRecords(difference.DeletedGlueRecords, difference.AddedGlueRecords);
                 }
 
                 {
                     AuthZone zone = GetOrAddSubDomainZone(zoneName, zoneName);
 
-                    addedSoaRecord.CopyRecordInfoFrom(currentSoaRecord);
+                    difference.AddedSoaRecord.CopyRecordInfoFrom(currentSoaRecord);
 
-                    zone.LoadRecords(DnsResourceRecordType.SOA, new DnsResourceRecord[] { addedSoaRecord });
+                    zone.LoadRecords(DnsResourceRecordType.SOA, new DnsResourceRecord[] { difference.AddedSoaRecord });
                 }
-
-                //check next difference sequence
-                currentSoa = addedSoaRecord.RDATA as DnsSOARecordData;
-
-                deletedRecords.Clear();
-                deletedGlueRecords.Clear();
-                addedRecords.Clear();
-                addedGlueRecords.Clear();
             }
 
             apexZone.UpdateDnssecStatus();
@@ -3245,6 +3338,170 @@ namespace DnsServerCore.Dns.ZoneManagers
                 historyRecords.Add(xfrRecords[i]);
 
             return historyRecords;
+        }
+
+        private bool ZoneTransferNameIsSkipped(string zoneName, string domain, bool rootZone, string zoneEnd, HashSet<string> delegatedNames)
+        {
+            domain = domain.ToLowerInvariant();
+
+            if (!rootZone && !domain.Equals(zoneName, StringComparison.OrdinalIgnoreCase) && !domain.EndsWith(zoneEnd, StringComparison.OrdinalIgnoreCase))
+                return true; //skip out of bailiwick records
+
+            if (IsNameInChildZone(zoneName, domain))
+                return true; //this server already hosts that child zone
+
+            if ((domain.Length > zoneName.Length) && !delegatedNames.Contains(domain))
+            {
+                //domain is not zone apex and not delegation subdomain
+                //check if domain is in delegated zone
+                string parent = domain;
+
+                while (true)
+                {
+                    parent = GetParentZone(parent);
+                    if ((parent is null) || (parent.Length == zoneName.Length))
+                        break; //record belongs to zone
+
+                    if (delegatedNames.Contains(parent))
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void RejectProhibitedIncrementalRecords(string zoneName, List<DnsResourceRecord> deletedRecords, List<DnsResourceRecord> addedRecords, Dictionary<string, List<DnsResourceRecord>> shadow)
+        {
+            if (deletedRecords.Count > 0)
+            {
+                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> deletedEntry in DnsResourceRecord.GroupRecords(deletedRecords))
+                {
+                    if (IsNameInChildZone(zoneName, deletedEntry.Key))
+                        continue;
+
+                    List<DnsResourceRecord> records = TransferShadow(zoneName, deletedEntry.Key, shadow);
+                    AuthZone.RejectProhibitedChange(TransferOwnerName(zoneName, deletedEntry.Key), deletedEntry.Key.Equals(zoneName, StringComparison.OrdinalIgnoreCase), GroupTransferRecords(records), deletedEntry.Value, null);
+                    RemoveTransferRecords(records, deletedEntry.Value);
+                }
+            }
+
+            if (addedRecords.Count > 0)
+            {
+                foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> addedEntry in DnsResourceRecord.GroupRecords(addedRecords))
+                {
+                    if (IsNameInChildZone(zoneName, addedEntry.Key))
+                        continue;
+
+                    List<DnsResourceRecord> records = TransferShadow(zoneName, addedEntry.Key, shadow);
+                    AuthZone.RejectProhibitedChange(TransferOwnerName(zoneName, addedEntry.Key), addedEntry.Key.Equals(zoneName, StringComparison.OrdinalIgnoreCase), GroupTransferRecords(records), null, addedEntry.Value);
+                    AddTransferRecords(records, addedEntry.Value);
+                }
+            }
+        }
+
+        private List<DnsResourceRecord> TransferShadow(string zoneName, string domain, Dictionary<string, List<DnsResourceRecord>> shadow)
+        {
+            if (!shadow.TryGetValue(domain, out List<DnsResourceRecord> records))
+            {
+                records = new List<DnsResourceRecord>();
+                ListAllRecords(zoneName, domain, records);
+                shadow.Add(domain, records);
+            }
+
+            return records;
+        }
+
+        private string TransferOwnerName(string zoneName, string domain)
+        {
+            if (TryGetAuthZone(zoneName, domain, out AuthZone existing))
+                return existing.Name;
+
+            return domain;
+        }
+
+        private static Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> GroupTransferRecords(List<DnsResourceRecord> records)
+        {
+            Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> grouped = new Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>();
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (!grouped.TryGetValue(record.Type, out List<DnsResourceRecord> typed))
+                {
+                    typed = new List<DnsResourceRecord>();
+                    grouped.Add(record.Type, typed);
+                }
+
+                typed.Add(record);
+            }
+
+            Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> existing = new Dictionary<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>>(grouped.Count);
+
+            foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> entry in grouped)
+                existing.Add(entry.Key, entry.Value);
+
+            return existing;
+        }
+
+        private static void RemoveTransferRecords(List<DnsResourceRecord> records, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntries)
+        {
+            foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntry in deletedEntries)
+            {
+                for (int i = records.Count - 1; i >= 0; i--)
+                {
+                    if (records[i].Type != deletedEntry.Key)
+                        continue;
+
+                    foreach (DnsResourceRecord deletedRecord in deletedEntry.Value)
+                    {
+                        if (records[i].RDATA.Equals(deletedRecord.RDATA))
+                        {
+                            records.RemoveAt(i);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        private static void AddTransferRecords(List<DnsResourceRecord> records, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> addedEntries)
+        {
+            foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> addedEntry in addedEntries)
+            {
+                foreach (DnsResourceRecord addedRecord in addedEntry.Value)
+                {
+                    bool exists = false;
+
+                    foreach (DnsResourceRecord existingRecord in records)
+                    {
+                        if ((existingRecord.Type == addedRecord.Type) && existingRecord.RDATA.Equals(addedRecord.RDATA))
+                        {
+                            exists = true;
+                            break;
+                        }
+                    }
+
+                    if (!exists)
+                        records.Add(addedRecord);
+                }
+            }
+        }
+
+        private sealed class IncrementalDifference
+        {
+            public readonly List<DnsResourceRecord> DeletedRecords;
+            public readonly List<DnsResourceRecord> DeletedGlueRecords;
+            public readonly List<DnsResourceRecord> AddedRecords;
+            public readonly List<DnsResourceRecord> AddedGlueRecords;
+            public readonly DnsResourceRecord AddedSoaRecord;
+
+            public IncrementalDifference(List<DnsResourceRecord> deletedRecords, List<DnsResourceRecord> deletedGlueRecords, List<DnsResourceRecord> addedRecords, List<DnsResourceRecord> addedGlueRecords, DnsResourceRecord addedSoaRecord)
+            {
+                DeletedRecords = deletedRecords;
+                DeletedGlueRecords = deletedGlueRecords;
+                AddedRecords = addedRecords;
+                AddedGlueRecords = addedGlueRecords;
+                AddedSoaRecord = addedSoaRecord;
+            }
         }
 
         private static List<DnsResourceRecord> CondenseIncrementalZoneTransferRecords(string zoneName, DnsResourceRecord currentSoaRecord, IReadOnlyList<DnsResourceRecord> xfrRecords)
@@ -3422,7 +3679,175 @@ namespace DnsServerCore.Dns.ZoneManagers
             return false;
         }
 
-        internal void ImportRecords(string zoneName, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone, bool overwriteSoaSerial)
+        static bool ZoneOverwriteKeeps(DnsResourceRecordType type)
+        {
+            switch (type)
+            {
+                case DnsResourceRecordType.SOA:
+                case DnsResourceRecordType.DNSKEY:
+                case DnsResourceRecordType.RRSIG:
+                case DnsResourceRecordType.NSEC:
+                case DnsResourceRecordType.NSEC3PARAM:
+                case DnsResourceRecordType.NSEC3:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        void RejectIllegalImport(ApexZone apexZone, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone)
+        {
+            bool replacing = overwriteRecords || overwriteZone;
+            bool signedPrimary = (apexZone is PrimaryZone) && (apexZone.DnssecStatus != AuthZoneDnssecStatus.Unsigned);
+            uint expire = apexZone.GetZoneSoaExpire();
+
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> zoneEntry in DnsResourceRecord.GroupRecords(records))
+            {
+                bool atApex = apexZone.Name.Equals(zoneEntry.Key, StringComparison.OrdinalIgnoreCase);
+
+                if (!atApex)
+                {
+                    ValidateIfDomainBelongsToZone(apexZone.Name, zoneEntry.Key);
+
+                    if (IsNameInChildZone(apexZone.Name, zoneEntry.Key))
+                        continue;
+                }
+
+                List<DnsResourceRecordType> types = new List<DnsResourceRecordType>();
+
+                if (TryGetAuthZone(apexZone.Name, zoneEntry.Key, out AuthZone authZone))
+                {
+                    foreach (DnsResourceRecordType existingType in authZone.Entries.Keys)
+                    {
+                        if (overwriteZone && !ZoneOverwriteKeeps(existingType))
+                            continue;
+
+                        if (replacing && zoneEntry.Value.ContainsKey(existingType))
+                            continue;
+
+                        types.Add(existingType);
+                    }
+                }
+
+                foreach (DnsResourceRecordType importedType in zoneEntry.Value.Keys)
+                    types.Add(importedType);
+
+                AuthZone.RejectProhibitedRrsets(zoneEntry.Key, atApex, types);
+
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
+                {
+                    RejectImportRrset(apexZone, zoneEntry.Key, atApex, rrsetEntry.Key, rrsetEntry.Value, replacing, signedPrimary, expire);
+
+                    if (atApex && (rrsetEntry.Key == DnsResourceRecordType.SOA) && (rrsetEntry.Value[0].RDATA is DnsSOARecordData importedSoa))
+                        expire = importedSoa.Expire;
+                }
+            }
+        }
+
+        static void RejectImportRrset(ApexZone apexZone, string owner, bool atApex, DnsResourceRecordType type, IReadOnlyList<DnsResourceRecord> records, bool replacing, bool signedPrimary, uint expire)
+        {
+            if ((records is null) || (records.Count == 0))
+                throw new DnsServerException("Cannot set records: the record set is empty: " + owner);
+
+            if (signedPrimary)
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.ANAME:
+                    case DnsResourceRecordType.APP:
+                        throw new DnsServerException("The record type is not supported by DNSSEC signed primary zones.");
+
+                    default:
+                        foreach (DnsResourceRecord record in records)
+                        {
+                            if (record.GetAuthGenericRecordInfo().Disabled)
+                                throw new DnsServerException("Cannot set records: disabling records in a signed zones is not supported.");
+                        }
+
+                        break;
+                }
+            }
+
+            if (apexZone is PrimaryZone)
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.FWD:
+                        throw new DnsServerException("The record type is not supported by primary zones.");
+
+                    case DnsResourceRecordType.DNSKEY:
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.NSEC:
+                    case DnsResourceRecordType.NSEC3PARAM:
+                    case DnsResourceRecordType.NSEC3:
+                        throw new InvalidOperationException("Cannot set DNSSEC records.");
+                }
+            }
+            else
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.DS:
+                    case DnsResourceRecordType.DNSKEY:
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.NSEC:
+                    case DnsResourceRecordType.NSEC3PARAM:
+                    case DnsResourceRecordType.NSEC3:
+                        throw new InvalidOperationException("Cannot set DNSSEC records.");
+                }
+            }
+
+            if (atApex)
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.CNAME:
+                        throw new InvalidOperationException("Cannot set CNAME record at zone apex.");
+
+                    case DnsResourceRecordType.DS:
+                        if (apexZone is PrimaryZone)
+                            throw new InvalidOperationException("Cannot set DS record at zone apex.");
+
+                        break;
+
+                    case DnsResourceRecordType.SOA:
+                        if ((records.Count != 1) || !records[0].Name.Equals(owner, StringComparison.OrdinalIgnoreCase) || (records[0].RDATA is not DnsSOARecordData soa))
+                            throw new InvalidOperationException("Invalid SOA record.");
+
+                        if (records[0].OriginalTtlValue > soa.Expire)
+                            throw new DnsServerException("Cannot set record: TTL cannot be greater than SOA EXPIRE.");
+
+                        if (soa.Retry > soa.Refresh)
+                            throw new DnsServerException("Cannot set record: SOA RETRY cannot be greater than SOA REFRESH.");
+
+                        if (soa.Refresh > soa.Expire)
+                            throw new DnsServerException("Cannot set record: SOA REFRESH cannot be greater than SOA EXPIRE.");
+
+                        return;
+                }
+            }
+            else if (type == DnsResourceRecordType.SOA)
+            {
+                throw new InvalidOperationException("Cannot set SOA record on sub domain.");
+            }
+
+            if (replacing || (type == DnsResourceRecordType.CNAME) || (type == DnsResourceRecordType.DNAME) || (atApex && (type == DnsResourceRecordType.APP)))
+            {
+                if (records[0].OriginalTtlValue > expire)
+                    throw new DnsServerException("Cannot set records: TTL cannot be greater than SOA EXPIRE.");
+            }
+            else
+            {
+                foreach (DnsResourceRecord record in records)
+                {
+                    if (record.OriginalTtlValue > expire)
+                        throw new DnsServerException("Cannot set records: TTL cannot be greater than SOA EXPIRE.");
+                }
+            }
+        }
+
+        internal void ImportRecords(string zoneName, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone, bool overwriteSoaSerial, DnsResourceRecordType? removeApexRecordType = null)
         {
             _ = _root.FindZone(zoneName, out _, out _, out ApexZone apexZone, out _);
             if ((apexZone is null) || !apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
@@ -3430,6 +3855,12 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             if ((apexZone is not PrimaryZone) && (apexZone is not ForwarderZone))
                 throw new DnsServerException("Zone must be a primary or forwarder type: " + apexZone.ToString());
+
+            //Refuse an illegal name before overwrite deletes the zone, a generated apex record is removed, or any record is committed.
+            RejectIllegalImport(apexZone, records, overwriteRecords, overwriteZone);
+
+            if (removeApexRecordType is DnsResourceRecordType apexType)
+                DeleteRecords(apexZone.Name, apexZone.Name, apexType);
 
             if (overwriteZone)
             {
@@ -3451,6 +3882,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         {
                             case DnsResourceRecordType.CNAME:
                             case DnsResourceRecordType.DNAME:
+                            case DnsResourceRecordType.APP:
                                 apexZone.SetRecords(rrsetEntry.Key, rrsetEntry.Value);
                                 break;
 
@@ -3545,17 +3977,17 @@ namespace DnsServerCore.Dns.ZoneManagers
             return null;
         }
 
-        public async Task<DnsDatagram> QueryAsync(DnsDatagram request, IPAddress remoteIP, bool isRecursionAllowed)
+        public async Task<DnsDatagram> QueryAsync(DnsDatagram request, IPAddress remoteIP, bool isRecursionAllowed, IPAddress forwardedClient = null)
         {
             AuthZone zone = _root.FindZone(request.Question[0].Name, out SubDomainZone closest, out SubDomainZone delegation, out ApexZone apexZone, out bool hasSubDomains);
 
             if ((apexZone is null) || !apexZone.IsActive)
                 return null; //no authority for requested zone
 
-            if (!await IsQueryAllowedAsync(apexZone, remoteIP))
+            if (!await IsQueryAllowedAsync(apexZone, remoteIP, forwardedClient))
                 return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.Refused, request.Question);
 
-            return await InternalQuery(request, isRecursionAllowed, zone, closest, delegation, apexZone, hasSubDomains, remoteIP);
+            return await InternalQuery(request, isRecursionAllowed, zone, closest, delegation, apexZone, hasSubDomains, remoteIP, forwardedClient);
         }
 
         public DnsDatagram Query(DnsDatagram request, bool isRecursionAllowed)
@@ -3569,7 +4001,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             return InternalQuery(request, isRecursionAllowed, zone, closest, delegation, apexZone, hasSubDomains, null).GetAwaiter().GetResult();
         }
 
-        private async Task<DnsDatagram> InternalQuery(DnsDatagram request, bool isRecursionAllowed, AuthZone zone, SubDomainZone closest, SubDomainZone delegation, ApexZone apexZone, bool hasSubDomains, IPAddress remoteIP)
+        private async Task<DnsDatagram> InternalQuery(DnsDatagram request, bool isRecursionAllowed, AuthZone zone, SubDomainZone closest, SubDomainZone delegation, ApexZone apexZone, bool hasSubDomains, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             DnsQuestionRecord question = request.Question[0];
             bool dnssecOk = request.DnssecOk && (apexZone.DnssecStatus != AuthZoneDnssecStatus.Unsigned);
@@ -3578,10 +4010,10 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 //zone not found
                 if ((delegation is not null) && delegation.IsActive && (delegation.Name.Length > apexZone.Name.Length))
-                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP);
+                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP, forwardedClient);
 
                 if (apexZone is StubZone)
-                    return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP);
+                    return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP, forwardedClient);
 
                 DnsResponseCode rCode = DnsResponseCode.NoError;
                 IReadOnlyList<DnsResourceRecord> answer = null;
@@ -3593,7 +4025,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3615,7 +4047,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3631,12 +4063,12 @@ namespace DnsServerCore.Dns.ZoneManagers
                         if (authority.Count == 0)
                         {
                             if ((apexZone is ForwarderZone) || (apexZone is SecondaryForwarderZone))
-                                return await GetForwarderResponse(request, null, closest, apexZone, remoteIP); //no DNAME or APP record available so process FWD response
+                                return await GetForwarderResponse(request, null, closest, apexZone, remoteIP, forwardedClient); //no DNAME or APP record available so process FWD response
 
                             if (!hasSubDomains)
                                 rCode = DnsResponseCode.NxDomain;
 
-                            authority = apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk);
+                            authority = WithNegativeCacheTtl(apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk));
 
                             if (dnssecOk)
                             {
@@ -3691,7 +4123,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                 else if ((delegation is not null) && delegation.IsActive && (delegation.Name.Length > apexZone.Name.Length))
                 {
                     //zone is delegation
-                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP);
+                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP, forwardedClient);
                 }
 
                 DnsResponseCode rCode = DnsResponseCode.NoError;
@@ -3706,7 +4138,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3724,7 +4156,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3761,19 +4193,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                         {
                             //check for delegation, stub & forwarder
                             if ((delegation is not null) && delegation.IsActive && (delegation.Name.Length > apexZone.Name.Length))
-                                return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP);
+                                return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP, forwardedClient);
 
                             if (apexZone is StubZone)
-                                return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP);
+                                return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP, forwardedClient);
                         }
 
                         authority = zone.QueryRecords(DnsResourceRecordType.APP, false);
                         if (authority.Count == 0)
                         {
                             if ((apexZone is ForwarderZone) || (apexZone is SecondaryForwarderZone))
-                                return await GetForwarderResponse(request, zone, closest, apexZone, remoteIP); //no APP record available so process FWD response
+                                return await GetForwarderResponse(request, zone, closest, apexZone, remoteIP, forwardedClient); //no APP record available so process FWD response
 
-                            authority = apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk);
+                            authority = WithNegativeCacheTtl(apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk));
 
                             if (dnssecOk)
                             {
@@ -3851,7 +4283,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                                     newAnswers.AddRange(answer);
 
                                     List<DnsResourceRecord> cnameAuthority = new List<DnsResourceRecord>();
-                                    await ResolveCNAME(question, dnssecOk, lastRR, newAnswers, cnameAuthority, remoteIP);
+                                    await ResolveCNAME(question, dnssecOk, lastRR, newAnswers, cnameAuthority, remoteIP, forwardedClient);
 
                                     answer = newAnswers;
 
@@ -3874,7 +4306,7 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                                 case DnsResourceRecordType.ANAME:
                                 case DnsResourceRecordType.ALIAS:
-                                    authority = apexZone.GetRecords(DnsResourceRecordType.SOA); //adding SOA for use with NO DATA response
+                                    authority = WithNegativeCacheTtl(apexZone.GetRecords(DnsResourceRecordType.SOA)); //adding SOA for use with NO DATA response
                                     break;
                             }
                         }
@@ -3916,7 +4348,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                             case DnsResourceRecordType.SRV:
                             case DnsResourceRecordType.SVCB:
                             case DnsResourceRecordType.HTTPS:
-                                additional = await GetAdditionalRecords(answer, dnssecOk, remoteIP);
+                                additional = await GetAdditionalRecords(answer, dnssecOk, remoteIP, forwardedClient);
                                 break;
 
                             default:
@@ -3930,7 +4362,30 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private static async Task<bool> IsQueryAllowedAsync(ApexZone apexZone, IPAddress remoteIP)
+        //RFC 2308 section 3: a negative answer caches for min(SOA TTL, SOA MINIMUM).
+        internal static IReadOnlyList<DnsResourceRecord> WithNegativeCacheTtl(IReadOnlyList<DnsResourceRecord> records)
+        {
+            return NegativeCache.WithNegativeCacheTtl(records);
+        }
+
+        private static async Task<bool> IsQueryAllowedAsync(ApexZone apexZone, IPAddress remoteIP, IPAddress forwardedClient = null)
+        {
+            if (!await IsAddressAllowedToQueryAsync(apexZone, remoteIP))
+                return false;
+
+            IPAddress queryAddress = remoteIP;
+
+            if (queryAddress.IsIPv4MappedToIPv6)
+                queryAddress = queryAddress.MapToIPv4();
+
+            //a loopback query is already internal or local, so the forwarded address cannot widen it
+            if ((forwardedClient is null) || IPAddress.IsLoopback(queryAddress) || DnsServer.SameAddress(remoteIP, forwardedClient))
+                return true;
+
+            return await IsAddressAllowedToQueryAsync(apexZone, forwardedClient);
+        }
+
+        private static async Task<bool> IsAddressAllowedToQueryAsync(ApexZone apexZone, IPAddress remoteIP)
         {
             async Task<bool> IsZoneNameServerAllowedAsync()
             {
@@ -3967,7 +4422,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     return true;
 
                 case AuthZoneQueryAccess.AllowOnlyPrivateNetworks:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     switch (remoteIP.AddressFamily)
@@ -3981,32 +4436,32 @@ namespace DnsServerCore.Dns.ZoneManagers
                     }
 
                 case AuthZoneQueryAccess.AllowOnlyZoneNameServers:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return await IsZoneNameServerAllowedAsync();
 
                 case AuthZoneQueryAccess.UseSpecifiedNetworkACL:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return NetworkAccessControl.IsAddressAllowed(remoteIP, apexZone.QueryAccessNetworkACL);
 
                 case AuthZoneQueryAccess.AllowZoneNameServersAndUseSpecifiedNetworkACL:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return NetworkAccessControl.IsAddressAllowed(remoteIP, apexZone.QueryAccessNetworkACL) || await IsZoneNameServerAllowedAsync();
 
                 default:
-                    if (IPAddress.IsLoopback(remoteIP) || IPAddress.Any.Equals(remoteIP))
+                    if (IPAddress.IsLoopback(remoteIP))
                         return true;
 
                     return false;
             }
         }
 
-        private async Task ResolveCNAME(DnsQuestionRecord question, bool dnssecOk, DnsResourceRecord lastCNAME, List<DnsResourceRecord> answerRecords, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP)
+        private async Task ResolveCNAME(DnsQuestionRecord question, bool dnssecOk, DnsResourceRecord lastCNAME, List<DnsResourceRecord> answerRecords, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             int queryCount = 0;
             ApexZone cnameApex;
@@ -4021,7 +4476,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if ((cnameZone is null) || !cnameZone.IsActive || (cnameApex is null) || !cnameApex.IsActive)
                     break; //do not serve data from a disabled zone
 
-                if ((remoteIP is not null) && !await IsQueryAllowedAsync(cnameApex, remoteIP))
+                if ((remoteIP is not null) && !await IsQueryAllowedAsync(cnameApex, remoteIP, forwardedClient))
                     break; //do not serve data from a zone this client cannot query
 
                 IReadOnlyList<DnsResourceRecord> records = cnameZone.QueryRecordsWildcard(question.Type, dnssecOk, cnameDomain);
@@ -4082,7 +4537,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             while (++queryCount < DnsServer.MAX_CNAME_HOPS);
         }
 
-        private async Task<IReadOnlyList<DnsResourceRecord>> DoDNAMESubstitution(DnsQuestionRecord question, bool dnssecOk, IReadOnlyList<DnsResourceRecord> answer, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP)
+        private async Task<IReadOnlyList<DnsResourceRecord>> DoDNAMESubstitution(DnsQuestionRecord question, bool dnssecOk, IReadOnlyList<DnsResourceRecord> answer, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             DnsResourceRecord dnameRR = answer[0];
 
@@ -4098,12 +4553,12 @@ namespace DnsServerCore.Dns.ZoneManagers
             list.AddRange(answer);
             list.Add(cnameRR);
 
-            await ResolveCNAME(question, dnssecOk, cnameRR, list, authorityRecords, remoteIP);
+            await ResolveCNAME(question, dnssecOk, cnameRR, list, authorityRecords, remoteIP, forwardedClient);
 
             return list;
         }
 
-        private async Task<List<DnsResourceRecord>> GetAdditionalRecords(IReadOnlyList<DnsResourceRecord> refRecords, bool dnssecOk, IPAddress remoteIP)
+        private async Task<List<DnsResourceRecord>> GetAdditionalRecords(IReadOnlyList<DnsResourceRecord> refRecords, bool dnssecOk, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             List<DnsResourceRecord> additionalRecords = new List<DnsResourceRecord>(refRecords.Count);
 
@@ -4119,16 +4574,16 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         else
                         {
-                            await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsNSRecordData).NameServer, dnssecOk, additionalRecords, remoteIP);
+                            await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsNSRecordData).NameServer, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         }
                         break;
 
                     case DnsResourceRecordType.MX:
-                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsMXRecordData).Exchange, dnssecOk, additionalRecords, remoteIP);
+                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsMXRecordData).Exchange, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         break;
 
                     case DnsResourceRecordType.SRV:
-                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsSRVRecordData).Target, dnssecOk, additionalRecords, remoteIP);
+                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsSRVRecordData).Target, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         break;
 
                     case DnsResourceRecordType.SVCB:
@@ -4149,7 +4604,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                                 targetName = refRecord.Name;
                         }
 
-                        await ResolveAdditionalRecords(refRecord, targetName, dnssecOk, additionalRecords, remoteIP);
+                        await ResolveAdditionalRecords(refRecord, targetName, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         break;
                 }
             }
@@ -4157,7 +4612,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             return additionalRecords;
         }
 
-        private async Task ResolveAdditionalRecords(DnsResourceRecord refRecord, string domain, bool dnssecOk, List<DnsResourceRecord> additionalRecords, IPAddress remoteIP)
+        private async Task ResolveAdditionalRecords(DnsResourceRecord refRecord, string domain, bool dnssecOk, List<DnsResourceRecord> additionalRecords, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             int count = 0;
             ApexZone apexZone;
@@ -4168,7 +4623,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if ((zone is null) || (apexZone is null) || !apexZone.IsActive || !zone.IsActive)
                     break; //a subdomain of a disabled apex is not authoritative glue
 
-                if ((remoteIP is not null) && !await IsQueryAllowedAsync(apexZone, remoteIP))
+                if ((remoteIP is not null) && !await IsQueryAllowedAsync(apexZone, remoteIP, forwardedClient))
                     break; //do not attach records from a zone this client cannot query
 
                 if (((refRecord.Type == DnsResourceRecordType.SVCB) || (refRecord.Type == DnsResourceRecordType.HTTPS)) && ((refRecord.RDATA as DnsSVCBRecordData).SvcPriority == 0))
@@ -4258,7 +4713,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private async Task<DnsDatagram> GetReferralResponse(DnsDatagram request, bool dnssecOk, AuthZone delegationZone, ApexZone apexZone, IPAddress remoteIP)
+        private async Task<DnsDatagram> GetReferralResponse(DnsDatagram request, bool dnssecOk, AuthZone delegationZone, ApexZone apexZone, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             IReadOnlyList<DnsResourceRecord> authority;
 
@@ -4311,19 +4766,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                 }
             }
 
-            IReadOnlyList<DnsResourceRecord> additional = await GetAdditionalRecords(authority, dnssecOk, remoteIP);
+            IReadOnlyList<DnsResourceRecord> additional = await GetAdditionalRecords(authority, dnssecOk, remoteIP, forwardedClient);
 
             return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NoError, request.Question, null, authority, additional);
         }
 
-        private async Task<DnsDatagram> GetForwarderResponse(DnsDatagram request, AuthZone zone, SubDomainZone closestZone, ApexZone forwarderZone, IPAddress remoteIP)
+        private async Task<DnsDatagram> GetForwarderResponse(DnsDatagram request, AuthZone zone, SubDomainZone closestZone, ApexZone forwarderZone, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             IReadOnlyList<DnsResourceRecord> authority = null;
 
             if (zone is not null)
             {
                 if (zone.ContainsNameServerRecords())
-                    return await GetReferralResponse(request, false, zone, forwarderZone, remoteIP);
+                    return await GetReferralResponse(request, false, zone, forwarderZone, remoteIP, forwardedClient);
 
                 authority = zone.QueryRecords(DnsResourceRecordType.FWD, false);
             }
@@ -4331,7 +4786,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             if (((authority is null) || (authority.Count == 0)) && (closestZone is not null))
             {
                 if (closestZone.ContainsNameServerRecords())
-                    return await GetReferralResponse(request, false, closestZone, forwarderZone, remoteIP);
+                    return await GetReferralResponse(request, false, closestZone, forwarderZone, remoteIP, forwardedClient);
 
                 authority = closestZone.QueryRecords(DnsResourceRecordType.FWD, false);
             }
@@ -4339,7 +4794,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             if ((authority is null) || (authority.Count == 0))
             {
                 if (forwarderZone.ContainsNameServerRecords())
-                    return await GetReferralResponse(request, false, forwarderZone, forwarderZone, remoteIP);
+                    return await GetReferralResponse(request, false, forwarderZone, forwarderZone, remoteIP, forwardedClient);
 
                 authority = forwarderZone.QueryRecords(DnsResourceRecordType.FWD, false);
             }

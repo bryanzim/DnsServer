@@ -57,6 +57,7 @@ namespace QueryLogsPostgreSql
         Channel<LogEntry>? _channel;
         ChannelWriter<LogEntry>? _channelWriter;
         Thread? _consumerThread;
+        volatile bool _databaseUnusable;
         const int BULK_INSERT_COUNT = 1000;
         const int BULK_INSERT_ERROR_DELAY = 10000;
         const int BULK_REMOVE_COUNT = 10000;
@@ -210,7 +211,7 @@ namespace QueryLogsPostgreSql
                     List<LogEntry> logs = new List<LogEntry>(BULK_INSERT_COUNT);
                     StringBuilder sb = new StringBuilder(4096);
 
-                    while (!_disposed && await channelReader.WaitToReadAsync())
+                    while (!_disposed && !_databaseUnusable && await channelReader.WaitToReadAsync())
                     {
                         while (!_disposed && (logs.Count < BULK_INSERT_COUNT) && channelReader.TryRead(out LogEntry log))
                         {
@@ -224,7 +225,7 @@ namespace QueryLogsPostgreSql
                             logs.Clear();
                     }
 
-                    if (!_disposed && (logs.Count > 0))
+                    if (!_disposed && !_databaseUnusable && (logs.Count > 0))
                         await BulkInsertLogsAsync(logs, sb);
                 }
                 catch (Exception ex)
@@ -248,10 +249,17 @@ namespace QueryLogsPostgreSql
 
         private async Task<bool> BulkInsertLogsAsync(List<LogEntry> logs, StringBuilder sb)
         {
+            if (_databaseUnusable)
+                return true;
+
+            bool connected = false;
+
             try
             {
                 await using (NpgsqlConnection connection = await _dataSource.OpenConnectionAsync())
                 {
+                    connected = true;
+
                     await using (NpgsqlCommand command = connection.CreateCommand())
                     {
                         sb.Length = 0;
@@ -356,11 +364,66 @@ namespace QueryLogsPostgreSql
             }
             catch (Exception ex)
             {
+                if (IsUnusableDatabase(ex, connected))
+                {
+                    _databaseUnusable = true;
+                    _enableLogging = false;
+                    _dnsServer?.WriteLog("Query Logs (PostgreSQL) stopped writing because the database is unreachable or rejected the login. Correct the database settings and restart the server.", ex);
+                    return true;
+                }
+
                 _dnsServer?.WriteLog(ex);
 
                 await Task.Delay(BULK_INSERT_ERROR_DELAY);
                 return false;
             }
+        }
+
+        private static bool IsUnusableDatabase(Exception ex, bool statementTimeoutIsTransient)
+        {
+            bool driverFailure = false;
+            bool timedOut = false;
+
+            for (Exception? current = ex; current is not null; current = current.InnerException)
+            {
+                if (current is TimeoutException)
+                {
+                    timedOut = true;
+                    continue;
+                }
+
+                if (current is SocketException)
+                    return true;
+
+                if (current is PostgresException postgres)
+                {
+                    switch (postgres.SqlState)
+                    {
+                        case "28P01": //invalid_password
+                        case "28000": //invalid_authorization_specification
+                        case "3D000": //invalid_catalog_name
+                        case "3F000": //invalid_schema_name
+                        case "42P01": //undefined_table
+                        case "42501": //insufficient_privilege
+                        case "08000": //connection_exception
+                        case "08001": //sqlclient_unable_to_establish_sqlconnection
+                        case "08003": //connection_does_not_exist
+                        case "08004": //sqlserver_rejected_establishment_of_sqlconnection
+                        case "08006": //connection_failure
+                        case "57P01": //admin_shutdown
+                            return true;
+                    }
+                }
+                else if (current is NpgsqlException)
+                {
+                    driverFailure = true;
+                }
+            }
+
+            if (timedOut)
+                return !statementTimeoutIsTransient;
+
+            return driverFailure;
         }
 
         #endregion
@@ -773,7 +836,7 @@ CREATE TABLE IF NOT EXISTS dns_logs
 
         public Task InsertLogAsync(DateTime timestamp, DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, DnsDatagram response)
         {
-            if (_enableLogging)
+            if (_enableLogging && !_databaseUnusable)
                 _channelWriter?.TryWrite(new LogEntry(timestamp, request, remoteEP, protocol, response));
 
             return Task.CompletedTask;

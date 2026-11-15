@@ -1731,7 +1731,10 @@ namespace DnsServerCore
                     options.Authority = _authManager.SsoAuthority.AbsoluteUri;
                     options.ClientId = _authManager.SsoClientId;
                     options.ClientSecret = _authManager.SsoClientSecret;
-                    options.RequireHttpsMetadata = false;
+
+                    //an http authority is an explicit choice; an https authority must not be downgraded
+                    bool requireHttpsMetadata = !_authManager.SsoAuthority.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
+                    options.RequireHttpsMetadata = requireHttpsMetadata;
                     options.ResponseType = OpenIdConnectResponseType.Code;
                     options.ResponseMode = OpenIdConnectResponseMode.FormPost;
 
@@ -1769,7 +1772,7 @@ namespace DnsServerCore
                     options.CallbackPath = new PathString("/sso/callback");
 
                     if (_authManager.SsoMetadataAddress is not null)
-                        options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(_authManager.SsoMetadataAddress.AbsoluteUri, new OpenIdConnectConfigurationRetriever(), new HttpDocumentRetriever(_ssoHttpClient) { RequireHttps = false });
+                        options.ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(_authManager.SsoMetadataAddress.AbsoluteUri, new OpenIdConnectConfigurationRetriever(), new HttpDocumentRetriever(_ssoHttpClient) { RequireHttps = requireHttpsMetadata });
 
                     options.Events = new OpenIdConnectEvents
                     {
@@ -2052,6 +2055,33 @@ namespace DnsServerCore
                 default:
                     return false;
             }
+        }
+
+        internal static bool IsConnectionLoopback(IPAddress remoteAddress)
+        {
+            if (remoteAddress is null)
+                return false;
+
+            if (remoteAddress.IsIPv4MappedToIPv6)
+                remoteAddress = remoteAddress.MapToIPv4();
+
+            //only the TCP connection counts; a reverse-proxy header can claim 127.0.0.1 from any allowed peer
+            return remoteAddress.Equals(IPAddress.Loopback) || remoteAddress.Equals(IPAddress.IPv6Loopback);
+        }
+
+        internal static IPAddress SelectRateLimitAddress(IPAddress connectionAddress)
+        {
+            if (connectionAddress is null)
+                return IPAddress.Loopback;
+
+            if (connectionAddress.IsIPv4MappedToIPv6)
+                connectionAddress = connectionAddress.MapToIPv4();
+
+            //the TCP peer is the bucket; a reverse-proxy header can name a different address on every attempt
+            if ((connectionAddress.AddressFamily != AddressFamily.InterNetwork) && (connectionAddress.AddressFamily != AddressFamily.InterNetworkV6))
+                return IPAddress.Loopback;
+
+            return connectionAddress;
         }
 
         private IPEndPoint GetRemoteEndPoint(HttpContext context)
@@ -2435,12 +2465,10 @@ namespace DnsServerCore
                     {
                         if (!TryValidateSession(context, out UserSession _))
                         {
-                            IPAddress remoteAddress = GetRemoteEndPoint(context).Address;
-
-                            if (!remoteAddress.Equals(IPAddress.Loopback) && !remoteAddress.Equals(IPAddress.IPv6Loopback))
+                            if (!IsConnectionLoopback(context.Connection.RemoteIpAddress))
                                 throw new InvalidTokenWebServiceException("Invalid token or session expired.");
 
-                            //allow unauthenticated call from localhost
+                            //allow unauthenticated call from a local connection
                         }
 
                         needsJsonResponseObject = false;
@@ -2576,8 +2604,10 @@ namespace DnsServerCore
             });
         }
 
-        private static string GetAuthorizationToken(HttpRequest request)
+        private static string GetAuthorizationToken(HttpRequest request, out bool fromQueryString)
         {
+            fromQueryString = false;
+
             StringValues authorization = request.Headers.Authorization;
             string token = null;
 
@@ -2590,12 +2620,46 @@ namespace DnsServerCore
                 }
             }
 
-            if (token is null)
-                token = request.QueryOrForm("token");
+            if (!string.IsNullOrEmpty(token))
+                return token;
 
+            if (request.HttpContext.Items.TryGetValue("jsonContent", out object jsonObject))
+            {
+                JsonDocument json = (JsonDocument)jsonObject;
+
+                if (!json.RootElement.TryGetProperty("token", out JsonElement jsonValue))
+                    return null;
+
+                switch (jsonValue.ValueKind)
+                {
+                    case JsonValueKind.String:
+                        return jsonValue.GetString();
+
+                    case JsonValueKind.Number:
+                    case JsonValueKind.True:
+                    case JsonValueKind.False:
+                        return jsonValue.ToString();
+
+                    case JsonValueKind.Null:
+                        return null;
+
+                    default:
+                        throw new InvalidOperationException();
+                }
+            }
+
+            if (request.HasFormContentType)
+            {
+                token = request.Form["token"];
+                if (!string.IsNullOrEmpty(token))
+                    return token;
+            }
+
+            token = request.Query["token"];
             if (string.IsNullOrEmpty(token))
                 return null;
 
+            fromQueryString = true;
             return token;
         }
 
@@ -2603,8 +2667,11 @@ namespace DnsServerCore
         {
             HttpRequest request = context.Request;
 
-            session = _authManager.GetSession(GetAuthorizationToken(request));
+            session = _authManager.GetSession(GetAuthorizationToken(request, out bool fromQueryString));
             if ((session is null) || session.User.Disabled)
+                return false;
+
+            if (fromQueryString && (session.Type != UserSessionType.SingleUse))
                 return false;
 
             if (session.Type == UserSessionType.SingleUse)

@@ -18,7 +18,7 @@ The request header must be as shown below:
 
 `Authorization: Bearer <token>`
 
-The session token can also be passed as a query string or form data `token` parameter which is supported for backward compatibility reasons.
+The session token can also be passed as form data or JSON in a `token` parameter. A query-string `token` is accepted only for a single-use token created for a browser download.
 
 ## API Response Format
 
@@ -92,7 +92,9 @@ Response:
 This call authenticates with the server and generates a session token to be used for subsequent API calls. The session token expires as per the user's session expiry timeout value (default 30 minutes) from the last API call.
 
 URL:\
-`http://localhost:5380/api/user/login?user=admin&pass=admin&includeInfo=true`
+`http://localhost:5380/api/user/login?includeInfo=true`
+
+The `user`, `pass`, and `totp` parameters must be sent as form data or JSON. They are not accepted from the query string.
 
 OBSOLETE PATH:\
 `/api/login`
@@ -113,15 +115,27 @@ RESPONSE:
 {
 	"displayName": "Administrator",
 	"username": "admin",
+	"type": "Local",
 	"isSsoUser": false,
 	"totpEnabled": false,
-	"token": "932b2a3495852c15af01598f62563ae534460388b6a370bfbbb8bb6094b698e9",
+	"token": "eb6596ce9665bdab86498a9fd21ac1d4bdbdf573b26f8b6b523608897ca91e17",
 	"info": {
-		"version": "15.0",
+		"version": "15.7",
+		"uptimestamp": "2026-10-24T11:57:10.7788056Z",
+		"ipv4Addresses": [
+			"192.168.10.5",
+			"192.168.110.1",
+			"192.168.180.1",
+			"192.168.120.1"
+		],
+		"ipv6Addresses": [],
 		"dnsServerDomain": "server1",
 		"defaultRecordTtl": 3600,
 		"defaultNsRecordTtl": 14400,
 		"defaultSoaRecordTtl": 900,
+		"useSoaSerialDateScheme": false,
+		"dnssecValidation": true,
+		"clusterInitialized": false,
 		"permissions": {
 			"Dashboard": {
 				"canView": true,
@@ -180,6 +194,7 @@ RESPONSE:
 			}
 		}
 	},
+	"server": "server1",
 	"status": "ok"
 }
 ```
@@ -192,7 +207,9 @@ WHERE:
 Allows creating a non-expiring API token that can be used with automation scripts to make API calls. The token allows access to API calls with the same privileges as that of the user account. Thus its recommended to create a separate user account with limited permissions as required by the specific task that the token will be used for. The token cannot be used to change the user's password, or update the user profile details.
 
 URL:\
-`http://localhost:5380/api/user/createToken?user=admin&pass=admin&tokenName=MyToken1`
+`http://localhost:5380/api/user/createToken?tokenName=MyToken1`
+
+When this call is used without a bearer session token, `user`, `pass`, and `totp` must be sent as form data or JSON. They are not accepted from the query string.
 
 PERMISSIONS:\
 None
@@ -294,18 +311,27 @@ RESPONSE:
 {
 	"displayName": "Administrator",
 	"username": "admin",
+	"type": "Local",
 	"isSsoUser": false,
 	"totpEnabled": false,
-	"token": "932b2a3495852c15af01598f62563ae534460388b6a370bfbbb8bb6094b698e9",
+	"token": "eb6596ce9665bdab86498a9fd21ac1d4bdbdf573b26f8b6b523608897ca91e17",
 	"info": {
-		"version": "15.0",
-		"uptimestamp": "2023-07-29T08:01:31.1117463Z",
-		"dnsServerDomain": "server1.example.com",
-		"clusterInitialized": true,
-		"clusterDomain": "example.com"
+		"version": "15.7",
+		"uptimestamp": "2026-10-24T11:57:10.7788056Z",
+		"ipv4Addresses": [
+			"192.168.10.5",
+			"192.168.110.1",
+			"192.168.180.1",
+			"192.168.120.1"
+		],
+		"ipv6Addresses": [],
+		"dnsServerDomain": "server1",
 		"defaultRecordTtl": 3600,
+		"defaultNsRecordTtl": 14400,
+		"defaultSoaRecordTtl": 900,
 		"useSoaSerialDateScheme": false,
 		"dnssecValidation": true,
+		"clusterInitialized": false,
 		"permissions": {
 			"Dashboard": {
 				"canView": true,
@@ -364,6 +390,7 @@ RESPONSE:
 			}
 		}
 	},
+	"server": "server1",
 	"status": "ok"
 }
 ```
@@ -400,7 +427,9 @@ Allows changing the password for the current logged in user account.
 NOTE: It is highly recommended to change the `admin` user password on first use to avoid security related issues.
 
 URL:\
-`http://localhost:5380/api/user/changePassword?pass=password&newPass=newpassword`
+`http://localhost:5380/api/user/changePassword`
+
+The `pass`, `newPass`, and `totp` parameters must be sent as form data or JSON. They are not accepted from the query string.
 
 OBSOLETE PATH:\
 `/api/changePassword`
@@ -2144,7 +2173,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is required to be used with Conditional Forwarder zones. The `initializeForwarder` parameter must be set to `true` to use this option. This parameter must be sent as form data or JSON. It is not accepted from the query string. A value of `************` is not stored.
 
 REQUEST: To import a zone file while creating a `Primary` or `Forwarder` zone, use POST request with multi-part form data containing the zone file data.
 
@@ -2674,8 +2703,8 @@ WHERE:
 - `node` (optional): The node domain name for which the this API call is intended. When unspecified, the current node is used. This parameter can be used only when Clustering is initialized.
 - `zone`: The name of the primary zone to sign.
 - `algorithm`: The algorithm to be used for signing. Valid values are [`RSA`, `ECDSA`, `EDDSA`].
-- `pemKskPrivateKey` (optional): The user specified private key in PEM format for Key Signing Key (KSK). When this parameter is specified, the private key specified is used instead of automatically generating it.
-- `pemZskPrivateKey` (optional): The user specified private key in PEM format for Zone Signing Key (ZSK). When this parameter is specified, the private key specified is used instead of automatically generating it.
+- `pemKskPrivateKey` (optional): The user specified private key in PEM format for Key Signing Key (KSK). When this parameter is specified, the private key specified is used instead of automatically generating it. This parameter must be sent as form data or JSON. It is not accepted from the query string.
+- `pemZskPrivateKey` (optional): The user specified private key in PEM format for Zone Signing Key (ZSK). When this parameter is specified, the private key specified is used instead of automatically generating it. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `hashAlgorithm` (optional): The hash algorithm to be used when using `RSA` algorithm. Valid values are [`MD5`, `SHA1`, `SHA256`, `SHA512`]. This optional parameter is required when using `RSA` algorithm.
 - `kskKeySize` (optional): The size of the Key Signing Key (KSK) in bits to be used when using `RSA` algorithm. This optional parameter is required when using `RSA` algorithm.
 - `zskKeySize` (optional): The size of the Zone Signing Key (ZSK) in bits to be used when using `RSA` algorithm. This optional parameter is required when using `RSA` algorithm.
@@ -2976,7 +3005,7 @@ WHERE:
 - `keyType`: The type of key for which the private key is to be generated. Valid values are [`KeySigningKey`, `ZoneSigningKey`].
 - `rolloverDays` (optional): The frequency in days that the DNS server must automatically rollover the private key in the zone. Valid range is 0-365 days where 0 disables rollover. Default value is 90 days for Zone Signing Key (ZSK) and 0 days for Key Signing Key (KSK).
 - `algorithm`: The algorithm to be used for signing. Valid values are [`RSA`, `ECDSA`, `EDDSA`].
-- `pemPrivateKey` (optional): Specifies a user generated private key in PEM format to add. When not specified a private key will be automatically generated.
+- `pemPrivateKey` (optional): Specifies a user generated private key in PEM format to add. When not specified a private key will be automatically generated. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `hashAlgorithm` (optional): The hash algorithm to be used when using `RSA` algorithm. Valid values are [`MD5`, `SHA1`, `SHA256`, `SHA512`]. This optional parameter is required when using `RSA` algorithm.
 - `keySize` (optional): The size of the generated private key in bits to be used when using `RSA` algorithm. This optional parameter is required when using `RSA` algorithm.
 - `curve` (optional): The name of the curve to be used when using `ECDSA` or `EDDSA` algorithm. Valid values are [`P256`, `P384`] for `ECDSA` algorithm and [`ED25519`, `ED448`] for `EDDSA` algorithm. This optional parameter is required when using `ECDSA` or `EDDSA` algorithm.
@@ -3223,7 +3252,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string. The records API returns `************` when a password is stored. Post that same value to keep the stored password. An empty value clears it.
 - `appName` (optional): The name of the DNS app. This parameter is required for adding the `APP` record.
 - `classPath` (optional): This parameter is required for adding the `APP` record.
 - `recordData` (optional): This parameter is used for adding the `APP` record as per the DNS app requirements.
@@ -3935,7 +3964,7 @@ WHERE:
 - `proxyAddress` (optional): The proxy server address to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyPort` (optional): The proxy server port to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
 - `proxyUsername` (optional): The proxy server username to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
-- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records.
+- `proxyPassword` (optional): The proxy server password to use when `proxyType` is configured. This optional parameter is to be used with FWD records. This parameter must be sent as form data or JSON. It is not accepted from the query string. The records API returns `************` when a password is stored. Post that same value to keep the stored password of the forwarder being updated. An empty value clears it.
 - `appName` (optional): This parameter is required for updating the `APP` record.
 - `classPath` (optional): This parameter is required for updating the `APP` record.
 - `recordData` (optional): This parameter is used for updating the `APP` record as per the DNS app requirements.
@@ -5225,7 +5254,7 @@ RESPONSE:
 		"tsigKeys": [
 			{
 				"keyName": "home",
-				"sharedSecret": "E9crgbHbzgEI+e+/pBmARRif70ScKf2sc/FjrgnCWyc=",
+				"sharedSecret": "************",
 				"algorithmName": "hmac-sha256"
 			}
 		],
@@ -5298,7 +5327,7 @@ This call allows to change the DNS server settings.
 Note! Any parameter passed with this API call will overwrite existing value for that parameter. If you wish to append new values instead then you should first call the Get DNS Settings API to get the existing value, append your new value to it, and then pass the updated value with this API call.
 
 URL:\
-`http://localhost:5380/api/settings/set?dnsServerDomain=server1&dnsServerLocalEndPoints=0.0.0.0:53,[::]:53&webServiceLocalAddresses=0.0.0.0,[::]&webServiceHttpPort=5380&webServiceEnableTls=false&webServiceTlsPort=53443&webServiceTlsCertificatePath=&webServiceTlsCertificatePassword=&enableDnsOverHttp=false&enableDnsOverTls=false&enableDnsOverHttps=false&dnsTlsCertificatePath=&dnsTlsCertificatePassword=&preferIPv6=false&logQueries=true&allowRecursion=true&allowRecursionOnlyForPrivateNetworks=true&randomizeName=true&cachePrefetchEligibility=2&cachePrefetchTrigger=9&proxyType=socks5&proxyAddress=192.168.10.2&proxyPort=9050&proxyUsername=username&proxyPassword=password&proxyBypass=127.0.0.0/8,169.254.0.0/16,fe80::/10,::1,localhost&forwarders=192.168.10.2&forwarderProtocol=Udp&useNxDomainForBlocking=false&blockListUrls=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts,https://mirror1.malwaredomains.com/files/justdomains,https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt,https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt`
+`http://localhost:5380/api/settings/set?dnsServerDomain=server1&dnsServerLocalEndPoints=0.0.0.0:53,[::]:53&webServiceLocalAddresses=0.0.0.0,[::]&webServiceHttpPort=5380&webServiceEnableTls=false&webServiceTlsPort=53443&webServiceTlsCertificatePath=&enableDnsOverHttp=false&enableDnsOverTls=false&enableDnsOverHttps=false&dnsTlsCertificatePath=&preferIPv6=false&logQueries=true&allowRecursion=true&allowRecursionOnlyForPrivateNetworks=true&randomizeName=true&cachePrefetchEligibility=2&cachePrefetchTrigger=9&proxyType=socks5&proxyAddress=192.168.10.2&proxyPort=9050&proxyUsername=username&proxyBypass=127.0.0.0/8,169.254.0.0/16,fe80::/10,::1,localhost&forwarders=192.168.10.2&forwarderProtocol=Udp&useNxDomainForBlocking=false&blockListUrls=https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts,https://mirror1.malwaredomains.com/files/justdomains,https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt,https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt`
 
 OBSOLETE PATH:\
 `/api/setDnsSettings`
@@ -5363,10 +5392,10 @@ WHERE:
 - `webServiceReverseProxyAddresses` (optional):  A comma separated list of ACL entries which can be an IP address or a network address. Configure the ACL to define allowed reverse proxy servers such that client IP address from requests coming from these servers is read using the `webServiceRealIpHeader` option. Add ! character at the start to deny, e.g. !192.168.10.0/24 will deny entire subnet. The ACL is processed in the same order its listed. If no networks match, the default policy is to deny all.
 - `webServiceUseSelfSignedTlsCertificate` (optional): Set `true` for the web service to use an automatically generated self signed certificate when TLS certificate path is not specified.
 - `webServiceTlsCertificatePath` (optional): Specify a PKCS #12 certificate (.pfx) file path on the server. The certificate must contain private key. This certificate is used by the web console for HTTPS access.
-- `webServiceTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any.
+- `webServiceTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `webServiceRealIpHeader` (optional): The HTTP header that must be used to read client's actual IP address when the request comes from a reverse proxy with a private IP address.
 - `webServiceCspFrameAncestorsHeader` (optional): The Content Security Policy (CSP) Frame Ancestors header value that must be used when serving the Web Console.
-- `enableEDnsClientSubnetSourceAddress` (optional): Enable this option to read the client's source IP address from the EDNS Client Subnet (ECS) option in the DNS requests coming via DNS-over-UDP or DNS-over-TCP protocols. This option allows a DNS proxy to pass the client's source IP address via ECS option to the DNS Server. It is mandatory to configure `dnsReverseProxyNetworkACL` to allow requests coming from your DNS proxy server to work with this option.
+- `enableEDnsClientSubnetSourceAddress` (optional): Enable this option to read a full client address (IPv4 `/32` or IPv6 `/128`) from the EDNS Client Subnet option on DNS-over-UDP and DNS-over-TCP. The address is written to the query log. Rate limits stay with the connection. Recursion and zone access are allowed only when both the connection and the forwarded address are allowed. A loopback or unspecified address from a remote peer is ignored. Configure `dnsReverseProxyNetworkACL` to list the proxy.
 - `enableDnsOverUdpProxy` (optional): Enable this option to accept DNS-over-UDP-PROXY requests. It implements the [PROXY Protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) for both version 1 & 2 over UDP datagram. Configure the `dnsReverseProxyNetworkACL` option to allow only requests coming from your reverse proxy server.
 - `enableDnsOverTcpProxy` (optional): Enable this option to accept DNS-over-TCP-PROXY requests. It implements the [PROXY Protocol](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) for both version 1 & 2 over TCP connection. Configure the `dnsReverseProxyNetworkACL` option to allow only requests coming from your reverse proxy server.
 - `enableDnsOverHttp` (optional): Enable this option to accept DNS-over-HTTP requests. It must be used with a TLS terminating reverse proxy like nginx. Configure the `dnsReverseProxyNetworkACL` option to allow only requests coming from your reverse proxy server. Enabling this option also allows automatic TLS certificate renewal with HTTP challenge (webroot) for DNS-over-HTTPS service.
@@ -5386,9 +5415,9 @@ WHERE:
 - `dnsOverQuicPort` (optional): The UDP port number for DNS-over-QUIC protocol. Initial value is `853`.
 - `dnsReverseProxyNetworkACL` (optional): A comma separated list of ACL entries which can be an IP address or a network address. Configure the ACL to allow only requests coming from your reverse proxy server for DNS-over-UDP-PROXY, DNS-over-TCP-PROXY, and DNS-over-HTTP protocols. Add ! character at the start to deny access, e.g. !192.168.10.0/24 will deny entire subnet. The ACL is processed in the same order its listed. If no networks match, the default policy is to deny all.
 - `dnsTlsCertificatePath` (optional): Specify a PKCS #12 certificate (.pfx) file path on the server. The certificate must contain private key. This certificate is used by the DNS-over-TLS and DNS-over-HTTPS optional protocols.
-- `dnsTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any.
-- `dnsOverHttpRealIpHeader` (optional): The HTTP header that must be used to read client's actual IP address when the request comes from a reverse proxy with a private IP address.
-- `tsigKeys` (optional, cluster parameter): A pipe `|` separated multi row list of TSIG key name, shared secret, and algorithm. Set this parameter to `false` to remove all existing keys. Supported algorithms are [`hmac-md5.sig-alg.reg.int`, `hmac-sha1`, `hmac-sha256`, `hmac-sha256-128`, `hmac-sha384`, `hmac-sha384-192`, `hmac-sha512`, `hmac-sha512-256`].
+- `dnsTlsCertificatePassword` (optional): Enter the certificate (.pfx) password, if any. This parameter must be sent as form data or JSON. It is not accepted from the query string.
+- `dnsOverHttpRealIpHeader` (optional): The HTTP header used to read the client address when the peer is listed in `dnsReverseProxyNetworkACL`. The address is written to the query log. Rate limits stay with the connection. Recursion and zone access are allowed only when both the connection and the header address are allowed. A loopback or unspecified address from a remote peer is ignored. A connection with no address, such as a Unix socket, uses the header address directly.
+- `tsigKeys` (optional, cluster parameter): A pipe `|` separated multi row list of TSIG key name, shared secret, and algorithm. Set this parameter to `false` to remove all existing keys. Supported algorithms are [`hmac-md5.sig-alg.reg.int`, `hmac-sha1`, `hmac-sha256`, `hmac-sha256-128`, `hmac-sha384`, `hmac-sha384-192`, `hmac-sha512`, `hmac-sha512-256`]. The settings response returns `************` instead of the shared secret. Post that same value to keep the stored secret. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `recursion` (optional, cluster parameter): Sets the recursion policy for the DNS server. Valid values are [`Deny`, `Allow`, `AllowOnlyForPrivateNetworks`, `UseSpecifiedNetworkACL`].
 - `recursionNetworkACL` (optional, cluster parameter): A comma separated Access Control List (ACL) of Network Access Control (NAC) entry. NAC is an IP address or network address to allow. Add `!` at the start of the NAC to deny access. The ACL is processed in the same order its listed. If no networks match, the default policy is to deny all except loopback. Set this parameter to `false` to remove existing values. These values are only used when `recursion` is set to `UseSpecifiedNetworkACL`.
 - `randomizeName` (optional, cluster parameter): Enables QNAME randomization [draft-vixie-dnsext-dns0x20-00](https://tools.ietf.org/html/draft-vixie-dnsext-dns0x20-00) when using UDP as the transport protocol. Initial value is `true`.
@@ -5423,7 +5452,7 @@ WHERE:
 - `proxyAddress` (optional, cluster parameter): The proxy server hostname or IP address.
 - `proxyPort` (optional, cluster parameter): The proxy server port.
 - `proxyUsername` (optional, cluster parameter): The proxy server username.
-- `proxyPassword` (optional, cluster parameter): The proxy server password.
+- `proxyPassword` (optional, cluster parameter): The proxy server password. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `proxyBypass` (optional, cluster parameter): A comma separated bypass list consisting of IP addresses, network addresses in CIDR format, or host/domain names to never use proxy for.
 - `forwarders` (optional, cluster parameter): A comma separated list of forwarders to be used by this DNS server. Set this parameter to `false` string to remove existing forwarders so that the DNS server does recursive resolution by itself.
 - `forwarderProtocol` (optional, cluster parameter): The forwarder DNS transport protocol to be used. Valid values are [`Udp`, `Tcp`, `Tls`, `Https`, `Quic`].
@@ -6395,7 +6424,7 @@ WHERE:
 - `totpEnabled` (optional): Set to `false` to disable 2FA for the user account. The parameter cannot have a `true` value. For SSO users, 2FA is managed by SSO provider and cannot be enabled with this API call.
 - `disabled` (optional): Set `true` to disable the user account and delete all its active sessions.
 - `sessionTimeoutSeconds` (optional): A session time out value in seconds for the user account.
-- `newPass` (optional): A new password to reset the user account password. For SSO users, the password is managed by SSO provider and cannot be changed with this API call.
+- `newPass` (optional): A new password to reset the user account password. This parameter must be sent as form data or JSON. It is not accepted from the query string. For SSO users, the password is managed by SSO provider and cannot be changed with this API call.
 - `iterations` (optional): The number of iterations for PBKDF2 SHA256 password hashing. This is only used with the `newPass` option.
 - `memberOfGroups` (optional): A list of comma separated group names that the user must be set as a member. For SSO users, the group membership is managed by SSO provider if SSO Group Map was configured and cannot be changed with this API call in that case.
 
@@ -7087,7 +7116,7 @@ WHERE:
 - `ssoEnabled` (optional): Set to `true` to allow Single Sign-On (SSO) with OpenID Connect (OIDC).
 - `ssoAuthority` (optional): The OpenID Connect (OIDC) Authority URL.
 - `ssoClientId` (optional): The OpenID Connect (OIDC) Client ID.
-- `ssoClientSecret` (optional): The OpenID Connect (OIDC) Client Secret.
+- `ssoClientSecret` (optional): The OpenID Connect (OIDC) Client Secret. This parameter must be sent as form data or JSON. It is not accepted from the query string.
 - `ssoMetadataAddress` (optional): The OpenID Connect (OIDC) metadata discovery URL to be used instead of the default one. Configure this option only if the Single Sign-On (SSO) provider uses a different discovery URL.
 - `ssoAllowSignup` (optional): Set to `true` to allow automatically provisioning of user accounts for new users signing in via Single Sign-On (SSO). Keep this option set to `false` if you do not expect new SSO users to sign up.
 - `ssoAllowSignupOnlyForMappedUsers` (optional): Set to `true` to allow a new user to sign up via Single Sign-On (SSO) only when the user is a member of at least one Remote Group that is mapped to a Local Group in the Group Map option below. This option allows SSO administrators to restrict SSO users to control who can sign up and get access based on their group memberships.
@@ -7415,7 +7444,7 @@ RESPONSE:
 The Remove Node process will ask the selected Secondary node to leave the Cluster gracefully. The Secondary now will then initiate Leave Cluster process as if the Leave Cluster action was performed on that node itself. This call can be made only at the Primary node.
 
 URL:\
-`http://localhost:5380/api/admin/cluster/primary/removeSecondary?token=X&secondaryNodeId=811905692`
+`http://localhost:5380/api/admin/cluster/primary/removeSecondary?secondaryNodeId=811905692`
 
 PERMISSIONS:\
 Administration: Delete
@@ -7462,7 +7491,7 @@ RESPONSE:
 The Delete Node process will immediately delete the selected Secondary node entry from the Cluster without asking the node to leave graceful. This call can be made only at the Primary node.
 
 URL:\
-`http://localhost:5380/api/admin/cluster/primary/deleteSecondary?token=X&secondaryNodeId=811905692`
+`http://localhost:5380/api/admin/cluster/primary/deleteSecondary?secondaryNodeId=811905692`
 
 PERMISSIONS:\
 Administration: Delete

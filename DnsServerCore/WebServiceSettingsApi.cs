@@ -45,6 +45,19 @@ namespace DnsServerCore
 {
     public partial class DnsWebService
     {
+        internal const string TsigSharedSecretHidden = "************";
+
+        internal static string SelectTsigSharedSecret(string postedSecret, string storedSecret)
+        {
+            if (string.IsNullOrEmpty(postedSecret))
+                return null;
+
+            if (postedSecret == TsigSharedSecretHidden)
+                return string.IsNullOrEmpty(storedSecret) ? null : storedSecret;
+
+            return postedSecret;
+        }
+
         sealed class WebServiceSettingsApi
         {
             #region variables
@@ -280,7 +293,7 @@ namespace DnsServerCore
                             jsonWriter.WriteStartObject();
 
                             jsonWriter.WriteString("keyName", tsigKey.Key);
-                            jsonWriter.WriteString("sharedSecret", tsigKey.Value.SharedSecret);
+                            jsonWriter.WriteString("sharedSecret", TsigSharedSecretHidden);
                             jsonWriter.WriteString("algorithmName", tsigKey.Value.AlgorithmName);
 
                             jsonWriter.WriteEndObject();
@@ -463,6 +476,30 @@ namespace DnsServerCore
 
                 jsonWriter.WriteBoolean("enableInMemoryStats", _dnsWebService._dnsServer.StatsManager.EnableInMemoryStats);
                 jsonWriter.WriteNumber("maxStatFileDays", _dnsWebService._dnsServer.StatsManager.MaxStatFileDays);
+            }
+
+            TsigKey CreateTsigKey(string keyName, string sharedSecret, string algorithmName)
+            {
+                if (keyName is null)
+                    throw new ArgumentNullException(nameof(keyName));
+
+                keyName = keyName.TrimEnd('.').ToLowerInvariant();
+
+                if (DnsClient.IsDomainNameUnicode(keyName))
+                    keyName = DnsClient.ConvertDomainNameToAscii(keyName);
+
+                DnsClient.IsDomainNameValid(keyName, true);
+
+                string storedSecret = null;
+
+                if ((_dnsWebService._dnsServer.TsigKeys is not null) && _dnsWebService._dnsServer.TsigKeys.TryGetValue(keyName, out TsigKey existing))
+                    storedSecret = existing.SharedSecret;
+
+                string selectedSecret = SelectTsigSharedSecret(sharedSecret, storedSecret);
+                if (selectedSecret is null)
+                    return new TsigKey(keyName, algorithmName);
+
+                return new TsigKey(keyName, selectedSecret, algorithmName);
             }
 
             #endregion
@@ -702,7 +739,7 @@ namespace DnsServerCore
                 string webServiceTlsCertificatePath = request.QueryOrForm("webServiceTlsCertificatePath");
                 if (!string.IsNullOrEmpty(webServiceTlsCertificatePath))
                 {
-                    string webServiceTlsCertificatePassword = request.QueryOrForm("webServiceTlsCertificatePassword");
+                    _ = request.TryFormOrJson("webServiceTlsCertificatePassword", out string webServiceTlsCertificatePassword);
 
                     if ((webServiceTlsCertificatePassword is null) || (webServiceTlsCertificatePassword == "************"))
                         webServiceTlsCertificatePassword = _dnsWebService._webServiceTlsCertificatePassword;
@@ -786,7 +823,7 @@ namespace DnsServerCore
                 string dnsTlsCertificatePath = request.QueryOrForm("dnsTlsCertificatePath");
                 if (!string.IsNullOrEmpty(dnsTlsCertificatePath))
                 {
-                    string dnsTlsCertificatePassword = request.QueryOrForm("dnsTlsCertificatePassword");
+                    _ = request.TryFormOrJson("dnsTlsCertificatePassword", out string dnsTlsCertificatePassword);
 
                     if ((dnsTlsCertificatePassword is null) || (dnsTlsCertificatePassword == "************"))
                         dnsTlsCertificatePassword = _dnsWebService._dnsServer.DnsTlsCertificatePassword;
@@ -801,36 +838,12 @@ namespace DnsServerCore
                         ValidatePkcs12Certificate(_dnsWebService._log.ConvertToAbsolutePath(dnsTlsCertificatePath), dnsTlsCertificatePassword, "DNS Server TLS certificate file does not exists: ", "DNS Server TLS certificate file must be PKCS #12 formatted with .pfx or .p12 extension: ", "DNS Server TLS certificate file must contain a certificate with private key.");
                 }
 
-                if (request.TryQueryOrFormArray("tsigKeys", delegate (JsonElement jsonObject)
+                if (request.TryFormOrJsonArray("tsigKeys", delegate (JsonElement jsonObject)
                 {
-                    string keyName = jsonObject.GetProperty("keyName").GetString().TrimEnd('.').ToLowerInvariant();
-                    string sharedSecret = jsonObject.GetProperty("sharedSecret").GetString();
-                    string algorithmName = jsonObject.GetProperty("algorithmName").GetString();
-
-                    if (DnsClient.IsDomainNameUnicode(keyName))
-                        keyName = DnsClient.ConvertDomainNameToAscii(keyName);
-
-                    DnsClient.IsDomainNameValid(keyName, true);
-
-                    if (sharedSecret.Length == 0)
-                        return new TsigKey(keyName, algorithmName);
-
-                    return new TsigKey(keyName, sharedSecret, algorithmName);
+                    return CreateTsigKey(jsonObject.GetProperty("keyName").GetString(), jsonObject.GetProperty("sharedSecret").GetString(), jsonObject.GetProperty("algorithmName").GetString());
                 }, delegate (ArraySegment<string> tableRow)
                 {
-                    string keyName = tableRow[0].TrimEnd('.').ToLowerInvariant();
-                    string sharedSecret = tableRow[1];
-                    string algorithmName = tableRow[2];
-
-                    if (DnsClient.IsDomainNameUnicode(keyName))
-                        keyName = DnsClient.ConvertDomainNameToAscii(keyName);
-
-                    DnsClient.IsDomainNameValid(keyName, true);
-
-                    if (sharedSecret.Length == 0)
-                        return new TsigKey(keyName, algorithmName);
-
-                    return new TsigKey(keyName, sharedSecret, algorithmName);
+                    return CreateTsigKey(tableRow[0], tableRow[1], tableRow[2]);
                 }, 3, out TsigKey[] tsigKeys, '|'))
                 {
                     if (tsigKeys.Length > byte.MaxValue)
@@ -951,8 +964,8 @@ namespace DnsServerCore
                             if (proxyUsername.Length > 255)
                                 throw new ArgumentException("Proxy username length cannot exceed 255 characters.", nameof(proxyUsername));
 
-                            string proxyPassword = request.QueryOrForm("proxyPassword");
-                            if ((proxyPassword == PROXY_PASSWORD_HIDDEN) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
+                            _ = request.TryFormOrJson("proxyPassword", out string proxyPassword);
+                            if (((proxyPassword is null) || (proxyPassword == PROXY_PASSWORD_HIDDEN)) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
                                 proxyPassword = _dnsWebService._dnsServer.Proxy.Credential.Password;
 
                             if (proxyPassword?.Length > 255)
@@ -1646,7 +1659,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string webServiceTlsCertificatePassword = request.QueryOrForm("webServiceTlsCertificatePassword");
+                                _ = request.TryFormOrJson("webServiceTlsCertificatePassword", out string webServiceTlsCertificatePassword);
 
                                 if ((webServiceTlsCertificatePassword is null) || (webServiceTlsCertificatePassword == "************"))
                                     webServiceTlsCertificatePassword = _dnsWebService._webServiceTlsCertificatePassword;
@@ -1848,7 +1861,7 @@ namespace DnsServerCore
                             }
                             else
                             {
-                                string dnsTlsCertificatePassword = request.QueryOrForm("dnsTlsCertificatePassword");
+                                _ = request.TryFormOrJson("dnsTlsCertificatePassword", out string dnsTlsCertificatePassword);
 
                                 if ((dnsTlsCertificatePassword is null) || (dnsTlsCertificatePassword == "************"))
                                     dnsTlsCertificatePassword = _dnsWebService._dnsServer.DnsTlsCertificatePassword;
@@ -1867,37 +1880,13 @@ namespace DnsServerCore
 
                         #region tsig
 
-                        if (request.TryQueryOrFormArray("tsigKeys", delegate (JsonElement jsonObject)
+                        if (request.TryFormOrJsonArray("tsigKeys", delegate (JsonElement jsonObject)
                         {
-                            string keyName = jsonObject.GetProperty("keyName").GetString().TrimEnd('.').ToLowerInvariant();
-                            string sharedSecret = jsonObject.GetProperty("sharedSecret").GetString();
-                            string algorithmName = jsonObject.GetProperty("algorithmName").GetString();
-
-                            if (DnsClient.IsDomainNameUnicode(keyName))
-                                keyName = DnsClient.ConvertDomainNameToAscii(keyName);
-
-                            DnsClient.IsDomainNameValid(keyName, true);
-
-                            if (sharedSecret.Length == 0)
-                                return new TsigKey(keyName, algorithmName);
-
-                            return new TsigKey(keyName, sharedSecret, algorithmName);
+                            return CreateTsigKey(jsonObject.GetProperty("keyName").GetString(), jsonObject.GetProperty("sharedSecret").GetString(), jsonObject.GetProperty("algorithmName").GetString());
                         },
                             delegate (ArraySegment<string> tableRow)
                             {
-                                string keyName = tableRow[0].TrimEnd('.').ToLowerInvariant();
-                                string sharedSecret = tableRow[1];
-                                string algorithmName = tableRow[2];
-
-                                if (DnsClient.IsDomainNameUnicode(keyName))
-                                    keyName = DnsClient.ConvertDomainNameToAscii(keyName);
-
-                                DnsClient.IsDomainNameValid(keyName, true);
-
-                                if (sharedSecret.Length == 0)
-                                    return new TsigKey(keyName, algorithmName);
-
-                                return new TsigKey(keyName, sharedSecret, algorithmName);
+                                return CreateTsigKey(tableRow[0], tableRow[1], tableRow[2]);
                             },
                             3, out TsigKey[] tsigKeys, '|')
                         )
@@ -2166,8 +2155,8 @@ namespace DnsServerCore
                                     if (proxyUsername.Length > 255)
                                         throw new ArgumentException("Proxy username length cannot exceed 255 characters.", nameof(proxyUsername));
 
-                                    string proxyPassword = request.QueryOrForm("proxyPassword");
-                                    if ((proxyPassword == PROXY_PASSWORD_HIDDEN) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
+                                    _ = request.TryFormOrJson("proxyPassword", out string proxyPassword);
+                                    if (((proxyPassword is null) || (proxyPassword == PROXY_PASSWORD_HIDDEN)) && (_dnsWebService._dnsServer.Proxy?.Credential != null))
                                         proxyPassword = _dnsWebService._dnsServer.Proxy.Credential.Password;
 
                                     if (proxyPassword?.Length > 255)

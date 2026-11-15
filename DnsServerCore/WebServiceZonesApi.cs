@@ -41,6 +41,42 @@ namespace DnsServerCore
 {
     public partial class DnsWebService
     {
+        internal const string ForwarderProxyPasswordHidden = "************";
+
+        internal static string SelectForwarderProxyPassword(string postedPassword, string storedPassword)
+        {
+            //an empty value clears the password; the placeholder keeps the stored one
+            if (string.IsNullOrEmpty(postedPassword))
+                return null;
+
+            if (postedPassword == ForwarderProxyPasswordHidden)
+                return string.IsNullOrEmpty(storedPassword) ? null : storedPassword;
+
+            return postedPassword;
+        }
+
+        internal static string FindForwarderProxyPassword(IReadOnlyList<DnsResourceRecord> records, DnsTransportProtocol protocol, string forwarder)
+        {
+            if ((records is null) || (forwarder is null))
+                return null;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (record.RDATA is not DnsForwarderRecordData data)
+                    continue;
+
+                if ((data.Protocol == protocol) && data.Forwarder.Equals(forwarder, StringComparison.OrdinalIgnoreCase))
+                    return data.ProxyPassword;
+            }
+
+            return null;
+        }
+
+        internal static string NormalizeOptionalPem(string pem)
+        {
+            return string.IsNullOrWhiteSpace(pem) ? null : pem;
+        }
+
         class WebServiceZonesApi
         {
             #region variables
@@ -845,7 +881,7 @@ namespace DnsServerCore
                                         jsonWriter.WriteString("proxyAddress", rdata.ProxyAddress);
                                         jsonWriter.WriteNumber("proxyPort", rdata.ProxyPort);
                                         jsonWriter.WriteString("proxyUsername", rdata.ProxyUsername);
-                                        jsonWriter.WriteString("proxyPassword", rdata.ProxyPassword);
+                                        jsonWriter.WriteString("proxyPassword", string.IsNullOrEmpty(rdata.ProxyPassword) ? "" : ForwarderProxyPasswordHidden);
                                         break;
                                 }
                             }
@@ -1339,6 +1375,7 @@ namespace DnsServerCore
 
                     bool disabled = false;
                     string comments = null;
+                    bool useSerialDateScheme = false;
 
                     if (record.Tag is string tagValue)
                     {
@@ -1354,6 +1391,9 @@ namespace DnsServerCore
 
                                 if (json.TryGetProperty("comments", out JsonElement jsonComments) && (jsonComments.ValueKind == JsonValueKind.String))
                                     comments = jsonComments.GetString();
+
+                                if (json.TryGetProperty("useSerialDateScheme", out JsonElement jsonUseSerialDateScheme))
+                                    useSerialDateScheme = jsonUseSerialDateScheme.ValueKind == JsonValueKind.True;
                             }
                             catch
                             {
@@ -1377,16 +1417,12 @@ namespace DnsServerCore
 
                         case DnsResourceRecordType.NS:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new NSRecordInfo
                                 {
-                                    NSRecordInfo rrInfo = new NSRecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Disabled = disabled;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Disabled = disabled,
+                                    Comments = comments
+                                };
 
                                 record.SyncGlueRecords(records);
 
@@ -1396,15 +1432,12 @@ namespace DnsServerCore
 
                         case DnsResourceRecordType.SOA:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new SOARecordInfo
                                 {
-                                    SOARecordInfo rrInfo = new SOARecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Comments = comments,
+                                    UseSoaSerialDateScheme = useSerialDateScheme
+                                };
 
                                 newRecords.Add(record);
                             }
@@ -1413,16 +1446,12 @@ namespace DnsServerCore
                         case DnsResourceRecordType.SVCB:
                         case DnsResourceRecordType.HTTPS:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new SVCBRecordInfo
                                 {
-                                    SVCBRecordInfo rrInfo = new SVCBRecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Disabled = disabled;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Disabled = disabled,
+                                    Comments = comments
+                                };
 
                                 if (record.RDATA is DnsSVCBRecordData rdata && (rdata.AutoIpv4Hint || rdata.AutoIpv6Hint))
                                 {
@@ -1447,16 +1476,12 @@ namespace DnsServerCore
 
                         default:
                             {
-                                if (record.Tag is string)
+                                record.Tag = new GenericRecordInfo
                                 {
-                                    GenericRecordInfo rrInfo = new GenericRecordInfo();
-
-                                    rrInfo.LastModified = utcNow;
-                                    rrInfo.Disabled = disabled;
-                                    rrInfo.Comments = comments;
-
-                                    record.Tag = rrInfo;
-                                }
+                                    LastModified = utcNow,
+                                    Disabled = disabled,
+                                    Comments = comments
+                                };
 
                                 newRecords.Add(record);
                             }
@@ -1867,7 +1892,8 @@ namespace DnsServerCore
                                         proxyAddress = request.GetQueryOrForm("proxyAddress");
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
-                                        proxyPassword = request.QueryOrForm("proxyPassword");
+                                        _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
+                                        proxyPassword = SelectForwarderProxyPassword(proxyPassword, null);
                                         break;
                                 }
 
@@ -1971,20 +1997,9 @@ namespace DnsServerCore
                 //import records, if any
                 if (importRecords is not null)
                 {
-                    //delete existing NS/FWD record 
-                    switch (type)
-                    {
-                        case AuthZoneType.Primary:
-                            _dnsWebService._dnsServer.AuthZoneManager.DeleteRecords(zoneInfo.Name, zoneInfo.Name, DnsResourceRecordType.NS);
-                            break;
-
-                        case AuthZoneType.Forwarder:
-                            _dnsWebService._dnsServer.AuthZoneManager.DeleteRecords(zoneInfo.Name, zoneInfo.Name, DnsResourceRecordType.FWD);
-                            break;
-                    }
-
-                    //import records
-                    _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, importRecords, false, false, false);
+                    //Replace the generated apex NS or FWD only after the file is accepted, so a rejected file leaves that record in place.
+                    DnsResourceRecordType generatedApexRecord = type == AuthZoneType.Forwarder ? DnsResourceRecordType.FWD : DnsResourceRecordType.NS;
+                    _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, importRecords, false, false, false, generatedApexRecord);
 
                     if ((type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.CatalogZoneName))
                         _dnsWebService._clusterManager.UpdateClusterRecordsFor(zoneInfo); //the import deletes apex NS and a cluster file is not allowed to contain them
@@ -2120,15 +2135,23 @@ namespace DnsServerCore
 
                         GenericRecordInfo recordInfo = record.GetAuthGenericRecordInfo();
 
-                        if (recordInfo.Disabled || ((recordInfo.Comments is not null) && recordInfo.Comments.TrimStart().StartsWith('{')))
+                        if (recordInfo.Disabled || ((recordInfo.Comments is not null) && recordInfo.Comments.TrimStart().StartsWith('{')) || (recordInfo is SOARecordInfo soaRecordInfo && soaRecordInfo.UseSoaSerialDateScheme))
                         {
                             using (MemoryStream mS = new MemoryStream())
                             {
                                 Utf8JsonWriter jsonWriter = new Utf8JsonWriter(mS);
 
                                 jsonWriter.WriteStartObject();
-                                jsonWriter.WriteBoolean("disabled", recordInfo.Disabled);
-                                jsonWriter.WriteString("comments", recordInfo.Comments);
+
+                                if (recordInfo.Disabled)
+                                    jsonWriter.WriteBoolean("disabled", recordInfo.Disabled);
+
+                                if (!string.IsNullOrEmpty(recordInfo.Comments))
+                                    jsonWriter.WriteString("comments", recordInfo.Comments);
+
+                                if (recordInfo is SOARecordInfo soaRecordInfo1 && soaRecordInfo1.UseSoaSerialDateScheme)
+                                    jsonWriter.WriteBoolean("useSerialDateScheme", soaRecordInfo1.UseSoaSerialDateScheme);
+
                                 jsonWriter.WriteEndObject();
 
                                 jsonWriter.Flush();
@@ -2233,8 +2256,10 @@ namespace DnsServerCore
                     throw new DnsWebServiceException("Access was denied.");
 
                 string algorithm = request.GetQueryOrForm("algorithm");
-                string pemKskPrivateKey = request.GetQueryOrForm("pemKskPrivateKey", null);
-                string pemZskPrivateKey = request.GetQueryOrForm("pemZskPrivateKey", null);
+                _ = request.TryFormOrJson("pemKskPrivateKey", out string pemKskPrivateKey);
+                _ = request.TryFormOrJson("pemZskPrivateKey", out string pemZskPrivateKey);
+                pemKskPrivateKey = NormalizeOptionalPem(pemKskPrivateKey);
+                pemZskPrivateKey = NormalizeOptionalPem(pemZskPrivateKey);
                 uint dnsKeyTtl = request.GetQueryOrForm("dnsKeyTtl", ZoneFile.ParseTtl, 3600u);
                 ushort zskRolloverDays = request.GetQueryOrForm("zskRolloverDays", ushort.Parse, Convert.ToUInt16(pemZskPrivateKey is null ? 30 : 0));
 
@@ -2690,7 +2715,8 @@ namespace DnsServerCore
                 DnssecPrivateKeyType keyType = request.GetQueryOrFormEnum<DnssecPrivateKeyType>("keyType");
                 ushort rolloverDays = request.GetQueryOrForm("rolloverDays", ushort.Parse, (ushort)(keyType == DnssecPrivateKeyType.ZoneSigningKey ? 30 : 0));
                 string algorithm = request.GetQueryOrForm("algorithm");
-                string pemPrivateKey = request.GetQueryOrForm("pemPrivateKey", null);
+                _ = request.TryFormOrJson("pemPrivateKey", out string pemPrivateKey);
+                pemPrivateKey = NormalizeOptionalPem(pemPrivateKey);
 
                 DnssecPrivateKey privateKey;
 
@@ -3071,6 +3097,11 @@ namespace DnsServerCore
 
                 //delete cache for this zone to allow rebuilding cache data as needed by stub or forwarder zone
                 _dnsWebService._dnsServer.CacheZoneManager.DeleteZone(zoneInfo.Name);
+            }
+
+            string FindForwarderProxyPassword(string zoneName, string domain, DnsTransportProtocol protocol, string forwarder)
+            {
+                return DnsWebService.FindForwarderProxyPassword(_dnsWebService._dnsServer.AuthZoneManager.GetRecords(zoneName, domain, DnsResourceRecordType.FWD), protocol, forwarder);
             }
 
             private void ThrowIfClusterManagedZone(AuthZoneInfo zoneInfo, string action)
@@ -4267,7 +4298,8 @@ namespace DnsServerCore
                                         proxyAddress = request.GetQueryOrForm("proxyAddress");
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
-                                        proxyPassword = request.QueryOrForm("proxyPassword");
+                                        _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
+                                        proxyPassword = SelectForwarderProxyPassword(proxyPassword, FindForwarderProxyPassword(zoneInfo.Name, domain, protocol, forwarder));
                                         break;
                                 }
                             }
@@ -5236,7 +5268,8 @@ namespace DnsServerCore
                                         proxyAddress = request.GetQueryOrForm("proxyAddress");
                                         proxyPort = request.GetQueryOrForm("proxyPort", ushort.Parse);
                                         proxyUsername = request.QueryOrForm("proxyUsername");
-                                        proxyPassword = request.QueryOrForm("proxyPassword");
+                                        _ = request.TryFormOrJson("proxyPassword", out proxyPassword);
+                                        proxyPassword = SelectForwarderProxyPassword(proxyPassword, FindForwarderProxyPassword(zoneInfo.Name, domain, protocol, forwarder));
                                         break;
                                 }
                             }

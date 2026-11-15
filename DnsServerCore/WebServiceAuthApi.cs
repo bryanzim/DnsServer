@@ -23,6 +23,8 @@ using Microsoft.AspNetCore.Http;
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -88,10 +90,54 @@ namespace DnsServerCore
 
                 if (includeInfo)
                 {
+                    List<IPAddress> ipv4Addresses = new List<IPAddress>();
+                    List<IPAddress> ipv6Addresses = new List<IPAddress>();
+
+                    foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (networkInterface.OperationalStatus != OperationalStatus.Up)
+                            continue;
+
+                        foreach (UnicastIPAddressInformation ip in networkInterface.GetIPProperties().UnicastAddresses)
+                        {
+                            if (IPAddress.IsLoopback(ip.Address))
+                                continue;
+
+                            switch (ip.Address.AddressFamily)
+                            {
+                                case AddressFamily.InterNetwork:
+                                    ipv4Addresses.Add(ip.Address);
+                                    break;
+
+                                case AddressFamily.InterNetworkV6:
+                                    if (ip.Address.IsIPv6LinkLocal || ip.Address.IsIPv6Teredo)
+                                        continue;
+
+                                    ipv6Addresses.Add(ip.Address);
+                                    break;
+                            }
+                        }
+                    }
+
                     jsonWriter.WriteStartObject("info");
 
                     jsonWriter.WriteString("version", _dnsWebService.GetServerVersion());
                     jsonWriter.WriteString("uptimestamp", _dnsWebService._uptimestamp);
+
+                    jsonWriter.WriteStartArray("ipv4Addresses");
+
+                    foreach (IPAddress ipv4Address in ipv4Addresses)
+                        jsonWriter.WriteStringValue(ipv4Address.ToString());
+
+                    jsonWriter.WriteEndArray();
+
+                    jsonWriter.WriteStartArray("ipv6Addresses");
+
+                    foreach (IPAddress ipv6Address in ipv6Addresses)
+                        jsonWriter.WriteStringValue(ipv6Address.ToString());
+
+                    jsonWriter.WriteEndArray();
+
                     jsonWriter.WriteString("dnsServerDomain", _dnsWebService._dnsServer.ServerDomain);
                     jsonWriter.WriteNumber("defaultRecordTtl", _dnsWebService._dnsServer.AuthZoneManager.DefaultRecordTtl);
                     jsonWriter.WriteNumber("defaultNsRecordTtl", _dnsWebService._dnsServer.AuthZoneManager.DefaultNsRecordTtl);
@@ -530,6 +576,12 @@ namespace DnsServerCore
 
             public async Task SsoLoginAsync(HttpContext context)
             {
+                if (!_dnsWebService._ssoEnabled)
+                {
+                    context.Response.Redirect("/");
+                    return;
+                }
+
                 try
                 {
                     await context.ChallengeAsync();
@@ -771,12 +823,12 @@ namespace DnsServerCore
             {
                 HttpRequest request = context.Request;
 
-                string username = request.GetQueryOrForm("user");
-                string password = request.GetQueryOrForm("pass");
-                string totp = request.GetQueryOrForm("totp", null);
+                string username = request.GetFormOrJson("user");
+                string password = request.GetFormOrJson("pass");
+                string totp = request.GetFormOrJson("totp", null);
                 string tokenName = (sessionType == UserSessionType.ApiToken) ? request.GetQueryOrForm("tokenName") : null;
                 bool includeInfo = (sessionType == UserSessionType.Standard) && request.GetQueryOrForm("includeInfo", bool.Parse, false);
-                IPEndPoint remoteEP = _dnsWebService.GetRemoteEndPoint(context);
+                IPEndPoint remoteEP = new IPEndPoint(DnsWebService.SelectRateLimitAddress(context.Connection.RemoteIpAddress), context.Connection.RemotePort);
 
                 UserSession session = await _dnsWebService._authManager.CreateSessionAsync(sessionType, tokenName, username, password, totp, remoteEP.Address, request.Headers.UserAgent);
 
@@ -839,9 +891,16 @@ namespace DnsServerCore
 
             public void Logout(HttpContext context)
             {
-                string token = GetAuthorizationToken(context.Request);
+                string token = GetAuthorizationToken(context.Request, out bool fromQueryString);
                 if (token is null)
                     return;
+
+                if (fromQueryString)
+                {
+                    UserSession existingSession = _dnsWebService._authManager.GetSession(token);
+                    if ((existingSession is null) || (existingSession.Type != UserSessionType.SingleUse))
+                        return;
+                }
 
                 UserSession session = _dnsWebService._authManager.DeleteSession(token);
                 if (session is not null)
@@ -865,13 +924,14 @@ namespace DnsServerCore
                 User sessionUser = _dnsWebService.GetSessionUser(context, true);
                 HttpRequest request = context.Request;
 
-                string password = request.GetQueryOrForm("pass");
-                string totp = request.GetQueryOrForm("totp", null);
+                string password = request.GetFormOrJson("pass");
+                string totp = request.GetFormOrJson("totp", null);
                 IPEndPoint remoteEP = _dnsWebService.GetRemoteEndPoint(context);
-                string newPassword = request.GetQueryOrForm("newPass");
+                string newPassword = request.GetFormOrJson("newPass");
                 int iterations = request.GetQueryOrForm("iterations", int.Parse, User.DEFAULT_ITERATIONS);
+                IPAddress rateLimitAddress = DnsWebService.SelectRateLimitAddress(context.Connection.RemoteIpAddress);
 
-                sessionUser = await _dnsWebService._authManager.ChangePasswordAsync(sessionUser.Username, password, totp, remoteEP.Address, newPassword, iterations);
+                sessionUser = await _dnsWebService._authManager.ChangePasswordAsync(sessionUser.Username, password, totp, rateLimitAddress, newPassword, iterations);
 
                 _dnsWebService._log.Write(remoteEP, "[" + sessionUser.Username + "] Password was changed successfully.");
 
@@ -911,7 +971,7 @@ namespace DnsServerCore
                 User sessionUser = _dnsWebService.GetSessionUser(context, true);
                 HttpRequest request = context.Request;
 
-                string totp = request.GetQueryOrForm("totp");
+                string totp = request.GetFormOrJson("totp");
 
                 sessionUser.EnableTOTP(totp);
 
@@ -1136,7 +1196,7 @@ namespace DnsServerCore
 
                 string username = request.GetQueryOrForm("user");
                 string displayName = request.GetQueryOrForm("displayName", username);
-                string password = request.GetQueryOrForm("pass");
+                string password = request.GetFormOrJson("pass");
 
                 User user = _dnsWebService._authManager.CreateUser(displayName, username, password);
 
@@ -1227,7 +1287,7 @@ namespace DnsServerCore
                         user.DisableTOTP();
                     }
 
-                    string newPassword = request.QueryOrForm("newPass");
+                    string newPassword = request.FormOrJson("newPass");
                     if (!string.IsNullOrWhiteSpace(newPassword))
                     {
                         int iterations = request.GetQueryOrForm("iterations", int.Parse, User.DEFAULT_ITERATIONS);
@@ -1888,7 +1948,7 @@ namespace DnsServerCore
                     }
                 }
 
-                if (request.TryQueryOrForm("ssoClientSecret", out string ssoClientSecret))
+                if (request.TryFormOrJson("ssoClientSecret", out string ssoClientSecret))
                 {
                     if ((ssoClientSecret != "************") && (_dnsWebService._authManager.SsoClientSecret != ssoClientSecret))
                     {
@@ -2111,7 +2171,7 @@ namespace DnsServerCore
                 if (request.TryQueryOrForm("ldapBindUsername", out string ldapBindUsername))
                     _dnsWebService._authManager.LdapBindUsername = ldapBindUsername;
 
-                if (request.TryQueryOrForm("ldapBindPassword", out string ldapBindPassword))
+                if (request.TryFormOrJson("ldapBindPassword", out string ldapBindPassword))
                 {
                     if (ldapBindPassword != "************")
                         _dnsWebService._authManager.LdapBindPassword = ldapBindPassword;
@@ -2164,7 +2224,9 @@ namespace DnsServerCore
                 LdapAuthSslOption ldapSslOption = context.Request.GetQueryOrFormEnum("ldapSslOption", _dnsWebService._authManager.LdapSslOption);
                 bool ldapIgnoreSslErrors = context.Request.GetQueryOrForm("ldapIgnoreSslErrors", bool.Parse, _dnsWebService._authManager.LdapIgnoreSslErrors);
                 string ldapBindUsername = context.Request.GetQueryOrForm("ldapBindUsername", _dnsWebService._authManager.LdapBindUsername);
-                string ldapBindPassword = context.Request.GetQueryOrForm("ldapBindPassword", _dnsWebService._authManager.LdapBindPassword);
+                string ldapBindPassword = context.Request.FormOrJson("ldapBindPassword");
+                if (string.IsNullOrEmpty(ldapBindPassword))
+                    ldapBindPassword = _dnsWebService._authManager.LdapBindPassword;
                 string ldapSearchBase = context.Request.GetQueryOrForm("ldapSearchBase", _dnsWebService._authManager.LdapSearchBase);
                 string ldapUserSearchFilter = context.Request.GetQueryOrForm("ldapUserSearchFilter", _dnsWebService._authManager.LdapUserSearchFilter);
                 string ldapGroupAttribute = context.Request.GetQueryOrForm("ldapGroupAttribute", _dnsWebService._authManager.LdapGroupAttribute);

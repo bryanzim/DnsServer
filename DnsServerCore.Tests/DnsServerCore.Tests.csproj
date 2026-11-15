@@ -10,6 +10,10 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
 		<PackageReference Include="xunit" Version="2.9.3" />
 		<PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
@@ -20,6 +24,12 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\DnsServerCore\DnsServerCore.csproj" />
+		<ProjectReference Include="..\DnsServerCore.ApplicationCommon\DnsServerCore.ApplicationCommon.csproj" />
+		<ProjectReference Include="..\Apps\Dns64App\Dns64App.csproj" />
+		<ProjectReference Include="..\Apps\AutoPtrApp\AutoPtrApp.csproj" />
+		<ProjectReference Include="..\Apps\WildIpApp\WildIpApp.csproj" />
+		<ProjectReference Include="..\Apps\DnsBlockListApp\DnsBlockListApp.csproj" />
+		<ProjectReference Include="..\Apps\NoDataApp\NoDataApp.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

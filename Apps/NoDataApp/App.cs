@@ -83,7 +83,7 @@ namespace NoData
                             soaRecord = soaResponse.Authority[0];
 
                         if (soaRecord is not null)
-                            authority = new DnsResourceRecord[] { soaRecord };
+                            authority = new DnsResourceRecord[] { NegativeCache.WithNegativeCacheTtl(new DnsResourceRecord[] { soaRecord })[0] };
                     }
                     catch
                     { }

@@ -84,10 +84,10 @@ namespace LogExporter
                 return;
             }
 
-            foreach (EDnsOption extendedErrorLog in response.EDNS.Options.Where(o => o.Code == EDnsOptionCode.EXTENDED_DNS_ERROR))
+            foreach (EDnsOption option in response.EDNS.Options.Where(o => o.Code == EDnsOptionCode.EXTENDED_DNS_ERROR))
             {
                 //use the typed option data instead of parsing ToString() output which has no ':' separator when EXTRA-TEXT is absent
-                if (extendedErrorLog.Data is EDnsExtendedDnsErrorOptionData ede)
+                if (option.Data is EDnsExtendedDnsErrorOptionData ede)
                 {
                     EDNS.Add(new EDNSLog
                     {

@@ -1,9 +1,12 @@
 <Project>
 	<!-- The Visual Studio generator builds C# projects as x64. Keep assemblies in bin\$(Configuration), the same folder dotnet uses. -->
-	<PropertyGroup>
+	<PropertyGroup Condition="'$(MSBuildProjectExtension)' == '.csproj'">
 		<PlatformTarget>AnyCPU</PlatformTarget>
 		<OutputPath>$(MSBuildProjectDirectory)\bin\$(Configuration)\</OutputPath>
-		<OutDir>$(MSBuildProjectDirectory)\bin\$(Configuration)\</OutDir>
+		<OutDir>$(OutputPath)</OutDir>
+		<TargetDir>$(OutputPath)</TargetDir>
+		<TargetPath>$(TargetDir)$(TargetFileName)</TargetPath>
+		<ProjectDepsFilePath>$(TargetDir)$(AssemblyName).deps.json</ProjectDepsFilePath>
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 		<AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
 	</PropertyGroup>

@@ -41,6 +41,26 @@ namespace Dns64
 
         readonly static JsonDocumentOptions _jsonParseOptions = new JsonDocumentOptions() { CommentHandling = JsonCommentHandling.Skip };
 
+        //RFC 6052 section 3.1
+        readonly static NetworkAddress _wellKnownPrefix = NetworkAddress.Parse("64:ff9b::/96");
+        readonly static NetworkAddress[] _nonGlobalIpv4 =
+        [
+            NetworkAddress.Parse("0.0.0.0/8"),
+            NetworkAddress.Parse("10.0.0.0/8"),
+            NetworkAddress.Parse("100.64.0.0/10"),
+            NetworkAddress.Parse("127.0.0.0/8"),
+            NetworkAddress.Parse("169.254.0.0/16"),
+            NetworkAddress.Parse("172.16.0.0/12"),
+            NetworkAddress.Parse("192.0.0.0/24"),
+            NetworkAddress.Parse("192.0.2.0/24"),
+            NetworkAddress.Parse("192.168.0.0/16"),
+            NetworkAddress.Parse("198.18.0.0/15"),
+            NetworkAddress.Parse("198.51.100.0/24"),
+            NetworkAddress.Parse("203.0.113.0/24"),
+            NetworkAddress.Parse("224.0.0.0/4"),
+            NetworkAddress.Parse("240.0.0.0/4")
+        ];
+
         IDnsServer _dnsServer;
 
         byte _appPreference;
@@ -98,12 +118,16 @@ namespace Dns64
             if (request.DnssecOk)
                 return response;
 
-            if (response.RCODE != DnsResponseCode.NoError)
+            if ((request.Question.Count != 1) || (request.Question[0].Type != DnsResourceRecordType.AAAA))
                 return response;
 
-            DnsQuestionRecord question = request.Question[0];
-            if (question.Type != DnsResourceRecordType.AAAA)
+            //RFC 6147 section 5.1.2: NXDOMAIN is returned unchanged. Another RCODE from the AAAA lookup is treated as an empty answer.
+            //REFUSED is this server declining the query. Upstream refusals arrive as SERVFAIL. DirectQuery forces recursion, so a refusal must not be synthesized.
+            if ((response.RCODE == DnsResponseCode.NxDomain) || (response.RCODE == DnsResponseCode.Refused))
                 return response;
+
+            bool aaaaAnswerIsEmpty = response.RCODE != DnsResponseCode.NoError;
+            DnsQuestionRecord question = request.Question[0];
 
             IPAddress remoteIP = remoteEP.Address;
             NetworkAddress network = null;
@@ -121,11 +145,12 @@ namespace Dns64
             if ((groupName is null) || !_groups.TryGetValue(groupName, out Group group) || !group.EnableDns64)
                 return response;
 
-            List<DnsResourceRecord> newAnswer = new List<DnsResourceRecord>(response.Answer.Count);
+            List<DnsResourceRecord> newAnswer = new List<DnsResourceRecord>(aaaaAnswerIsEmpty ? 4 : response.Answer.Count);
 
             bool synthesizeAAAA = true;
 
-            if (group.ExcludedIpv6.Length == 0)
+            //RFC 6147 section 5.1.2: the answer section of an error other than NXDOMAIN is ignored
+            if (!aaaaAnswerIsEmpty && (group.ExcludedIpv6.Length == 0))
             {
                 //no exclusions configured
                 foreach (DnsResourceRecord answer in response.Answer)
@@ -136,7 +161,7 @@ namespace Dns64
                         synthesizeAAAA = false; //found an AAAA record so no need to synthesize AAAA
                 }
             }
-            else
+            else if (!aaaaAnswerIsEmpty)
             {
                 //check for exclusions
                 foreach (DnsResourceRecord answer in response.Answer)
@@ -174,6 +199,8 @@ namespace Dns64
 
             DnsDatagram aRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, true, false, false, false, DnsResponseCode.NoError, [new DnsQuestionRecord(question.Name, DnsResourceRecordType.A, DnsClass.IN)]);
             DnsDatagram newResponse = await _dnsServer.DirectQueryAsync(aRequest, remoteEP, 2000);
+            if (newResponse?.Answer is null)
+                return response;
 
             uint soaTtl;
             {
@@ -204,7 +231,7 @@ namespace Dns64
                     }
                 }
 
-                if (dns64Prefix is null)
+                if ((dns64Prefix is null) || !MayEmbedIpv4(ipv4Address, dns64Prefix))
                     continue;
 
                 IPAddress ipv6Address = ipv4Address.MapToIPv6(dns64Prefix);
@@ -215,7 +242,11 @@ namespace Dns64
 
             if (!synthesizedAAAA)
             {
-                //an AAAA NODATA must stay NODATA; an excluded AAAA answer is still replaced below
+                //RFC 6147 section 5.1.6: an A-query error is the response. An empty A answer is also the response when the AAAA answer was itself an error.
+                if (aaaaAnswerIsEmpty || (newResponse.RCODE != DnsResponseCode.NoError))
+                    return SynthesizedResponse(newResponse, newAnswer);
+
+                //an AAAA NODATA stays NODATA; an excluded AAAA answer is still replaced below
                 bool originalHadAAAA = false;
 
                 foreach (DnsResourceRecord originalAnswer in response.Answer)
@@ -231,8 +262,13 @@ namespace Dns64
                     return response;
             }
 
-            //RFC 6147 section 5.5: a synthesized AAAA is not DNSSEC secure, so the AD bit from the NODATA answer must not be copied
-            return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, newResponse.RCODE, response.Question, newAnswer, newResponse.Authority, newResponse.Additional) { Tag = response.Tag };
+            return SynthesizedResponse(newResponse, newAnswer);
+
+            //RFC 6147 section 5.5: a synthesized AAAA is not DNSSEC secure, so the AD bit must not be copied
+            DnsDatagram SynthesizedResponse(DnsDatagram aResponse, List<DnsResourceRecord> answer)
+            {
+                return new DnsDatagram(response.Identifier, true, response.OPCODE, response.AuthoritativeAnswer, response.Truncation, response.RecursionDesired, response.RecursionAvailable, false, response.CheckingDisabled, aResponse.RCODE, response.Question, answer, aResponse.Authority, aResponse.Additional) { Tag = response.Tag };
+            }
         }
 
         public Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed)
@@ -286,6 +322,24 @@ namespace Dns64
         #endregion
 
         #region properties
+
+        //RFC 6052 section 3.1: 64:ff9b::/96 must not represent an IPv4 address that is not global unicast
+        public static bool MayEmbedIpv4(IPAddress ipv4Address, NetworkAddress ipv6Prefix)
+        {
+            if ((ipv4Address is null) || (ipv4Address.AddressFamily != AddressFamily.InterNetwork) || (ipv6Prefix is null))
+                return false;
+
+            if (!ipv6Prefix.Equals(_wellKnownPrefix))
+                return true;
+
+            foreach (NetworkAddress nonGlobal in _nonGlobalIpv4)
+            {
+                if (nonGlobal.Contains(ipv4Address))
+                    return false;
+            }
+
+            return true;
+        }
 
         public string Description
         { get { return "Enables DNS64 function for both authoritative and recursive resolver responses for use by IPv6 only clients."; } }

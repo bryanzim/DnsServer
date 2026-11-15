@@ -66,6 +66,33 @@ namespace DnsServerCore.Tests
             Assert.Equal(newSerial, ((DnsSOARecordData)currentAnswers[0].RDATA).Serial);
         }
 
+        [Fact]
+        public void IncrementalTransferAppliesALegalDifference()
+        {
+            const string zone = "ixfr-apply.example";
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, name, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.40")));
+
+            DnsResourceRecord current = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            DnsSOARecordData soa = (DnsSOARecordData)current.RDATA;
+            DnsResourceRecord updated = new DnsResourceRecord(current.Name, DnsResourceRecordType.SOA, current.Class, current.TTL, new DnsSOARecordData(soa.PrimaryNameServer, soa.ResponsiblePerson, soa.Serial + 1, soa.Refresh, soa.Retry, soa.Expire, soa.Minimum));
+
+            _dns.Server.AuthZoneManager.SyncIncrementalZoneTransferRecords(zone, new DnsResourceRecord[]
+            {
+                updated,
+                current,
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.40"))),
+                updated,
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.41"))),
+                updated
+            });
+
+            DnsResourceRecord address = Assert.Single(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A));
+            Assert.Equal(IPAddress.Parse("192.0.2.41"), ((DnsARecordData)address.RDATA).Address);
+            Assert.Equal(soa.Serial + 1, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+        }
+
         static DnsDatagram Ixfr(string zone, DnsResourceRecord clientSoa, bool askExpire)
         {
             // A secondary refresh needs a peer. The primary still answers EXPIRE when the request asks.
