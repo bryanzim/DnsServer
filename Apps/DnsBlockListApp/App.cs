@@ -285,7 +285,7 @@ namespace DnsBlockList
                     //NODATA response
                     DnsDatagram soaResponse = await _dnsServer!.DirectQueryAsync(new DnsQuestionRecord(zoneName, DnsResourceRecordType.SOA, DnsClass.IN));
 
-                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, true, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.NoError, request.Question, null, soaResponse.Answer);
+                    return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, true, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.NoError, request.Question, null, NegativeCache.WithNegativeCacheTtl(soaResponse.Answer));
                 }
             }
 

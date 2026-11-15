@@ -301,5 +301,120 @@ namespace DnsServerCore.Tests
             Assert.NotNull(additional);
             Assert.Equal(IPAddress.Parse("192.0.2.7"), ((DnsARecordData)additional.RDATA).Address);
         }
+
+        [Fact]
+        public void ImportAddsALegalRecord()
+        {
+            const string zone = "import-ok.example";
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+
+            _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.30")))
+            }, false, false, false);
+
+            Assert.Equal(IPAddress.Parse("192.0.2.30"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A)[0].RDATA).Address);
+        }
+
+        [Fact]
+        public void ImportLeavesExistingRecordsUnchangedWhenACnameIsIllegal()
+        {
+            const string zone = "import-cname-keep.example";
+            const string stay = "stay." + zone;
+            const string removed = "removed." + zone;
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, stay, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.31")));
+            _dns.Add(zone, removed, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.32")));
+
+            uint serial = ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(stay, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.39"))),
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example")),
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.38")))
+            }, true, true, false));
+
+            Assert.Contains(name, error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+            Assert.Equal(IPAddress.Parse("192.0.2.31"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, stay, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Equal(IPAddress.Parse("192.0.2.32"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, removed, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.CNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public void ImportLeavesEarlierNamesUnchangedWhenACnameSharesAnExistingName()
+        {
+            const string zone = "import-cname-merge.example";
+            const string added = "added." + zone;
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, name, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.33")));
+
+            uint serial = ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.34"))),
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example"))
+            }, false, false, false));
+
+            Assert.Contains(name, error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.Equal(IPAddress.Parse("192.0.2.33"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.CNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public void FailedParentLoadDoesNotAdoptIntoTheChild()
+        {
+            const string zone = "adopt-keep.example";
+            const string child = "child." + zone;
+            const string adopted = "www." + child;
+            const string name = "bad." + zone;
+            _dns.CreateZone(child);
+            AuthZoneInfo parent = _dns.CreateZone(zone);
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.LoadAndInitZone(parent, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(adopted, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.35"))),
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example")),
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.36")))
+            }));
+
+            Assert.Contains(name, error.Message);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(child, adopted, DnsResourceRecordType.A));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.CNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public async Task ParentLoadAdoptsAChildNameWhenTheFileIsLegal()
+        {
+            const string zone = "adopt-ok.example";
+            const string child = "child." + zone;
+            const string adopted = "www." + child;
+            const string name = "host." + zone;
+            _dns.CreateZone(child);
+            AuthZoneInfo parent = _dns.CreateZone(zone);
+
+            _dns.Server.AuthZoneManager.LoadAndInitZone(parent, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(adopted, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.37"))),
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.40")))
+            });
+
+            Assert.Equal(IPAddress.Parse("192.0.2.37"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(child, adopted, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Equal(IPAddress.Parse("192.0.2.40"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A)[0].RDATA).Address);
+
+            DnsDatagram response = await _dns.QueryAsync(adopted, DnsResourceRecordType.A);
+            Assert.Equal(DnsResponseCode.NoError, response.RCODE);
+            Assert.Equal(IPAddress.Parse("192.0.2.37"), ((DnsARecordData)DnsTest.Find(response.Answer, DnsResourceRecordType.A, adopted).RDATA).Address);
+        }
     }
 }

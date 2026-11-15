@@ -17,6 +17,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
+using DnsServerCore.ApplicationCommon;
 using DnsServerCore.Dns.Dnssec;
 using DnsServerCore.Dns.ResourceRecords;
 using DnsServerCore.Dns.Trees;
@@ -330,6 +331,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             ApexZone apexZone = zoneInfo.ApexZone;
             List<DnsResourceRecord> recordsMovedToChild = new List<DnsResourceRecord>();
             List<string> childZonesToSave = new List<string>();
+            List<KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>> namesForChildZones = new List<KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>>();
 
             //load records
             foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> zoneEntry in DnsResourceRecord.GroupRecords(records))
@@ -348,7 +350,11 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (IsNameInChildZone(apexZone.Name, zoneEntry.Key))
                     {
                         if ((apexZone is PrimaryZone) || (apexZone is ForwarderZone))
-                            GiveLoadedNameToChildZone(zoneEntry.Key, zoneEntry.Value, recordsMovedToChild, childZonesToSave);
+                        {
+                            //A later illegal name must not leave this record in a child zone the failed load does not remove.
+                            RejectLoadedNameForChildZone(zoneEntry.Key, zoneEntry.Value);
+                            namesForChildZones.Add(new KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>>(zoneEntry.Key, zoneEntry.Value));
+                        }
 
                         continue;
                     }
@@ -367,6 +373,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                         subDomainZone.AutoUpdateState();
                 }
             }
+
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> childName in namesForChildZones)
+                GiveLoadedNameToChildZone(childName.Key, childName.Value, recordsMovedToChild, childZonesToSave);
 
             //update dnssec status
             apexZone.UpdateDnssecStatus();
@@ -890,6 +899,20 @@ namespace DnsServerCore.Dns.ZoneManagers
                 return true;
 
             return domain.EndsWith("." + zoneName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RejectLoadedNameForChildZone(string domain, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> rrsets)
+        {
+            _ = _root.FindZone(domain, out _, out _, out ApexZone childZone, out _);
+
+            if ((childZone is null) || domain.Equals(childZone.Name, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if ((childZone is not PrimaryZone) && (childZone is not ForwarderZone))
+                return;
+
+            if (!TryGetAuthZone(childZone.Name, domain, out _))
+                AuthZone.RejectProhibitedRrsets(domain, false, rrsets.Keys);
         }
 
         private void GiveLoadedNameToChildZone(string domain, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> rrsets, List<DnsResourceRecord> recordsMovedToChild, List<string> childZonesToSave)
@@ -3656,6 +3679,60 @@ namespace DnsServerCore.Dns.ZoneManagers
             return false;
         }
 
+        static bool ZoneOverwriteKeeps(DnsResourceRecordType type)
+        {
+            switch (type)
+            {
+                case DnsResourceRecordType.SOA:
+                case DnsResourceRecordType.DNSKEY:
+                case DnsResourceRecordType.RRSIG:
+                case DnsResourceRecordType.NSEC:
+                case DnsResourceRecordType.NSEC3PARAM:
+                case DnsResourceRecordType.NSEC3:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        void RejectIllegalImport(ApexZone apexZone, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone)
+        {
+            foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> zoneEntry in DnsResourceRecord.GroupRecords(records))
+            {
+                bool atApex = apexZone.Name.Equals(zoneEntry.Key, StringComparison.OrdinalIgnoreCase);
+
+                if (!atApex)
+                {
+                    ValidateIfDomainBelongsToZone(apexZone.Name, zoneEntry.Key);
+
+                    if (IsNameInChildZone(apexZone.Name, zoneEntry.Key))
+                        continue;
+                }
+
+                List<DnsResourceRecordType> types = new List<DnsResourceRecordType>();
+
+                if (TryGetAuthZone(apexZone.Name, zoneEntry.Key, out AuthZone authZone))
+                {
+                    foreach (DnsResourceRecordType existingType in authZone.Entries.Keys)
+                    {
+                        if (overwriteZone && !ZoneOverwriteKeeps(existingType))
+                            continue;
+
+                        if ((overwriteRecords || overwriteZone) && zoneEntry.Value.ContainsKey(existingType))
+                            continue;
+
+                        types.Add(existingType);
+                    }
+                }
+
+                foreach (DnsResourceRecordType importedType in zoneEntry.Value.Keys)
+                    types.Add(importedType);
+
+                AuthZone.RejectProhibitedRrsets(zoneEntry.Key, atApex, types);
+            }
+        }
+
         internal void ImportRecords(string zoneName, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone, bool overwriteSoaSerial)
         {
             _ = _root.FindZone(zoneName, out _, out _, out ApexZone apexZone, out _);
@@ -3664,6 +3741,9 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             if ((apexZone is not PrimaryZone) && (apexZone is not ForwarderZone))
                 throw new DnsServerException("Zone must be a primary or forwarder type: " + apexZone.ToString());
+
+            //Refuse an illegal name before overwrite deletes the zone or any record is committed.
+            RejectIllegalImport(apexZone, records, overwriteRecords, overwriteZone);
 
             if (overwriteZone)
             {
@@ -4167,37 +4247,7 @@ namespace DnsServerCore.Dns.ZoneManagers
         //RFC 2308 section 3: a negative answer caches for min(SOA TTL, SOA MINIMUM).
         internal static IReadOnlyList<DnsResourceRecord> WithNegativeCacheTtl(IReadOnlyList<DnsResourceRecord> records)
         {
-            DnsResourceRecord soaRecord = null;
-
-            foreach (DnsResourceRecord record in records)
-            {
-                if (record.Type == DnsResourceRecordType.SOA)
-                {
-                    soaRecord = record;
-                    break;
-                }
-            }
-
-            if (soaRecord?.RDATA is not DnsSOARecordData soa)
-                return records;
-
-            uint negativeTtl = Math.Min(soaRecord.OriginalTtlValue, soa.Minimum);
-            if (negativeTtl == soaRecord.OriginalTtlValue)
-                return records;
-
-            DnsResourceRecord[] copy = new DnsResourceRecord[records.Count];
-
-            for (int i = 0; i < records.Count; i++)
-            {
-                DnsResourceRecord record = records[i];
-
-                if ((record.Type == DnsResourceRecordType.SOA) || ((record.Type == DnsResourceRecordType.RRSIG) && (record.RDATA is DnsRRSIGRecordData rrsig) && (rrsig.TypeCovered == DnsResourceRecordType.SOA)))
-                    copy[i] = new DnsResourceRecord(record.Name, record.Type, record.Class, negativeTtl, record.RDATA) { Tag = record.Tag };
-                else
-                    copy[i] = record;
-            }
-
-            return copy;
+            return NegativeCache.WithNegativeCacheTtl(records);
         }
 
         private static async Task<bool> IsQueryAllowedAsync(ApexZone apexZone, IPAddress remoteIP, IPAddress forwardedClient = null)

@@ -309,6 +309,33 @@ namespace DnsServerCore.Tests
             Assert.NotNull(DnsTest.Find(nameServers.Answer, DnsResourceRecordType.NS, zone));
         }
 
+        [Fact]
+        public void ImportLeavesExistingRecordsUnchangedWhenANameServerIsIllegal()
+        {
+            const string zone = "dname-import-keep.example";
+            const string alias = "alias." + zone;
+            const string removed = "removed." + zone;
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+            _dns.Set(zone, alias, DnsResourceRecordType.DNAME, new DnsDNAMERecordData("dst.example.net"));
+            _dns.Add(zone, removed, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.41")));
+
+            uint serial = ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.42"))),
+                new DnsResourceRecord(alias, DnsResourceRecordType.NS, DnsClass.IN, 300, new DnsNSRecordData("ns1.example.net"))
+            }, false, false, false));
+
+            Assert.Contains(alias, error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, alias, DnsResourceRecordType.DNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, alias, DnsResourceRecordType.NS));
+            Assert.Equal(IPAddress.Parse("192.0.2.41"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, removed, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+        }
+
         static string Prefix(int length)
         {
             StringBuilder name = new StringBuilder(length);
