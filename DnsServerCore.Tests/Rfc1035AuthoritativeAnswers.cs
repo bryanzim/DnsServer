@@ -1,3 +1,4 @@
+using System;
 using System.Net;
 using System.Threading.Tasks;
 using TechnitiumLibrary.Net.Dns;
@@ -115,6 +116,99 @@ namespace DnsServerCore.Tests
             DnsResourceRecord ns = DnsTest.Find(response.Authority, DnsResourceRecordType.NS, "delegated." + zone);
             Assert.NotNull(ns);
             Assert.Equal("ns1.example.net", ((DnsNSRecordData)ns.RDATA).NameServer, ignoreCase: true);
+        }
+
+        [Fact]
+        public async Task MissingNameBelowAnEmptyNonTerminalIsNxDomain()
+        {
+            const string zone = "below-ent.example";
+            _dns.CreateZone(zone);
+            _dns.Add(zone, "a.b." + zone, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.4")));
+
+            DnsDatagram response = await _dns.QueryAsync("c.b." + zone, DnsResourceRecordType.A);
+
+            Assert.Equal(DnsResponseCode.NxDomain, response.RCODE);
+            Assert.True(response.AuthoritativeAnswer, DnsTest.Describe(response));
+            Assert.Empty(response.Answer);
+            Assert.NotNull(DnsTest.Find(response.Authority, DnsResourceRecordType.SOA, zone));
+        }
+
+        [Fact]
+        public async Task CnameCannotShareItsName()
+        {
+            const string zone = "cname-only.example";
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, name, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.5")));
+
+            Assert.Throws<InvalidOperationException>(() => _dns.Set(zone, name, DnsResourceRecordType.CNAME, new DnsCNAMERecordData("other.example")));
+
+            DnsDatagram response = await _dns.QueryAsync(name, DnsResourceRecordType.A);
+            Assert.NotNull(DnsTest.Find(response.Answer, DnsResourceRecordType.A, name));
+        }
+
+        [Fact]
+        public async Task MailExchangeIncludesTheInZoneAddress()
+        {
+            const string zone = "mx.example";
+            _dns.CreateZone(zone);
+            _dns.Add(zone, "mail." + zone, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.6")));
+            _dns.Add(zone, zone, DnsResourceRecordType.MX, new DnsMXRecordData(10, "mail." + zone));
+
+            DnsDatagram response = await _dns.QueryAsync(zone, DnsResourceRecordType.MX);
+
+            Assert.Equal(DnsResponseCode.NoError, response.RCODE);
+            Assert.NotNull(DnsTest.Find(response.Answer, DnsResourceRecordType.MX, zone));
+            DnsResourceRecord additional = DnsTest.Find(response.Additional, DnsResourceRecordType.A, "mail." + zone);
+            Assert.NotNull(additional);
+            Assert.Equal(IPAddress.Parse("192.0.2.6"), ((DnsARecordData)additional.RDATA).Address);
+        }
+
+        [Fact]
+        public async Task OutOfZoneMailExchangeHasNoAddress()
+        {
+            const string zone = "mx-out.example";
+            _dns.CreateZone(zone);
+            _dns.Add(zone, zone, DnsResourceRecordType.MX, new DnsMXRecordData(10, "mail.example.net"));
+
+            DnsDatagram response = await _dns.QueryAsync(zone, DnsResourceRecordType.MX);
+
+            Assert.Equal(DnsResponseCode.NoError, response.RCODE);
+            Assert.Null(DnsTest.Find(response.Additional, DnsResourceRecordType.A));
+            Assert.Null(DnsTest.Find(response.Additional, DnsResourceRecordType.AAAA));
+        }
+
+        [Fact]
+        public async Task NameServerAddressIsAdditionalWhenItIsInZone()
+        {
+            const string zone = "ns-glue.example";
+            _dns.CreateZone(zone);
+            _dns.Add(zone, "ns1." + zone, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.53")));
+            _dns.Add(zone, zone, DnsResourceRecordType.NS, new DnsNSRecordData("ns1." + zone));
+
+            DnsDatagram response = await _dns.QueryAsync(zone, DnsResourceRecordType.NS);
+
+            Assert.Equal(DnsResponseCode.NoError, response.RCODE);
+            DnsResourceRecord additional = DnsTest.Find(response.Additional, DnsResourceRecordType.A, "ns1." + zone);
+            Assert.NotNull(additional);
+            Assert.Equal(IPAddress.Parse("192.0.2.53"), ((DnsARecordData)additional.RDATA).Address);
+        }
+
+        [Fact]
+        public async Task ServiceTargetIncludesTheInZoneAddress()
+        {
+            const string zone = "srv.example";
+            _dns.CreateZone(zone);
+            _dns.Add(zone, "sip." + zone, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.7")));
+            _dns.Add(zone, "_sip._udp." + zone, DnsResourceRecordType.SRV, new DnsSRVRecordData(10, 20, 5060, "sip." + zone));
+
+            DnsDatagram response = await _dns.QueryAsync("_sip._udp." + zone, DnsResourceRecordType.SRV);
+
+            Assert.Equal(DnsResponseCode.NoError, response.RCODE);
+            Assert.NotNull(DnsTest.Find(response.Answer, DnsResourceRecordType.SRV));
+            DnsResourceRecord additional = DnsTest.Find(response.Additional, DnsResourceRecordType.A, "sip." + zone);
+            Assert.NotNull(additional);
+            Assert.Equal(IPAddress.Parse("192.0.2.7"), ((DnsARecordData)additional.RDATA).Address);
         }
     }
 }

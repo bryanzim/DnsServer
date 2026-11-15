@@ -354,6 +354,9 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (_root.TryGet(apexZone.Name, zoneEntry.Key, out AuthZone existingZone) && (existingZone is SubDomainZone existingSubDomainZone) && !existingSubDomainZone.AuthoritativeZone.Name.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
                         continue; //name was already loaded for another zone
 
+                    if (zoneEntry.Value.ContainsKey(DnsResourceRecordType.DNAME) && zoneEntry.Value.ContainsKey(DnsResourceRecordType.NS))
+                        throw new DnsServerException("Cannot load records: a DNAME record cannot exist with an NS record except at the zone apex: " + zoneEntry.Key);
+
                     AuthZone authZone = GetOrAddSubDomainZone(apexZone.Name, zoneEntry.Key);
 
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
@@ -3609,17 +3612,17 @@ namespace DnsServerCore.Dns.ZoneManagers
             return null;
         }
 
-        public async Task<DnsDatagram> QueryAsync(DnsDatagram request, IPAddress remoteIP, bool isRecursionAllowed)
+        public async Task<DnsDatagram> QueryAsync(DnsDatagram request, IPAddress remoteIP, bool isRecursionAllowed, IPAddress forwardedClient = null)
         {
             AuthZone zone = _root.FindZone(request.Question[0].Name, out SubDomainZone closest, out SubDomainZone delegation, out ApexZone apexZone, out bool hasSubDomains);
 
             if ((apexZone is null) || !apexZone.IsActive)
                 return null; //no authority for requested zone
 
-            if (!await IsQueryAllowedAsync(apexZone, remoteIP))
+            if (!await IsQueryAllowedAsync(apexZone, remoteIP, forwardedClient))
                 return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, false, DnsResponseCode.Refused, request.Question);
 
-            return await InternalQuery(request, isRecursionAllowed, zone, closest, delegation, apexZone, hasSubDomains, remoteIP);
+            return await InternalQuery(request, isRecursionAllowed, zone, closest, delegation, apexZone, hasSubDomains, remoteIP, forwardedClient);
         }
 
         public DnsDatagram Query(DnsDatagram request, bool isRecursionAllowed)
@@ -3633,7 +3636,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             return InternalQuery(request, isRecursionAllowed, zone, closest, delegation, apexZone, hasSubDomains, null).GetAwaiter().GetResult();
         }
 
-        private async Task<DnsDatagram> InternalQuery(DnsDatagram request, bool isRecursionAllowed, AuthZone zone, SubDomainZone closest, SubDomainZone delegation, ApexZone apexZone, bool hasSubDomains, IPAddress remoteIP)
+        private async Task<DnsDatagram> InternalQuery(DnsDatagram request, bool isRecursionAllowed, AuthZone zone, SubDomainZone closest, SubDomainZone delegation, ApexZone apexZone, bool hasSubDomains, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             DnsQuestionRecord question = request.Question[0];
             bool dnssecOk = request.DnssecOk && (apexZone.DnssecStatus != AuthZoneDnssecStatus.Unsigned);
@@ -3642,10 +3645,10 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 //zone not found
                 if ((delegation is not null) && delegation.IsActive && (delegation.Name.Length > apexZone.Name.Length))
-                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP);
+                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP, forwardedClient);
 
                 if (apexZone is StubZone)
-                    return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP);
+                    return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP, forwardedClient);
 
                 DnsResponseCode rCode = DnsResponseCode.NoError;
                 IReadOnlyList<DnsResourceRecord> answer = null;
@@ -3657,7 +3660,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3679,7 +3682,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3695,12 +3698,12 @@ namespace DnsServerCore.Dns.ZoneManagers
                         if (authority.Count == 0)
                         {
                             if ((apexZone is ForwarderZone) || (apexZone is SecondaryForwarderZone))
-                                return await GetForwarderResponse(request, null, closest, apexZone, remoteIP); //no DNAME or APP record available so process FWD response
+                                return await GetForwarderResponse(request, null, closest, apexZone, remoteIP, forwardedClient); //no DNAME or APP record available so process FWD response
 
                             if (!hasSubDomains)
                                 rCode = DnsResponseCode.NxDomain;
 
-                            authority = apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk);
+                            authority = WithNegativeCacheTtl(apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk));
 
                             if (dnssecOk)
                             {
@@ -3755,7 +3758,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                 else if ((delegation is not null) && delegation.IsActive && (delegation.Name.Length > apexZone.Name.Length))
                 {
                     //zone is delegation
-                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP);
+                    return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP, forwardedClient);
                 }
 
                 DnsResponseCode rCode = DnsResponseCode.NoError;
@@ -3770,7 +3773,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3788,7 +3791,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if ((answer.Count > 0) && (answer[0].Type == DnsResourceRecordType.DNAME))
                     {
                         List<DnsResourceRecord> dnameAuthority = new List<DnsResourceRecord>();
-                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP);
+                        IReadOnlyList<DnsResourceRecord> dnameAnswer = await DoDNAMESubstitution(question, dnssecOk, answer, dnameAuthority, remoteIP, forwardedClient);
                         if (dnameAnswer is null)
                             rCode = DnsResponseCode.YXDomain;
                         else
@@ -3825,19 +3828,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                         {
                             //check for delegation, stub & forwarder
                             if ((delegation is not null) && delegation.IsActive && (delegation.Name.Length > apexZone.Name.Length))
-                                return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP);
+                                return await GetReferralResponse(request, dnssecOk, delegation, apexZone, remoteIP, forwardedClient);
 
                             if (apexZone is StubZone)
-                                return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP);
+                                return await GetReferralResponse(request, false, apexZone, apexZone, remoteIP, forwardedClient);
                         }
 
                         authority = zone.QueryRecords(DnsResourceRecordType.APP, false);
                         if (authority.Count == 0)
                         {
                             if ((apexZone is ForwarderZone) || (apexZone is SecondaryForwarderZone))
-                                return await GetForwarderResponse(request, zone, closest, apexZone, remoteIP); //no APP record available so process FWD response
+                                return await GetForwarderResponse(request, zone, closest, apexZone, remoteIP, forwardedClient); //no APP record available so process FWD response
 
-                            authority = apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk);
+                            authority = WithNegativeCacheTtl(apexZone.QueryRecords(DnsResourceRecordType.SOA, dnssecOk));
 
                             if (dnssecOk)
                             {
@@ -3915,7 +3918,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                                     newAnswers.AddRange(answer);
 
                                     List<DnsResourceRecord> cnameAuthority = new List<DnsResourceRecord>();
-                                    await ResolveCNAME(question, dnssecOk, lastRR, newAnswers, cnameAuthority, remoteIP);
+                                    await ResolveCNAME(question, dnssecOk, lastRR, newAnswers, cnameAuthority, remoteIP, forwardedClient);
 
                                     answer = newAnswers;
 
@@ -3980,7 +3983,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                             case DnsResourceRecordType.SRV:
                             case DnsResourceRecordType.SVCB:
                             case DnsResourceRecordType.HTTPS:
-                                additional = await GetAdditionalRecords(answer, dnssecOk, remoteIP);
+                                additional = await GetAdditionalRecords(answer, dnssecOk, remoteIP, forwardedClient);
                                 break;
 
                             default:
@@ -3994,7 +3997,60 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private static async Task<bool> IsQueryAllowedAsync(ApexZone apexZone, IPAddress remoteIP)
+        //RFC 2308 section 3: a negative answer caches for min(SOA TTL, SOA MINIMUM).
+        private static IReadOnlyList<DnsResourceRecord> WithNegativeCacheTtl(IReadOnlyList<DnsResourceRecord> records)
+        {
+            DnsResourceRecord soaRecord = null;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (record.Type == DnsResourceRecordType.SOA)
+                {
+                    soaRecord = record;
+                    break;
+                }
+            }
+
+            if (soaRecord?.RDATA is not DnsSOARecordData soa)
+                return records;
+
+            uint negativeTtl = Math.Min(soaRecord.OriginalTtlValue, soa.Minimum);
+            if (negativeTtl == soaRecord.OriginalTtlValue)
+                return records;
+
+            DnsResourceRecord[] copy = new DnsResourceRecord[records.Count];
+
+            for (int i = 0; i < records.Count; i++)
+            {
+                DnsResourceRecord record = records[i];
+
+                if ((record.Type == DnsResourceRecordType.SOA) || ((record.Type == DnsResourceRecordType.RRSIG) && (record.RDATA is DnsRRSIGRecordData rrsig) && (rrsig.TypeCovered == DnsResourceRecordType.SOA)))
+                    copy[i] = new DnsResourceRecord(record.Name, record.Type, record.Class, negativeTtl, record.RDATA) { Tag = record.Tag };
+                else
+                    copy[i] = record;
+            }
+
+            return copy;
+        }
+
+        private static async Task<bool> IsQueryAllowedAsync(ApexZone apexZone, IPAddress remoteIP, IPAddress forwardedClient = null)
+        {
+            if (!await IsAddressAllowedToQueryAsync(apexZone, remoteIP))
+                return false;
+
+            IPAddress queryAddress = remoteIP;
+
+            if (queryAddress.IsIPv4MappedToIPv6)
+                queryAddress = queryAddress.MapToIPv4();
+
+            //a loopback query is already internal or local, so the forwarded address cannot widen it
+            if ((forwardedClient is null) || IPAddress.IsLoopback(queryAddress) || DnsServer.SameAddress(remoteIP, forwardedClient))
+                return true;
+
+            return await IsAddressAllowedToQueryAsync(apexZone, forwardedClient);
+        }
+
+        private static async Task<bool> IsAddressAllowedToQueryAsync(ApexZone apexZone, IPAddress remoteIP)
         {
             async Task<bool> IsZoneNameServerAllowedAsync()
             {
@@ -4070,7 +4126,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private async Task ResolveCNAME(DnsQuestionRecord question, bool dnssecOk, DnsResourceRecord lastCNAME, List<DnsResourceRecord> answerRecords, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP)
+        private async Task ResolveCNAME(DnsQuestionRecord question, bool dnssecOk, DnsResourceRecord lastCNAME, List<DnsResourceRecord> answerRecords, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             int queryCount = 0;
             ApexZone cnameApex;
@@ -4085,7 +4141,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if ((cnameZone is null) || !cnameZone.IsActive || (cnameApex is null) || !cnameApex.IsActive)
                     break; //do not serve data from a disabled zone
 
-                if ((remoteIP is not null) && !await IsQueryAllowedAsync(cnameApex, remoteIP))
+                if ((remoteIP is not null) && !await IsQueryAllowedAsync(cnameApex, remoteIP, forwardedClient))
                     break; //do not serve data from a zone this client cannot query
 
                 IReadOnlyList<DnsResourceRecord> records = cnameZone.QueryRecordsWildcard(question.Type, dnssecOk, cnameDomain);
@@ -4146,7 +4202,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             while (++queryCount < DnsServer.MAX_CNAME_HOPS);
         }
 
-        private async Task<IReadOnlyList<DnsResourceRecord>> DoDNAMESubstitution(DnsQuestionRecord question, bool dnssecOk, IReadOnlyList<DnsResourceRecord> answer, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP)
+        private async Task<IReadOnlyList<DnsResourceRecord>> DoDNAMESubstitution(DnsQuestionRecord question, bool dnssecOk, IReadOnlyList<DnsResourceRecord> answer, List<DnsResourceRecord> authorityRecords, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             DnsResourceRecord dnameRR = answer[0];
 
@@ -4162,12 +4218,12 @@ namespace DnsServerCore.Dns.ZoneManagers
             list.AddRange(answer);
             list.Add(cnameRR);
 
-            await ResolveCNAME(question, dnssecOk, cnameRR, list, authorityRecords, remoteIP);
+            await ResolveCNAME(question, dnssecOk, cnameRR, list, authorityRecords, remoteIP, forwardedClient);
 
             return list;
         }
 
-        private async Task<List<DnsResourceRecord>> GetAdditionalRecords(IReadOnlyList<DnsResourceRecord> refRecords, bool dnssecOk, IPAddress remoteIP)
+        private async Task<List<DnsResourceRecord>> GetAdditionalRecords(IReadOnlyList<DnsResourceRecord> refRecords, bool dnssecOk, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             List<DnsResourceRecord> additionalRecords = new List<DnsResourceRecord>(refRecords.Count);
 
@@ -4183,16 +4239,16 @@ namespace DnsServerCore.Dns.ZoneManagers
                         }
                         else
                         {
-                            await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsNSRecordData).NameServer, dnssecOk, additionalRecords, remoteIP);
+                            await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsNSRecordData).NameServer, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         }
                         break;
 
                     case DnsResourceRecordType.MX:
-                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsMXRecordData).Exchange, dnssecOk, additionalRecords, remoteIP);
+                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsMXRecordData).Exchange, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         break;
 
                     case DnsResourceRecordType.SRV:
-                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsSRVRecordData).Target, dnssecOk, additionalRecords, remoteIP);
+                        await ResolveAdditionalRecords(refRecord, (refRecord.RDATA as DnsSRVRecordData).Target, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         break;
 
                     case DnsResourceRecordType.SVCB:
@@ -4213,7 +4269,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                                 targetName = refRecord.Name;
                         }
 
-                        await ResolveAdditionalRecords(refRecord, targetName, dnssecOk, additionalRecords, remoteIP);
+                        await ResolveAdditionalRecords(refRecord, targetName, dnssecOk, additionalRecords, remoteIP, forwardedClient);
                         break;
                 }
             }
@@ -4221,7 +4277,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             return additionalRecords;
         }
 
-        private async Task ResolveAdditionalRecords(DnsResourceRecord refRecord, string domain, bool dnssecOk, List<DnsResourceRecord> additionalRecords, IPAddress remoteIP)
+        private async Task ResolveAdditionalRecords(DnsResourceRecord refRecord, string domain, bool dnssecOk, List<DnsResourceRecord> additionalRecords, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             int count = 0;
             ApexZone apexZone;
@@ -4232,7 +4288,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                 if ((zone is null) || (apexZone is null) || !apexZone.IsActive || !zone.IsActive)
                     break; //a subdomain of a disabled apex is not authoritative glue
 
-                if ((remoteIP is not null) && !await IsQueryAllowedAsync(apexZone, remoteIP))
+                if ((remoteIP is not null) && !await IsQueryAllowedAsync(apexZone, remoteIP, forwardedClient))
                     break; //do not attach records from a zone this client cannot query
 
                 if (((refRecord.Type == DnsResourceRecordType.SVCB) || (refRecord.Type == DnsResourceRecordType.HTTPS)) && ((refRecord.RDATA as DnsSVCBRecordData).SvcPriority == 0))
@@ -4322,7 +4378,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             }
         }
 
-        private async Task<DnsDatagram> GetReferralResponse(DnsDatagram request, bool dnssecOk, AuthZone delegationZone, ApexZone apexZone, IPAddress remoteIP)
+        private async Task<DnsDatagram> GetReferralResponse(DnsDatagram request, bool dnssecOk, AuthZone delegationZone, ApexZone apexZone, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             IReadOnlyList<DnsResourceRecord> authority;
 
@@ -4375,19 +4431,19 @@ namespace DnsServerCore.Dns.ZoneManagers
                 }
             }
 
-            IReadOnlyList<DnsResourceRecord> additional = await GetAdditionalRecords(authority, dnssecOk, remoteIP);
+            IReadOnlyList<DnsResourceRecord> additional = await GetAdditionalRecords(authority, dnssecOk, remoteIP, forwardedClient);
 
             return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.NoError, request.Question, null, authority, additional);
         }
 
-        private async Task<DnsDatagram> GetForwarderResponse(DnsDatagram request, AuthZone zone, SubDomainZone closestZone, ApexZone forwarderZone, IPAddress remoteIP)
+        private async Task<DnsDatagram> GetForwarderResponse(DnsDatagram request, AuthZone zone, SubDomainZone closestZone, ApexZone forwarderZone, IPAddress remoteIP, IPAddress forwardedClient = null)
         {
             IReadOnlyList<DnsResourceRecord> authority = null;
 
             if (zone is not null)
             {
                 if (zone.ContainsNameServerRecords())
-                    return await GetReferralResponse(request, false, zone, forwarderZone, remoteIP);
+                    return await GetReferralResponse(request, false, zone, forwarderZone, remoteIP, forwardedClient);
 
                 authority = zone.QueryRecords(DnsResourceRecordType.FWD, false);
             }
@@ -4395,7 +4451,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             if (((authority is null) || (authority.Count == 0)) && (closestZone is not null))
             {
                 if (closestZone.ContainsNameServerRecords())
-                    return await GetReferralResponse(request, false, closestZone, forwarderZone, remoteIP);
+                    return await GetReferralResponse(request, false, closestZone, forwarderZone, remoteIP, forwardedClient);
 
                 authority = closestZone.QueryRecords(DnsResourceRecordType.FWD, false);
             }
@@ -4403,7 +4459,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             if ((authority is null) || (authority.Count == 0))
             {
                 if (forwarderZone.ContainsNameServerRecords())
-                    return await GetReferralResponse(request, false, forwarderZone, forwarderZone, remoteIP);
+                    return await GetReferralResponse(request, false, forwarderZone, forwarderZone, remoteIP, forwardedClient);
 
                 authority = forwarderZone.QueryRecords(DnsResourceRecordType.FWD, false);
             }

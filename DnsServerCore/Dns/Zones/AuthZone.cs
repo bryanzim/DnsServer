@@ -167,6 +167,7 @@ namespace DnsServerCore.Dns.Zones
                     if (_entries.ContainsKey(DnsResourceRecordType.CNAME))
                         throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
 
+                    RejectDnameBesideNameServer(type);
                     break;
             }
 
@@ -338,6 +339,7 @@ namespace DnsServerCore.Dns.Zones
                     if (_entries.ContainsKey(DnsResourceRecordType.CNAME))
                         throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
 
+                    RejectDnameBesideNameServer(record.Type);
                     break;
             }
 
@@ -858,6 +860,7 @@ namespace DnsServerCore.Dns.Zones
                     if (_entries.ContainsKey(DnsResourceRecordType.CNAME))
                         throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
 
+                    RejectDnameBesideNameServer(type);
                     break;
 
                 case DnsResourceRecordType.NSEC:
@@ -868,10 +871,24 @@ namespace DnsServerCore.Dns.Zones
                     if (_entries.ContainsKey(DnsResourceRecordType.CNAME))
                         throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
 
+                    RejectDnameBesideNameServer(type);
                     break;
             }
 
             _entries[type] = records;
+        }
+
+        //RFC 6672 section 2.3: DNAME and NS share a name only at the zone apex.
+        void RejectDnameBesideNameServer(DnsResourceRecordType type)
+        {
+            if (this is ApexZone)
+                return;
+
+            if ((type == DnsResourceRecordType.DNAME) && _entries.ContainsKey(DnsResourceRecordType.NS))
+                throw new InvalidOperationException("Cannot add record: a DNAME record cannot exist with an NS record except at the zone apex.");
+
+            if ((type == DnsResourceRecordType.NS) && _entries.ContainsKey(DnsResourceRecordType.DNAME))
+                throw new InvalidOperationException("Cannot add record: an NS record cannot exist with a DNAME record except at the zone apex.");
         }
 
         public virtual bool AddRecord(DnsResourceRecord record)

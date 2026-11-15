@@ -115,6 +115,7 @@ namespace DnsServerCore.Dns
         internal const int RECURSIVE_RESOLUTION_TIMEOUT = 60000; //max time that can be spent per recursive resolution task
 
         static readonly IPEndPoint IPENDPOINT_ANY_0 = new IPEndPoint(IPAddress.Any, 0);
+        static readonly System.Runtime.CompilerServices.ConditionalWeakTable<DnsDatagram, IPAddress> _forwardedClients = new System.Runtime.CompilerServices.ConditionalWeakTable<DnsDatagram, IPAddress>();
         static readonly IReadOnlyCollection<DnsARecordData> _aRecords = [new DnsARecordData(IPAddress.Any)];
         static readonly IReadOnlyCollection<DnsAAAARecordData> _aaaaRecords = [new DnsAAAARecordData(IPAddress.IPv6Any)];
         static readonly List<SslApplicationProtocol> _doqApplicationProtocols = new List<SslApplicationProtocol>() { new SslApplicationProtocol("doq") };
@@ -1852,6 +1853,7 @@ namespace DnsServerCore.Dns
                             recvBufferStream.SetLength(result.ReceivedBytes);
 
                             IPEndPoint returnEP = remoteEP;
+                            IPAddress forwardedClient = null;
 
                             if (protocol == DnsTransportProtocol.UdpProxy)
                             {
@@ -1864,7 +1866,11 @@ namespace DnsServerCore.Dns
                                 ProxyProtocolStream proxyStream = await ProxyProtocolStream.CreateAsServerAsync(recvBufferStream);
 
                                 if (!proxyStream.IsLocal)
-                                    remoteEP = new IPEndPoint(proxyStream.SourceAddress, proxyStream.SourcePort);
+                                {
+                                    IPAddress selected = SelectForwardedClientAddress(remoteEP.Address, proxyStream.SourceAddress, true);
+                                    if (!SameAddress(remoteEP.Address, selected))
+                                        forwardedClient = selected;
+                                }
 
                                 recvBufferStream.Position = proxyStream.DataOffset;
                             }
@@ -1875,30 +1881,12 @@ namespace DnsServerCore.Dns
 
                             request.SetMetadata(new NameServerAddress(sourceEP, protocol));
 
-                            if ((protocol == DnsTransportProtocol.Udp) && _enableEDnsClientSubnetSourceAddress)
+                            if ((protocol == DnsTransportProtocol.Udp) && _enableEDnsClientSubnetSourceAddress && NetworkAccessControl.IsAddressAllowed(remoteEP.Address, _dnsReverseProxyNetworkACL))
                             {
-                                if (NetworkAccessControl.IsAddressAllowed(remoteEP.Address, _dnsReverseProxyNetworkACL))
-                                {
-                                    //this feature is intended to be used with a reverse proxy or load balancer on private network
-                                    EDnsClientSubnetOptionData ecs = request.GetEDnsClientSubnetOption(true);
-                                    if (ecs is not null)
-                                    {
-                                        switch (ecs.SourcePrefixLength)
-                                        {
-                                            case 32:
-                                                if (ecs.Family == EDnsClientSubnetAddressFamily.IPv4)
-                                                    remoteEP = new IPEndPoint(ecs.Address, 0);
-
-                                                break;
-
-                                            case 128:
-                                                if (ecs.Family == EDnsClientSubnetAddressFamily.IPv6)
-                                                    remoteEP = new IPEndPoint(ecs.Address, 0);
-
-                                                break;
-                                        }
-                                    }
-                                }
+                                //a full client prefix is logged; rate limits and access stay with the connection
+                                IPAddress selected = SelectEcsClientAddress(remoteEP.Address, request.GetEDnsClientSubnetOption(true));
+                                if (!SameAddress(remoteEP.Address, selected))
+                                    forwardedClient = selected;
                             }
 
                             if (HasQpmLimitExceeded(remoteEP.Address, DnsTransportProtocol.Udp))
@@ -1990,14 +1978,14 @@ namespace DnsServerCore.Dns
                                 if (newUdpListener is not null)
                                 {
                                     //respond via new socket
-                                    _ = ProcessUdpRequestAsync(newUdpListener, remoteEP, returnEP, protocol, request, sendTruncationResponse);
+                                    _ = ProcessUdpRequestAsync(newUdpListener, remoteEP, returnEP, protocol, request, sendTruncationResponse, forwardedClient);
 
                                     //continue reading next request
                                     continue;
                                 }
                             }
 
-                            _ = ProcessUdpRequestAsync(udpListener, remoteEP, returnEP, protocol, request, sendTruncationResponse);
+                            _ = ProcessUdpRequestAsync(udpListener, remoteEP, returnEP, protocol, request, sendTruncationResponse, forwardedClient);
                         }
                         catch (EndOfStreamException)
                         {
@@ -2039,13 +2027,15 @@ namespace DnsServerCore.Dns
             }
         }
 
-        private async Task ProcessUdpRequestAsync(Socket udpListener, IPEndPoint remoteEP, IPEndPoint returnEP, DnsTransportProtocol protocol, DnsDatagram request, bool sendTruncationResponse)
+        private async Task ProcessUdpRequestAsync(Socket udpListener, IPEndPoint remoteEP, IPEndPoint returnEP, DnsTransportProtocol protocol, DnsDatagram request, bool sendTruncationResponse, IPAddress forwardedClient)
         {
             byte[] sendBuffer = null;
+            IPEndPoint logEP = LoggedEndPoint(remoteEP, forwardedClient);
+            SetForwardedClient(request, forwardedClient);
 
             try
             {
-                bool recursionAllowed = IsRecursionAllowed(remoteEP.Address);
+                bool recursionAllowed = IsRecursionAllowed(remoteEP.Address, forwardedClient);
                 DnsDatagram response;
 
                 if (sendTruncationResponse)
@@ -2170,7 +2160,7 @@ namespace DnsServerCore.Dns
                     await udpListener.SendToAsync(new ArraySegment<byte>(sendBuffer, 0, (int)sendBufferStream.Position), SocketFlags.None, returnEP);
                 }
 
-                _queryLog?.Write(remoteEP, protocol, request, response);
+                _queryLog?.Write(logEP, protocol, request, response);
                 _statsManager.QueueUpdate(request, remoteEP, protocol, response, false);
             }
             catch (ObjectDisposedException)
@@ -2182,7 +2172,7 @@ namespace DnsServerCore.Dns
                 if ((_state == ServiceState.Stopping) || (_state == ServiceState.Stopped))
                     return; //server stopping
 
-                _queryLog?.Write(remoteEP, protocol, request, null);
+                _queryLog?.Write(logEP, protocol, request, null);
                 _log.Write(remoteEP, protocol, ex);
             }
             finally
@@ -2278,10 +2268,16 @@ namespace DnsServerCore.Dns
                             return ProxyProtocolStream.CreateAsServerAsync(new NetworkStream(socket), cancellationToken1);
                         }, _tcpReceiveTimeout);
 
-                        if (!proxyStream.IsLocal)
-                            remoteEP = new IPEndPoint(proxyStream.SourceAddress, proxyStream.SourcePort);
+                        IPAddress forwardedClient = null;
 
-                        await ReadStreamRequestAsync(proxyStream, remoteEP, new NameServerAddress(socket.LocalEndPoint, DnsTransportProtocol.Tcp), protocol);
+                        if (!proxyStream.IsLocal)
+                        {
+                            IPAddress selected = SelectForwardedClientAddress(remoteEP.Address, proxyStream.SourceAddress, true);
+                            if (!SameAddress(remoteEP.Address, selected))
+                                forwardedClient = selected;
+                        }
+
+                        await ReadStreamRequestAsync(proxyStream, remoteEP, new NameServerAddress(socket.LocalEndPoint, DnsTransportProtocol.Tcp), protocol, forwardedClient);
                         break;
 
                     default:
@@ -2310,7 +2306,7 @@ namespace DnsServerCore.Dns
             }
         }
 
-        private async Task ReadStreamRequestAsync(Stream stream, IPEndPoint remoteEP, NameServerAddress dnsEP, DnsTransportProtocol protocol)
+        private async Task ReadStreamRequestAsync(Stream stream, IPEndPoint remoteEP, NameServerAddress dnsEP, DnsTransportProtocol protocol, IPAddress forwardedClient = null)
         {
             IPEndPoint connectionEP = remoteEP;
 
@@ -2323,7 +2319,6 @@ namespace DnsServerCore.Dns
                 while (true)
                 {
                     DnsDatagram request;
-                    IPEndPoint requestEP = connectionEP;
 
                     //read dns datagram with timeout
                     using (CancellationTokenSource cancellationTokenSource = new CancellationTokenSource())
@@ -2343,40 +2338,23 @@ namespace DnsServerCore.Dns
                         request.SetMetadata(dnsEP);
                     }
 
-                    if ((protocol == DnsTransportProtocol.Tcp) && _enableEDnsClientSubnetSourceAddress)
+                    IPAddress queryClient = forwardedClient;
+
+                    if ((protocol == DnsTransportProtocol.Tcp) && _enableEDnsClientSubnetSourceAddress && NetworkAccessControl.IsAddressAllowed(connectionEP.Address, _dnsReverseProxyNetworkACL))
                     {
-                        if (NetworkAccessControl.IsAddressAllowed(connectionEP.Address, _dnsReverseProxyNetworkACL))
-                        {
-                            //this feature is intended to be used with a reverse proxy or load balancer on private network
-                            EDnsClientSubnetOptionData ecs = request.GetEDnsClientSubnetOption(true);
-                            if (ecs is not null)
-                            {
-                                switch (ecs.SourcePrefixLength)
-                                {
-                                    case 32:
-                                        if (ecs.Family == EDnsClientSubnetAddressFamily.IPv4)
-                                            requestEP = new IPEndPoint(ecs.Address, 0);
-
-                                        break;
-
-                                    case 128:
-                                        if (ecs.Family == EDnsClientSubnetAddressFamily.IPv6)
-                                            requestEP = new IPEndPoint(ecs.Address, 0);
-
-                                        break;
-                                }
-                            }
-                        }
+                        //a full client prefix is logged; rate limits and access stay with the connection
+                        IPAddress selected = SelectEcsClientAddress(connectionEP.Address, request.GetEDnsClientSubnetOption(true));
+                        queryClient = SameAddress(connectionEP.Address, selected) ? null : selected;
                     }
 
-                    if (HasQpmLimitExceeded(requestEP.Address, DnsTransportProtocol.Tcp))
+                    if (HasQpmLimitExceeded(connectionEP.Address, DnsTransportProtocol.Tcp))
                     {
-                        _statsManager.QueueUpdate(null, requestEP, protocol, null, true);
+                        _statsManager.QueueUpdate(null, connectionEP, protocol, null, true);
                         break;
                     }
 
                     //process request async
-                    _ = ProcessStreamRequestAsync(stream, writeBuffer, writeSemaphore, requestEP, request, protocol);
+                    _ = ProcessStreamRequestAsync(stream, writeBuffer, writeSemaphore, connectionEP, request, protocol, queryClient);
                 }
             }
             catch (ObjectDisposedException)
@@ -2393,11 +2371,14 @@ namespace DnsServerCore.Dns
             }
         }
 
-        private async Task ProcessStreamRequestAsync(Stream stream, MemoryStream writeBuffer, SemaphoreSlim writeSemaphore, IPEndPoint remoteEP, DnsDatagram request, DnsTransportProtocol protocol)
+        private async Task ProcessStreamRequestAsync(Stream stream, MemoryStream writeBuffer, SemaphoreSlim writeSemaphore, IPEndPoint remoteEP, DnsDatagram request, DnsTransportProtocol protocol, IPAddress forwardedClient)
         {
+            IPEndPoint logEP = LoggedEndPoint(remoteEP, forwardedClient);
+            SetForwardedClient(request, forwardedClient);
+
             try
             {
-                DnsDatagram response = await ProcessRequestAsync(request, remoteEP, protocol, IsRecursionAllowed(remoteEP.Address));
+                DnsDatagram response = await ProcessRequestAsync(request, remoteEP, protocol, IsRecursionAllowed(remoteEP.Address, forwardedClient));
                 if (response is null)
                 {
                     await stream.DisposeAsync();
@@ -2422,7 +2403,7 @@ namespace DnsServerCore.Dns
                     }
                 }, _tcpSendTimeout);
 
-                _queryLog?.Write(remoteEP, protocol, request, response);
+                _queryLog?.Write(logEP, protocol, request, response);
                 _statsManager.QueueUpdate(request, remoteEP, protocol, response, false);
             }
             catch (ObjectDisposedException)
@@ -2436,7 +2417,7 @@ namespace DnsServerCore.Dns
             catch (Exception ex)
             {
                 if (request is not null)
-                    _queryLog?.Write(remoteEP, protocol, request, null);
+                    _queryLog?.Write(logEP, protocol, request, null);
 
                 _log.Write(remoteEP, protocol, ex);
             }
@@ -2601,6 +2582,89 @@ namespace DnsServerCore.Dns
             }
         }
 
+        internal static void SetForwardedClient(DnsDatagram request, IPAddress forwardedClient)
+        {
+            if ((request is null) || (forwardedClient is null))
+                return;
+
+            _forwardedClients.AddOrUpdate(request, forwardedClient);
+        }
+
+        internal static IPAddress GetForwardedClient(DnsDatagram request)
+        {
+            if ((request is not null) && _forwardedClients.TryGetValue(request, out IPAddress forwardedClient))
+                return forwardedClient;
+
+            return null;
+        }
+
+        internal static bool SameAddress(IPAddress left, IPAddress right)
+        {
+            if (ReferenceEquals(left, right))
+                return true;
+
+            if ((left is null) || (right is null))
+                return false;
+
+            if (left.IsIPv4MappedToIPv6)
+                left = left.MapToIPv4();
+
+            if (right.IsIPv4MappedToIPv6)
+                right = right.MapToIPv4();
+
+            return left.Equals(right);
+        }
+
+        internal static IPEndPoint LoggedEndPoint(IPEndPoint connection, IPAddress forwardedClient)
+        {
+            if ((connection is null) || (forwardedClient is null) || SameAddress(connection.Address, forwardedClient))
+                return connection;
+
+            return new IPEndPoint(forwardedClient, connection.Port);
+        }
+
+        internal static IPAddress SelectEcsClientAddress(IPAddress connectionAddress, EDnsClientSubnetOptionData ecs)
+        {
+            if (ecs is null)
+                return connectionAddress;
+
+            IPAddress claimed = null;
+
+            switch (ecs.SourcePrefixLength)
+            {
+                case 32:
+                    if (ecs.Family == EDnsClientSubnetAddressFamily.IPv4)
+                        claimed = ecs.Address;
+
+                    break;
+
+                case 128:
+                    if (ecs.Family == EDnsClientSubnetAddressFamily.IPv6)
+                        claimed = ecs.Address;
+
+                    break;
+            }
+
+            if (claimed is null)
+                return connectionAddress;
+
+            return SelectForwardedClientAddress(connectionAddress, claimed, true);
+        }
+
+        internal static bool IsRecursionAllowedFor(IPAddress connectionAddress, IPAddress forwardedClient, Func<IPAddress, bool> isAllowed)
+        {
+            if (connectionAddress is null)
+                return (forwardedClient is null) || isAllowed(forwardedClient);
+
+            if (!isAllowed(connectionAddress))
+                return false;
+
+            if ((forwardedClient is null) || SameAddress(connectionAddress, forwardedClient))
+                return true;
+
+            return isAllowed(forwardedClient);
+        }
+
         internal static IPAddress SelectForwardedClientAddress(IPAddress connectionAddress, IPAddress headerAddress, bool trustHeader)
         {
             if ((connectionAddress is not null) && connectionAddress.IsIPv4MappedToIPv6)
@@ -2641,6 +2705,7 @@ namespace DnsServerCore.Dns
             }
 
             DnsDatagram dnsRequest = null;
+            IPAddress forwardedClient = null;
 
             try
             {
@@ -2659,11 +2724,11 @@ namespace DnsServerCore.Dns
                             headerAddress = address;
                     }
 
-                    IPAddress clientAddress = SelectForwardedClientAddress(remoteEP?.Address, headerAddress, true);
-                    if (clientAddress is null)
-                        remoteEP = IPENDPOINT_ANY_0;
-                    else
-                        remoteEP = new IPEndPoint(clientAddress, remoteEP?.Port ?? 0);
+                    IPAddress selected = SelectForwardedClientAddress(remoteEP?.Address, headerAddress, true);
+                    if (remoteEP is null)
+                        remoteEP = (selected is null) ? IPENDPOINT_ANY_0 : new IPEndPoint(selected, 0);
+                    else if ((selected is not null) && !SameAddress(remoteEP.Address, selected))
+                        forwardedClient = selected;
                 }
                 else
                 {
@@ -2788,7 +2853,8 @@ namespace DnsServerCore.Dns
                         throw new InvalidOperationException();
                 }
 
-                DnsDatagram dnsResponse = await ProcessRequestAsync(dnsRequest, remoteEP, DnsTransportProtocol.Https, IsRecursionAllowed(remoteEP.Address));
+                SetForwardedClient(dnsRequest, forwardedClient);
+                DnsDatagram dnsResponse = await ProcessRequestAsync(dnsRequest, remoteEP, DnsTransportProtocol.Https, IsRecursionAllowed(remoteEP.Address, forwardedClient));
                 if (dnsResponse is null)
                 {
                     //drop request
@@ -2823,7 +2889,7 @@ namespace DnsServerCore.Dns
                     }
                 }
 
-                _queryLog?.Write(remoteEP, DnsTransportProtocol.Https, dnsRequest, dnsResponse);
+                _queryLog?.Write(LoggedEndPoint(remoteEP, forwardedClient), DnsTransportProtocol.Https, dnsRequest, dnsResponse);
                 _statsManager.QueueUpdate(dnsRequest, remoteEP, DnsTransportProtocol.Https, dnsResponse, false);
             }
             catch (IOException)
@@ -2833,7 +2899,7 @@ namespace DnsServerCore.Dns
             catch (Exception ex)
             {
                 if (dnsRequest is not null)
-                    _queryLog?.Write(remoteEP, DnsTransportProtocol.Https, dnsRequest, null);
+                    _queryLog?.Write(LoggedEndPoint(remoteEP, forwardedClient), DnsTransportProtocol.Https, dnsRequest, null);
 
                 _log.Write(remoteEP, DnsTransportProtocol.Https, ex);
             }
@@ -2863,6 +2929,11 @@ namespace DnsServerCore.Dns
                 default:
                     return false;
             }
+        }
+
+        private bool IsRecursionAllowed(IPAddress connectionAddress, IPAddress forwardedClient)
+        {
+            return IsRecursionAllowedFor(connectionAddress, forwardedClient, IsRecursionAllowed);
         }
 
         private async Task<DnsDatagram> ProcessRequestAsync(DnsDatagram request, IPEndPoint remoteEP, DnsTransportProtocol protocol, bool isRecursionAllowed)
@@ -3530,6 +3601,12 @@ namespace DnsServerCore.Dns
                                         }
                                         else if (uRecord.Type == DnsResourceRecordType.DNAME)
                                         {
+                                            if (!uRecord.Name.Equals(zoneInfo.Name, StringComparison.OrdinalIgnoreCase) && (_authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.NS).Count > 0))
+                                            {
+                                                RevertOriginalRRSets();
+                                                return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
+                                            }
+
                                             IReadOnlyList<DnsResourceRecord> existingRRSet = _authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, uRecord.Type);
                                             AddToOriginalRRSets(uRecord.Name, uRecord.Type, existingRRSet);
 
@@ -3561,6 +3638,12 @@ namespace DnsServerCore.Dns
                                             if (_authZoneManager.GetEnabledRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.CNAME).Count > 0)
                                             {
                                                 //current name contains CNAME so cannot add non-CNAME record
+                                                RevertOriginalRRSets();
+                                                return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
+                                            }
+
+                                            if ((uRecord.Type == DnsResourceRecordType.NS) && !uRecord.Name.Equals(zoneInfo.Name, StringComparison.OrdinalIgnoreCase) && (_authZoneManager.GetRecords(zoneInfo.Name, uRecord.Name, DnsResourceRecordType.DNAME).Count > 0))
+                                            {
                                                 RevertOriginalRRSets();
                                                 return new DnsDatagram(request.Identifier, true, DnsOpcode.Update, false, false, request.RecursionDesired, false, false, false, DnsResponseCode.YXRRSet, request.Question) { Tag = DnsServerResponseType.Authoritative };
                                             }
@@ -4093,7 +4176,7 @@ namespace DnsServerCore.Dns
             {
                 //the shared 0.0.0.0 endpoint is an internal query; a packet from that address is not
                 IPAddress queryAccessAddress = ReferenceEquals(remoteEP, IPENDPOINT_ANY_0) ? IPAddress.Loopback : remoteEP.Address;
-                authResponse = await _authZoneManager.QueryAsync(request, queryAccessAddress, isRecursionAllowed);
+                authResponse = await _authZoneManager.QueryAsync(request, queryAccessAddress, isRecursionAllowed, GetForwardedClient(request));
             }
 
             if (request.RecursionDesired && isRecursionAllowed && _locallyServedDnsZones)
@@ -4348,6 +4431,7 @@ namespace DnsServerCore.Dns
                 }
 
                 DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, request.CheckingDisabled, DnsResponseCode.NoError, new DnsQuestionRecord[] { new DnsQuestionRecord(cnameDomain, request.Question[0].Type, request.Question[0].Class) }, null, null, null, _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None, eDnsClientSubnetOption);
+                SetForwardedClient(newRequest, GetForwardedClient(request));
 
                 //query authoritative zone first
                 newResponse = await AuthoritativeQueryAsync(newRequest, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, remoteEP);
@@ -4662,6 +4746,7 @@ namespace DnsServerCore.Dns
                     }
 
                     DnsDatagram newRequest = new DnsDatagram(0, false, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, false, false, request.CheckingDisabled, DnsResponseCode.NoError, new DnsQuestionRecord[] { new DnsQuestionRecord(lastDomain, request.Question[0].Type, request.Question[0].Class) }, null, null, null, _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None, eDnsClientSubnetOption);
+                    SetForwardedClient(newRequest, GetForwardedClient(request));
 
                     //query authoritative zone first
                     DnsDatagram newResponse = await AuthoritativeQueryAsync(newRequest, protocol, isRecursionAllowed, skipDnsAppAuthoritativeRequestHandlers, remoteEP);
