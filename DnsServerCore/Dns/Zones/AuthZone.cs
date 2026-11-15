@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using DnsServerCore.Dns.ResourceRecords;
+using DnsServerException = DnsServerCore.Dns.DnsServerException;
 using System;
 using System.Collections.Generic;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
@@ -708,6 +709,8 @@ namespace DnsServerCore.Dns.Zones
 
         public void SyncRecords(Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> newEntries)
         {
+            RejectProhibitedRrsets(_name, this is ApexZone, newEntries.Keys);
+
             //remove entires of type that do not exists in new entries
             foreach (KeyValuePair<DnsResourceRecordType, IReadOnlyList<DnsResourceRecord>> entry in _entries)
             {
@@ -759,6 +762,8 @@ namespace DnsServerCore.Dns.Zones
 
         public void SyncRecords(Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntries, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> addedEntries)
         {
+            RejectProhibitedChange(deletedEntries, addedEntries);
+
             if (deletedEntries is not null)
             {
                 foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntry in deletedEntries)
@@ -842,7 +847,22 @@ namespace DnsServerCore.Dns.Zones
 
         public void LoadRecords(DnsResourceRecordType type, IReadOnlyList<DnsResourceRecord> records)
         {
+            bool replaced = _entries.TryGetValue(type, out IReadOnlyList<DnsResourceRecord> previous);
             _entries[type] = records;
+
+            try
+            {
+                RejectProhibitedRrsets(_name, this is ApexZone, _entries.Keys);
+            }
+            catch
+            {
+                if (replaced)
+                    _entries[type] = previous;
+                else
+                    _entries.TryRemove(type, out _);
+
+                throw;
+            }
         }
 
         public virtual void SetRecords(DnsResourceRecordType type, IReadOnlyList<DnsResourceRecord> records)
@@ -876,6 +896,99 @@ namespace DnsServerCore.Dns.Zones
             }
 
             _entries[type] = records;
+        }
+
+        //RFC 1034 section 3.6.2 and RFC 6672 section 2.3. RRSIG and NSEC may share a CNAME owner.
+        internal static void RejectProhibitedRrsets(string ownerName, bool atApex, IEnumerable<DnsResourceRecordType> types)
+        {
+            bool cname = false;
+            bool other = false;
+            bool dname = false;
+            bool ns = false;
+
+            foreach (DnsResourceRecordType type in types)
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.CNAME:
+                        cname = true;
+                        break;
+
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.NSEC:
+                        break;
+
+                    case DnsResourceRecordType.DNAME:
+                        dname = true;
+                        other = true;
+                        break;
+
+                    case DnsResourceRecordType.NS:
+                        ns = true;
+                        other = true;
+                        break;
+
+                    default:
+                        other = true;
+                        break;
+                }
+            }
+
+            if (!atApex && dname && ns)
+                throw new DnsServerException("Cannot load records: a DNAME record cannot exist with an NS record except at the zone apex: " + ownerName);
+
+            if (cname && other)
+                throw new DnsServerException("Cannot load records: a CNAME record cannot exist with other record types for the same name: " + ownerName);
+        }
+
+        void RejectProhibitedChange(Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntries, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>> addedEntries)
+        {
+            List<DnsResourceRecordType> types = new List<DnsResourceRecordType>(_entries.Count);
+
+            foreach (DnsResourceRecordType type in _entries.Keys)
+                types.Add(type);
+
+            if (deletedEntries is not null)
+            {
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> deletedEntry in deletedEntries)
+                {
+                    if (!_entries.TryGetValue(deletedEntry.Key, out IReadOnlyList<DnsResourceRecord> existingRecords))
+                        continue;
+
+                    int remaining = 0;
+
+                    foreach (DnsResourceRecord existingRecord in existingRecords)
+                    {
+                        bool removed = false;
+
+                        foreach (DnsResourceRecord deletedRecord in deletedEntry.Value)
+                        {
+                            if (existingRecord.RDATA.Equals(deletedRecord.RDATA))
+                            {
+                                removed = true;
+                                break;
+                            }
+                        }
+
+                        if (!removed)
+                            remaining++;
+                    }
+
+                    if (remaining == 0)
+                        types.Remove(deletedEntry.Key);
+                }
+            }
+
+            if (addedEntries is not null)
+            {
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> addedEntry in addedEntries)
+                {
+                    if (!types.Contains(addedEntry.Key))
+                        types.Add(addedEntry.Key);
+                }
+            }
+
+            RejectProhibitedRrsets(_name, this is ApexZone, types);
         }
 
         //RFC 6672 section 2.3: DNAME and NS share a name only at the zone apex.

@@ -1,3 +1,5 @@
+using DnsServerCore.Dns;
+using DnsServerCore.Dns.Zones;
 using System;
 using System.Net;
 using System.Threading.Tasks;
@@ -145,6 +147,62 @@ namespace DnsServerCore.Tests
 
             DnsDatagram response = await _dns.QueryAsync(name, DnsResourceRecordType.A);
             Assert.NotNull(DnsTest.Find(response.Answer, DnsResourceRecordType.A, name));
+        }
+
+        [Fact]
+        public void ZoneFileRefusesCnameBesideAnotherType()
+        {
+            const string zone = "cname-load.example";
+            const string name = "www." + zone;
+            AuthZoneInfo info = _dns.CreateZone(zone);
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.LoadAndInitZone(info, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example")),
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.9")))
+            }));
+
+            Assert.Contains(name, error.Message);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.CNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public async Task ZoneFileLoadsACname()
+        {
+            const string zone = "cname-file.example";
+            const string name = "www." + zone;
+            AuthZoneInfo info = _dns.CreateZone(zone);
+
+            _dns.Server.AuthZoneManager.LoadAndInitZone(info, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example"))
+            });
+
+            DnsDatagram response = await _dns.QueryAsync(name, DnsResourceRecordType.CNAME);
+            Assert.Equal(DnsResponseCode.NoError, response.RCODE);
+            Assert.NotNull(DnsTest.Find(response.Answer, DnsResourceRecordType.CNAME, name));
+        }
+
+        [Fact]
+        public void ZoneTransferRefusesCnameBesideAnotherType()
+        {
+            const string zone = "cname-axfr.example";
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.SyncZoneTransferRecords(zone, new DnsResourceRecord[]
+            {
+                soa,
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example")),
+                new DnsResourceRecord(name, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.9"))),
+                soa
+            }));
+
+            Assert.Contains(name, error.Message);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.CNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A));
         }
 
         [Fact]

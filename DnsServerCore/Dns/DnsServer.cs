@@ -4304,6 +4304,7 @@ namespace DnsServerCore.Dns
                     {
                         DnsResponseCode rcode;
                         IReadOnlyList<DnsResourceRecord> authority = null;
+                        bool authoritativeAnswer = false;
 
                         if ((zoneInfo.Type == AuthZoneType.Forwarder) || (zoneInfo.Type == AuthZoneType.SecondaryForwarder))
                         {
@@ -4331,10 +4332,11 @@ namespace DnsServerCore.Dns
                             else
                                 rcode = DnsResponseCode.NxDomain;
 
-                            authority = zoneInfo.ApexZone.GetRecords(DnsResourceRecordType.SOA);
+                            authority = AuthZoneManager.WithNegativeCacheTtl(zoneInfo.ApexZone.GetRecords(DnsResourceRecordType.SOA));
+                            authoritativeAnswer = true;
                         }
 
-                        return new DnsDatagram(request.Identifier, true, request.OPCODE, false, false, request.RecursionDesired, isRecursionAllowed, false, request.CheckingDisabled, rcode, request.Question, null, authority) { Tag = DnsServerResponseType.Authoritative };
+                        return new DnsDatagram(request.Identifier, true, request.OPCODE, authoritativeAnswer, false, request.RecursionDesired, isRecursionAllowed, false, request.CheckingDisabled, rcode, request.Question, null, authority) { Tag = DnsServerResponseType.Authoritative };
                     }
                     else
                     {
@@ -5149,7 +5151,7 @@ namespace DnsServerCore.Dns
                 foreach (DnsResourceRecord record in existingAuthority)
                 {
                     if ((record.Type == DnsResourceRecordType.SOA) && (ownerName.Equals(record.Name, StringComparison.OrdinalIgnoreCase) || ownerName.EndsWith("." + record.Name, StringComparison.OrdinalIgnoreCase)))
-                        return existingAuthority;
+                        return AuthZoneManager.WithNegativeCacheTtl(existingAuthority);
                 }
             }
 
@@ -5158,7 +5160,7 @@ namespace DnsServerCore.Dns
             {
                 IReadOnlyList<DnsResourceRecord> soaRecords = zoneInfo.ApexZone.GetRecords(DnsResourceRecordType.SOA);
                 if (soaRecords.Count > 0)
-                    return soaRecords;
+                    return AuthZoneManager.WithNegativeCacheTtl(soaRecords);
             }
 
             return null;

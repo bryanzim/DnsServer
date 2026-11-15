@@ -1,4 +1,5 @@
 using DnsServerCore.Dns.Dnssec;
+using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
 using TechnitiumLibrary.Net.Dns;
@@ -85,6 +86,68 @@ namespace DnsServerCore.Tests
             Assert.Equal(DnsResponseCode.NxDomain, gone.RCODE);
             Assert.NotNull(DnsTest.Find(gone.Authority, DnsResourceRecordType.SOA, "child." + zone));
             Assert.Null(DnsTest.Find(gone.Authority, DnsResourceRecordType.SOA, zone));
+        }
+
+        [Fact]
+        public async Task WildcardNodataIncludesTheCoveringNsec()
+        {
+            const string zone = "wild-nsec.example";
+            _dns.CreateZone(zone);
+            _dns.Add(zone, "*." + zone, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.55")));
+            _dns.Add(zone, "m." + zone, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.56")));
+            Sign(zone, false);
+
+            DnsDatagram nodata = await _dns.QueryAsync("www." + zone, DnsResourceRecordType.AAAA, true);
+
+            Assert.Equal(DnsResponseCode.NoError, nodata.RCODE);
+            Assert.Null(DnsTest.Find(nodata.Answer, DnsResourceRecordType.AAAA));
+            Assert.NotNull(DnsTest.Find(nodata.Authority, DnsResourceRecordType.NSEC, "*." + zone));
+            Assert.NotNull(DnsTest.Find(nodata.Authority, DnsResourceRecordType.NSEC, "m." + zone));
+        }
+
+        [Fact]
+        public async Task RootWildcardNodataIncludesTheCoveringProof()
+        {
+            try
+            {
+                await AssertRootWildcardNodataAsync(false, DnsResourceRecordType.NSEC);
+                _dns.Server.AuthZoneManager.DeleteZone("");
+                await AssertRootWildcardNodataAsync(true, DnsResourceRecordType.NSEC3);
+            }
+            finally
+            {
+                _dns.Server.AuthZoneManager.DeleteZone("");
+            }
+        }
+
+        async Task AssertRootWildcardNodataAsync(bool nsec3, DnsResourceRecordType proofType)
+        {
+            Assert.NotNull(_dns.CreateZone(""));
+            _dns.Add("", "*", DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.57")));
+            _dns.Add("", "a", DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.58")));
+            Sign("", nsec3);
+
+            DnsDatagram nodata = await _dns.QueryAsync("www", DnsResourceRecordType.AAAA, true);
+
+            Assert.Equal(DnsResponseCode.NoError, nodata.RCODE);
+            Assert.Null(DnsTest.Find(nodata.Answer, DnsResourceRecordType.AAAA));
+            Assert.True(CountType(nodata.Authority, proofType) >= 2, DnsTest.Describe(nodata));
+        }
+
+        static int CountType(IReadOnlyList<DnsResourceRecord> records, DnsResourceRecordType type)
+        {
+            if (records is null)
+                return 0;
+
+            int count = 0;
+
+            foreach (DnsResourceRecord record in records)
+            {
+                if (record.Type == type)
+                    count++;
+            }
+
+            return count;
         }
 
         void Sign(string zone, bool nsec3)

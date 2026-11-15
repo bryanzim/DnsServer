@@ -24,6 +24,7 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\DnsServerCore\DnsServerCore.csproj" />
+		<ProjectReference Include="..\DnsServerCore.ApplicationCommon\DnsServerCore.ApplicationCommon.csproj" />
 		<ProjectReference Include="..\Apps\Dns64App\Dns64App.csproj" />
 	</ItemGroup>
 

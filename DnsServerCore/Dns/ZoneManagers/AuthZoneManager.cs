@@ -325,7 +325,7 @@ namespace DnsServerCore.Dns.ZoneManagers
             return minExpiryTtl;
         }
 
-        private void LoadAndInitZone(AuthZoneInfo zoneInfo, IReadOnlyList<DnsResourceRecord> records)
+        internal void LoadAndInitZone(AuthZoneInfo zoneInfo, IReadOnlyList<DnsResourceRecord> records)
         {
             ApexZone apexZone = zoneInfo.ApexZone;
             List<DnsResourceRecord> recordsMovedToChild = new List<DnsResourceRecord>();
@@ -336,6 +336,8 @@ namespace DnsServerCore.Dns.ZoneManagers
             {
                 if (apexZone.Name.Equals(zoneEntry.Key, StringComparison.OrdinalIgnoreCase))
                 {
+                    AuthZone.RejectProhibitedRrsets(zoneEntry.Key, true, zoneEntry.Value.Keys);
+
                     foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
                         apexZone.LoadRecords(rrsetEntry.Key, rrsetEntry.Value);
                 }
@@ -354,8 +356,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                     if (_root.TryGet(apexZone.Name, zoneEntry.Key, out AuthZone existingZone) && (existingZone is SubDomainZone existingSubDomainZone) && !existingSubDomainZone.AuthoritativeZone.Name.Equals(apexZone.Name, StringComparison.OrdinalIgnoreCase))
                         continue; //name was already loaded for another zone
 
-                    if (zoneEntry.Value.ContainsKey(DnsResourceRecordType.DNAME) && zoneEntry.Value.ContainsKey(DnsResourceRecordType.NS))
-                        throw new DnsServerException("Cannot load records: a DNAME record cannot exist with an NS record except at the zone apex: " + zoneEntry.Key);
+                    AuthZone.RejectProhibitedRrsets(zoneEntry.Key, false, zoneEntry.Value.Keys);
 
                     AuthZone authZone = GetOrAddSubDomainZone(apexZone.Name, zoneEntry.Key);
 
@@ -903,6 +904,8 @@ namespace DnsServerCore.Dns.ZoneManagers
 
             if (!TryGetAuthZone(childZone.Name, domain, out _))
             {
+                AuthZone.RejectProhibitedRrsets(domain, false, rrsets.Keys);
+
                 AuthZone authZone;
 
                 try
@@ -3941,7 +3944,7 @@ namespace DnsServerCore.Dns.ZoneManagers
 
                                 case DnsResourceRecordType.ANAME:
                                 case DnsResourceRecordType.ALIAS:
-                                    authority = apexZone.GetRecords(DnsResourceRecordType.SOA); //adding SOA for use with NO DATA response
+                                    authority = WithNegativeCacheTtl(apexZone.GetRecords(DnsResourceRecordType.SOA)); //adding SOA for use with NO DATA response
                                     break;
                             }
                         }
@@ -3998,7 +4001,7 @@ namespace DnsServerCore.Dns.ZoneManagers
         }
 
         //RFC 2308 section 3: a negative answer caches for min(SOA TTL, SOA MINIMUM).
-        private static IReadOnlyList<DnsResourceRecord> WithNegativeCacheTtl(IReadOnlyList<DnsResourceRecord> records)
+        internal static IReadOnlyList<DnsResourceRecord> WithNegativeCacheTtl(IReadOnlyList<DnsResourceRecord> records)
         {
             DnsResourceRecord soaRecord = null;
 

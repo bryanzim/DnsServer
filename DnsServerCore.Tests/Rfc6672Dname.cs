@@ -1,3 +1,5 @@
+using DnsServerCore.Dns;
+using DnsServerCore.Dns.Zones;
 using System;
 using System.Net;
 using System.Text;
@@ -159,6 +161,118 @@ namespace DnsServerCore.Tests
             Assert.Throws<InvalidOperationException>(() => _dns.Add(zone, name, DnsResourceRecordType.NS, new DnsNSRecordData("ns1.example.net")));
             Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.NS));
             Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.DNAME));
+        }
+
+        [Fact]
+        public void DnameBesideANameServerInsideAChildZoneIsRefused()
+        {
+            const string zone = "dname-child.example";
+            const string child = "child." + zone;
+            const string name = "www." + child;
+
+            _dns.CreateZone(child);
+            AuthZoneInfo parent = _dns.CreateZone(zone);
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.LoadAndInitZone(parent, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(name, DnsResourceRecordType.DNAME, DnsClass.IN, 300, new DnsDNAMERecordData("dst.example.net")),
+                new DnsResourceRecord(name, DnsResourceRecordType.NS, DnsClass.IN, 300, new DnsNSRecordData("ns1.example.net"))
+            }));
+
+            Assert.Contains(name, error.Message);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(child, name, DnsResourceRecordType.DNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(child, name, DnsResourceRecordType.NS));
+        }
+
+        [Fact]
+        public async Task DnameInsideAChildZoneIsAdopted()
+        {
+            const string zone = "dname-adopt.example";
+            const string child = "child." + zone;
+            const string name = "www." + child;
+
+            _dns.CreateZone(child);
+            AuthZoneInfo parent = _dns.CreateZone(zone);
+
+            _dns.Server.AuthZoneManager.LoadAndInitZone(parent, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(name, DnsResourceRecordType.DNAME, DnsClass.IN, 300, new DnsDNAMERecordData("dst.example.net"))
+            });
+
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(child, name, DnsResourceRecordType.DNAME));
+
+            DnsDatagram response = await _dns.QueryAsync(name, DnsResourceRecordType.DNAME);
+            Assert.Equal(DnsResponseCode.NoError, response.RCODE);
+            Assert.NotNull(DnsTest.Find(response.Answer, DnsResourceRecordType.DNAME, name));
+        }
+
+        [Fact]
+        public void ZoneTransferRefusesDnameBesideANameServer()
+        {
+            const string zone = "dname-axfr.example";
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.SyncZoneTransferRecords(zone, new DnsResourceRecord[]
+            {
+                soa,
+                new DnsResourceRecord(name, DnsResourceRecordType.DNAME, DnsClass.IN, 300, new DnsDNAMERecordData("dst.example.net")),
+                new DnsResourceRecord(name, DnsResourceRecordType.NS, DnsClass.IN, 300, new DnsNSRecordData("ns1.example.net")),
+                soa
+            }));
+
+            Assert.Contains(name, error.Message);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.DNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.NS));
+        }
+
+        [Fact]
+        public void IncrementalTransferRefusesAddingANameServerBesideDname()
+        {
+            const string zone = "dname-ixfr.example";
+            const string name = "www." + zone;
+            _dns.CreateZone(zone);
+            _dns.Set(zone, name, DnsResourceRecordType.DNAME, new DnsDNAMERecordData("dst.example.net"));
+
+            DnsResourceRecord current = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            DnsSOARecordData soa = (DnsSOARecordData)current.RDATA;
+            DnsResourceRecord updated = new DnsResourceRecord(current.Name, DnsResourceRecordType.SOA, current.Class, current.TTL, new DnsSOARecordData(soa.PrimaryNameServer, soa.ResponsiblePerson, soa.Serial + 1, soa.Refresh, soa.Retry, soa.Expire, soa.Minimum));
+
+            Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.SyncIncrementalZoneTransferRecords(zone, new DnsResourceRecord[]
+            {
+                updated,
+                current,
+                updated,
+                new DnsResourceRecord(name, DnsResourceRecordType.NS, DnsClass.IN, 300, new DnsNSRecordData("ns1.example.net")),
+                updated
+            }));
+
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.DNAME));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.NS));
+        }
+
+        [Fact]
+        public async Task ZoneTransferKeepsAnApexDnameBesideNameServers()
+        {
+            const string zone = "dname-axfr-apex.example";
+            _dns.CreateZone(zone);
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            DnsResourceRecord nameServer = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS)[0];
+
+            _dns.Server.AuthZoneManager.SyncZoneTransferRecords(zone, new DnsResourceRecord[]
+            {
+                soa,
+                nameServer,
+                new DnsResourceRecord(zone, DnsResourceRecordType.DNAME, DnsClass.IN, 300, new DnsDNAMERecordData("dst.example.net")),
+                soa
+            });
+
+            DnsDatagram dname = await _dns.QueryAsync(zone, DnsResourceRecordType.DNAME);
+            Assert.NotNull(DnsTest.Find(dname.Answer, DnsResourceRecordType.DNAME, zone));
+
+            DnsDatagram nameServers = await _dns.QueryAsync(zone, DnsResourceRecordType.NS);
+            Assert.NotNull(DnsTest.Find(nameServers.Answer, DnsResourceRecordType.NS, zone));
         }
 
         static string Prefix(int length)
