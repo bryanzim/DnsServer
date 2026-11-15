@@ -1,6 +1,7 @@
 using DnsServerCore.Dns;
 using DnsServerCore.Dns.Zones;
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Threading.Tasks;
 using TechnitiumLibrary.Net.Dns;
@@ -415,6 +416,282 @@ namespace DnsServerCore.Tests
             DnsDatagram response = await _dns.QueryAsync(adopted, DnsResourceRecordType.A);
             Assert.Equal(DnsResponseCode.NoError, response.RCODE);
             Assert.Equal(IPAddress.Parse("192.0.2.37"), ((DnsARecordData)DnsTest.Find(response.Answer, DnsResourceRecordType.A, adopted).RDATA).Address);
+        }
+
+        [Fact]
+        public void ImportOverwriteReplacesTheZoneWhenTheFileIsLegal()
+        {
+            const string zone = "import-overwrite-ok.example";
+            const string stay = "stay." + zone;
+            const string removed = "removed." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, stay, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.43")));
+            _dns.Add(zone, removed, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.44")));
+            DnsResourceRecord nameServer = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS)[0];
+
+            _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                nameServer,
+                new DnsResourceRecord(stay, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.45")))
+            }, true, true, false);
+
+            Assert.Equal(IPAddress.Parse("192.0.2.45"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, stay, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, removed, DnsResourceRecordType.A));
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+        }
+
+        [Fact]
+        public void ImportLeavesExistingRecordsUnchangedWhenTheTtlExceedsExpire()
+        {
+            const string zone = "import-ttl-keep.example";
+            const string stay = "stay." + zone;
+            const string removed = "removed." + zone;
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, stay, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.46")));
+            _dns.Add(zone, removed, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.47")));
+
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            uint serial = ((DnsSOARecordData)soa.RDATA).Serial;
+            uint ttl = ((DnsSOARecordData)soa.RDATA).Expire + 1;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.48"))),
+                new DnsResourceRecord(stay, DnsResourceRecordType.A, DnsClass.IN, ttl, new DnsARecordData(IPAddress.Parse("192.0.2.49")))
+            }, true, true, false));
+
+            Assert.Contains("EXPIRE", error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+            Assert.Equal(IPAddress.Parse("192.0.2.46"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, stay, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Equal(IPAddress.Parse("192.0.2.47"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, removed, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public void ImportLeavesEarlierNamesUnchangedWhenALaterTtlExceedsExpire()
+        {
+            const string zone = "import-ttl-merge.example";
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            uint serial = ((DnsSOARecordData)soa.RDATA).Serial;
+            uint ttl = ((DnsSOARecordData)soa.RDATA).Expire + 1;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.50"))),
+                new DnsResourceRecord("late." + zone, DnsResourceRecordType.A, DnsClass.IN, ttl, new DnsARecordData(IPAddress.Parse("192.0.2.51")))
+            }, false, false, false));
+
+            Assert.Contains("EXPIRE", error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, "late." + zone, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public void ImportLeavesExistingRecordsUnchangedWhenTheSoaRetryExceedsRefresh()
+        {
+            const string zone = "import-soa-keep.example";
+            const string stay = "stay." + zone;
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, stay, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.52")));
+
+            DnsResourceRecord current = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            DnsSOARecordData soa = (DnsSOARecordData)current.RDATA;
+            uint serial = soa.Serial;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.53"))),
+                new DnsResourceRecord(zone, DnsResourceRecordType.SOA, DnsClass.IN, current.TTL, new DnsSOARecordData(soa.PrimaryNameServer, soa.ResponsiblePerson, soa.Serial, soa.Refresh, soa.Refresh + 1, soa.Expire, soa.Minimum))
+            }, true, true, false));
+
+            Assert.Contains("RETRY", error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.Equal(soa.Retry, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Retry);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+            Assert.Equal(IPAddress.Parse("192.0.2.52"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, stay, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public void ImportLeavesExistingRecordsUnchangedWhenApexDsIsIllegal()
+        {
+            const string zone = "import-ds-keep.example";
+            const string stay = "stay." + zone;
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, stay, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.54")));
+
+            uint serial = ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial;
+
+            InvalidOperationException error = Assert.Throws<InvalidOperationException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.55"))),
+                new DnsResourceRecord(zone, DnsResourceRecordType.DS, DnsClass.IN, 300, new DnsDSRecordData(12345, DnssecAlgorithm.RSASHA256, DnssecDigestType.SHA256, new byte[32]))
+            }, true, true, false));
+
+            Assert.Contains("DS", error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+            Assert.Equal(IPAddress.Parse("192.0.2.54"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, stay, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.DS));
+        }
+
+        [Fact]
+        public void ImportAppliesACnameBesideADenialRecord()
+        {
+            const string zone = "import-nsec-cname.example";
+            const string stay = "stay." + zone;
+            const string name = "www." + zone;
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+            _dns.Add(zone, stay, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.56")));
+            _dns.Add(zone, name, DnsResourceRecordType.A, new DnsARecordData(IPAddress.Parse("192.0.2.57")));
+            _dns.Server.AuthZoneManager.GetAuthZone(zone, name).LoadRecords(DnsResourceRecordType.NSEC, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(name, DnsResourceRecordType.NSEC, DnsClass.IN, 300, new DnsNSECRecordData(zone, new DnsResourceRecordType[] { DnsResourceRecordType.A }))
+            });
+
+            _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(name, DnsResourceRecordType.CNAME, DnsClass.IN, 300, new DnsCNAMERecordData("other.example")),
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.58")))
+            }, true, true, false);
+
+            Assert.Equal("other.example", ((DnsCNAMERecordData)_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.CNAME)[0].RDATA).Domain, ignoreCase: true);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.NSEC));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, name, DnsResourceRecordType.A));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, stay, DnsResourceRecordType.A));
+            Assert.Equal(IPAddress.Parse("192.0.2.58"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A)[0].RDATA).Address);
+        }
+
+        [Fact]
+        public void ImportAppliesAnApexApplicationRecordAndEarlierNames()
+        {
+            const string zone = "import-app.example";
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+
+            _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.60"))),
+                new DnsResourceRecord(zone, DnsResourceRecordType.APP, DnsClass.IN, 300, new DnsApplicationRecordData("TestApp", "Test.Class", ""))
+            }, false, false, false);
+
+            Assert.Equal("TestApp", ((DnsApplicationRecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.APP)[0].RDATA).AppName);
+            Assert.Equal(IPAddress.Parse("192.0.2.60"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A)[0].RDATA).Address);
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+        }
+
+        [Fact]
+        public void ImportLeavesEarlierNamesUnchangedWhenAnApexApplicationTtlExceedsExpire()
+        {
+            const string zone = "import-app-ttl.example";
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            uint serial = ((DnsSOARecordData)soa.RDATA).Serial;
+            uint ttl = ((DnsSOARecordData)soa.RDATA).Expire + 1;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.61"))),
+                new DnsResourceRecord(zone, DnsResourceRecordType.APP, DnsClass.IN, ttl, new DnsApplicationRecordData("TestApp", "Test.Class", ""))
+            }, false, false, false));
+
+            Assert.Contains("EXPIRE", error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.APP));
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+            Assert.NotEmpty(_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS));
+        }
+
+        [Fact]
+        public void ImportLeavesTheGeneratedNameServerWhenTheFileIsIllegal()
+        {
+            const string zone = "import-ns-keep.example";
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+
+            string nameServer = ((DnsNSRecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS)[0].RDATA).NameServer;
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            uint serial = ((DnsSOARecordData)soa.RDATA).Serial;
+            uint ttl = ((DnsSOARecordData)soa.RDATA).Expire + 1;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.62"))),
+                new DnsResourceRecord("late." + zone, DnsResourceRecordType.A, DnsClass.IN, ttl, new DnsARecordData(IPAddress.Parse("192.0.2.63")))
+            }, false, false, false, DnsResourceRecordType.NS));
+
+            Assert.Contains("EXPIRE", error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.Equal(nameServer, ((DnsNSRecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS)[0].RDATA).NameServer, ignoreCase: true);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public void ImportReplacesTheGeneratedNameServerWhenTheFileIsLegal()
+        {
+            const string zone = "import-ns-replace.example";
+            const string added = "added." + zone;
+            _dns.CreateZone(zone);
+
+            _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(zone, DnsResourceRecordType.NS, DnsClass.IN, 300, new DnsNSRecordData("ns2.example")),
+                new DnsResourceRecord(added, DnsResourceRecordType.A, DnsClass.IN, 300, new DnsARecordData(IPAddress.Parse("192.0.2.64")))
+            }, false, false, false, DnsResourceRecordType.NS);
+
+            IReadOnlyList<DnsResourceRecord> nameServers = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.NS);
+            Assert.Single(nameServers);
+            Assert.Equal("ns2.example", ((DnsNSRecordData)nameServers[0].RDATA).NameServer, ignoreCase: true);
+            Assert.Equal(IPAddress.Parse("192.0.2.64"), ((DnsARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, added, DnsResourceRecordType.A)[0].RDATA).Address);
+        }
+
+        [Fact]
+        public void ImportLeavesTheGeneratedForwarderWhenTheFileIsIllegal()
+        {
+            const string zone = "import-fwd-keep.example";
+            Assert.NotNull(_dns.Server.AuthZoneManager.CreateForwarderZone(zone, DnsTransportProtocol.Udp, "192.0.2.65", false, DnsForwarderRecordProxyType.NoProxy, null, 0, null, null, null));
+
+            DnsResourceRecord soa = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0];
+            uint serial = ((DnsSOARecordData)soa.RDATA).Serial;
+            uint ttl = ((DnsSOARecordData)soa.RDATA).Expire + 1;
+
+            DnsServerException error = Assert.Throws<DnsServerException>(() => _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord("late." + zone, DnsResourceRecordType.A, DnsClass.IN, ttl, new DnsARecordData(IPAddress.Parse("192.0.2.66")))
+            }, false, false, false, DnsResourceRecordType.FWD));
+
+            Assert.Contains("EXPIRE", error.Message);
+            Assert.Equal(serial, ((DnsSOARecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.SOA)[0].RDATA).Serial);
+            Assert.Equal("192.0.2.65", ((DnsForwarderRecordData)_dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.FWD)[0].RDATA).Forwarder);
+            Assert.Empty(_dns.Server.AuthZoneManager.GetRecords(zone, "late." + zone, DnsResourceRecordType.A));
+        }
+
+        [Fact]
+        public void ImportReplacesTheGeneratedForwarderWhenTheFileIsLegal()
+        {
+            const string zone = "import-fwd-replace.example";
+            Assert.NotNull(_dns.Server.AuthZoneManager.CreateForwarderZone(zone, DnsTransportProtocol.Udp, "192.0.2.67", false, DnsForwarderRecordProxyType.NoProxy, null, 0, null, null, null));
+
+            _dns.Server.AuthZoneManager.ImportRecords(zone, new DnsResourceRecord[]
+            {
+                new DnsResourceRecord(zone, DnsResourceRecordType.FWD, DnsClass.IN, 0, new DnsForwarderRecordData(DnsTransportProtocol.Udp, "192.0.2.68", false, DnsForwarderRecordProxyType.NoProxy, null, 0, null, null, 0))
+            }, false, false, false, DnsResourceRecordType.FWD);
+
+            IReadOnlyList<DnsResourceRecord> forwarders = _dns.Server.AuthZoneManager.GetRecords(zone, zone, DnsResourceRecordType.FWD);
+            Assert.Single(forwarders);
+            Assert.Equal("192.0.2.68", ((DnsForwarderRecordData)forwarders[0].RDATA).Forwarder);
         }
     }
 }

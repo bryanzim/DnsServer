@@ -1997,20 +1997,9 @@ namespace DnsServerCore
                 //import records, if any
                 if (importRecords is not null)
                 {
-                    //delete existing NS/FWD record 
-                    switch (type)
-                    {
-                        case AuthZoneType.Primary:
-                            _dnsWebService._dnsServer.AuthZoneManager.DeleteRecords(zoneInfo.Name, zoneInfo.Name, DnsResourceRecordType.NS);
-                            break;
-
-                        case AuthZoneType.Forwarder:
-                            _dnsWebService._dnsServer.AuthZoneManager.DeleteRecords(zoneInfo.Name, zoneInfo.Name, DnsResourceRecordType.FWD);
-                            break;
-                    }
-
-                    //import records
-                    _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, importRecords, false, false, false);
+                    //Replace the generated apex NS or FWD only after the file is accepted, so a rejected file leaves that record in place.
+                    DnsResourceRecordType generatedApexRecord = type == AuthZoneType.Forwarder ? DnsResourceRecordType.FWD : DnsResourceRecordType.NS;
+                    _dnsWebService._dnsServer.AuthZoneManager.ImportRecords(zoneInfo.Name, importRecords, false, false, false, generatedApexRecord);
 
                     if ((type == AuthZoneType.Primary) && _dnsWebService._clusterManager.ClusterInitialized && _dnsWebService._clusterManager.IsClusterCatalogZone(zoneInfo.CatalogZoneName))
                         _dnsWebService._clusterManager.UpdateClusterRecordsFor(zoneInfo); //the import deletes apex NS and a cluster file is not allowed to contain them

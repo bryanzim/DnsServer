@@ -155,8 +155,19 @@ namespace DnsServerCore.Dns.Zones
             switch (type)
             {
                 case DnsResourceRecordType.CNAME:
-                    if ((!_entries.IsEmpty) && !_entries.ContainsKey(DnsResourceRecordType.CNAME))
-                        throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
+                    foreach (DnsResourceRecordType existingType in _entries.Keys)
+                    {
+                        switch (existingType)
+                        {
+                            case DnsResourceRecordType.CNAME:
+                            case DnsResourceRecordType.RRSIG:
+                            case DnsResourceRecordType.NSEC:
+                                break;
+
+                            default:
+                                throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
+                        }
+                    }
 
                     break;
 
@@ -870,6 +881,22 @@ namespace DnsServerCore.Dns.Zones
             switch (type)
             {
                 case DnsResourceRecordType.CNAME:
+                    foreach (DnsResourceRecordType existingType in _entries.Keys)
+                    {
+                        switch (existingType)
+                        {
+                            case DnsResourceRecordType.CNAME:
+                            case DnsResourceRecordType.RRSIG:
+                            case DnsResourceRecordType.NSEC:
+                                break;
+
+                            default:
+                                throw new InvalidOperationException("Cannot add record: a CNAME record cannot exists with other record types for the same name.");
+                        }
+                    }
+
+                    break;
+
                 case DnsResourceRecordType.APP:
                     if ((!_entries.IsEmpty) && !_entries.ContainsKey(type))
                         throw new InvalidOperationException($"Cannot add record: {type} record already exists for the same name.");

@@ -3698,6 +3698,10 @@ namespace DnsServerCore.Dns.ZoneManagers
 
         void RejectIllegalImport(ApexZone apexZone, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone)
         {
+            bool replacing = overwriteRecords || overwriteZone;
+            bool signedPrimary = (apexZone is PrimaryZone) && (apexZone.DnssecStatus != AuthZoneDnssecStatus.Unsigned);
+            uint expire = apexZone.GetZoneSoaExpire();
+
             foreach (KeyValuePair<string, Dictionary<DnsResourceRecordType, List<DnsResourceRecord>>> zoneEntry in DnsResourceRecord.GroupRecords(records))
             {
                 bool atApex = apexZone.Name.Equals(zoneEntry.Key, StringComparison.OrdinalIgnoreCase);
@@ -3719,7 +3723,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         if (overwriteZone && !ZoneOverwriteKeeps(existingType))
                             continue;
 
-                        if ((overwriteRecords || overwriteZone) && zoneEntry.Value.ContainsKey(existingType))
+                        if (replacing && zoneEntry.Value.ContainsKey(existingType))
                             continue;
 
                         types.Add(existingType);
@@ -3730,10 +3734,120 @@ namespace DnsServerCore.Dns.ZoneManagers
                     types.Add(importedType);
 
                 AuthZone.RejectProhibitedRrsets(zoneEntry.Key, atApex, types);
+
+                foreach (KeyValuePair<DnsResourceRecordType, List<DnsResourceRecord>> rrsetEntry in zoneEntry.Value)
+                {
+                    RejectImportRrset(apexZone, zoneEntry.Key, atApex, rrsetEntry.Key, rrsetEntry.Value, replacing, signedPrimary, expire);
+
+                    if (atApex && (rrsetEntry.Key == DnsResourceRecordType.SOA) && (rrsetEntry.Value[0].RDATA is DnsSOARecordData importedSoa))
+                        expire = importedSoa.Expire;
+                }
             }
         }
 
-        internal void ImportRecords(string zoneName, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone, bool overwriteSoaSerial)
+        static void RejectImportRrset(ApexZone apexZone, string owner, bool atApex, DnsResourceRecordType type, IReadOnlyList<DnsResourceRecord> records, bool replacing, bool signedPrimary, uint expire)
+        {
+            if ((records is null) || (records.Count == 0))
+                throw new DnsServerException("Cannot set records: the record set is empty: " + owner);
+
+            if (signedPrimary)
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.ANAME:
+                    case DnsResourceRecordType.APP:
+                        throw new DnsServerException("The record type is not supported by DNSSEC signed primary zones.");
+
+                    default:
+                        foreach (DnsResourceRecord record in records)
+                        {
+                            if (record.GetAuthGenericRecordInfo().Disabled)
+                                throw new DnsServerException("Cannot set records: disabling records in a signed zones is not supported.");
+                        }
+
+                        break;
+                }
+            }
+
+            if (apexZone is PrimaryZone)
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.FWD:
+                        throw new DnsServerException("The record type is not supported by primary zones.");
+
+                    case DnsResourceRecordType.DNSKEY:
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.NSEC:
+                    case DnsResourceRecordType.NSEC3PARAM:
+                    case DnsResourceRecordType.NSEC3:
+                        throw new InvalidOperationException("Cannot set DNSSEC records.");
+                }
+            }
+            else
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.DS:
+                    case DnsResourceRecordType.DNSKEY:
+                    case DnsResourceRecordType.RRSIG:
+                    case DnsResourceRecordType.NSEC:
+                    case DnsResourceRecordType.NSEC3PARAM:
+                    case DnsResourceRecordType.NSEC3:
+                        throw new InvalidOperationException("Cannot set DNSSEC records.");
+                }
+            }
+
+            if (atApex)
+            {
+                switch (type)
+                {
+                    case DnsResourceRecordType.CNAME:
+                        throw new InvalidOperationException("Cannot set CNAME record at zone apex.");
+
+                    case DnsResourceRecordType.DS:
+                        if (apexZone is PrimaryZone)
+                            throw new InvalidOperationException("Cannot set DS record at zone apex.");
+
+                        break;
+
+                    case DnsResourceRecordType.SOA:
+                        if ((records.Count != 1) || !records[0].Name.Equals(owner, StringComparison.OrdinalIgnoreCase) || (records[0].RDATA is not DnsSOARecordData soa))
+                            throw new InvalidOperationException("Invalid SOA record.");
+
+                        if (records[0].OriginalTtlValue > soa.Expire)
+                            throw new DnsServerException("Cannot set record: TTL cannot be greater than SOA EXPIRE.");
+
+                        if (soa.Retry > soa.Refresh)
+                            throw new DnsServerException("Cannot set record: SOA RETRY cannot be greater than SOA REFRESH.");
+
+                        if (soa.Refresh > soa.Expire)
+                            throw new DnsServerException("Cannot set record: SOA REFRESH cannot be greater than SOA EXPIRE.");
+
+                        return;
+                }
+            }
+            else if (type == DnsResourceRecordType.SOA)
+            {
+                throw new InvalidOperationException("Cannot set SOA record on sub domain.");
+            }
+
+            if (replacing || (type == DnsResourceRecordType.CNAME) || (type == DnsResourceRecordType.DNAME) || (atApex && (type == DnsResourceRecordType.APP)))
+            {
+                if (records[0].OriginalTtlValue > expire)
+                    throw new DnsServerException("Cannot set records: TTL cannot be greater than SOA EXPIRE.");
+            }
+            else
+            {
+                foreach (DnsResourceRecord record in records)
+                {
+                    if (record.OriginalTtlValue > expire)
+                        throw new DnsServerException("Cannot set records: TTL cannot be greater than SOA EXPIRE.");
+                }
+            }
+        }
+
+        internal void ImportRecords(string zoneName, IReadOnlyList<DnsResourceRecord> records, bool overwriteRecords, bool overwriteZone, bool overwriteSoaSerial, DnsResourceRecordType? removeApexRecordType = null)
         {
             _ = _root.FindZone(zoneName, out _, out _, out ApexZone apexZone, out _);
             if ((apexZone is null) || !apexZone.Name.Equals(zoneName, StringComparison.OrdinalIgnoreCase))
@@ -3742,8 +3856,11 @@ namespace DnsServerCore.Dns.ZoneManagers
             if ((apexZone is not PrimaryZone) && (apexZone is not ForwarderZone))
                 throw new DnsServerException("Zone must be a primary or forwarder type: " + apexZone.ToString());
 
-            //Refuse an illegal name before overwrite deletes the zone or any record is committed.
+            //Refuse an illegal name before overwrite deletes the zone, a generated apex record is removed, or any record is committed.
             RejectIllegalImport(apexZone, records, overwriteRecords, overwriteZone);
+
+            if (removeApexRecordType is DnsResourceRecordType apexType)
+                DeleteRecords(apexZone.Name, apexZone.Name, apexType);
 
             if (overwriteZone)
             {
@@ -3765,6 +3882,7 @@ namespace DnsServerCore.Dns.ZoneManagers
                         {
                             case DnsResourceRecordType.CNAME:
                             case DnsResourceRecordType.DNAME:
+                            case DnsResourceRecordType.APP:
                                 apexZone.SetRecords(rrsetEntry.Key, rrsetEntry.Value);
                                 break;
 
