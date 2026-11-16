@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 using Microsoft.AspNetCore.Http;
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -778,6 +779,11 @@ namespace DnsServerCore
 
         public void Write(EndPoint ep, DnsTransportProtocol protocol, DnsDatagram request, DnsDatagram response)
         {
+            Write(ep, protocol, FormatQueryLog(request, response));
+        }
+
+        internal static string FormatQueryLog(DnsDatagram request, DnsDatagram response)
+        {
             DnsQuestionRecord q = null;
 
             if (request.Question.Count > 0)
@@ -835,7 +841,7 @@ namespace DnsServerCore
 
                     answer += "]";
 
-                    if (response.Additional.Count > 0)
+                    if ((q is not null) && (response.Additional.Count > 0))
                     {
                         switch (q.Type)
                         {
@@ -871,9 +877,56 @@ namespace DnsServerCore
                     answer += "; ECS: " + responseECS.Address.ToString() + "/" + responseECS.ScopePrefixLength;
 
                 responseInfo += "; ANSWER: " + answer;
+
+                string extendedErrors = FormatExtendedDnsErrors(response);
+                if (extendedErrors is not null)
+                    responseInfo += "; EDE: " + extendedErrors;
             }
 
-            Write(ep, protocol, requestInfo + responseInfo);
+            return requestInfo + responseInfo;
+        }
+
+        static string FormatExtendedDnsErrors(DnsDatagram response)
+        {
+            List<string> reasons = null;
+
+            void Add(EDnsExtendedDnsErrorOptionData ede)
+            {
+                if (ede is null)
+                    return;
+
+                string text = ede.ExtraText;
+                string reason;
+
+                if (string.IsNullOrEmpty(text))
+                    reason = ede.InfoCode.ToString();
+                else
+                    reason = ede.InfoCode.ToString() + ": " + text.Replace('\r', ' ').Replace('\n', ' ');
+
+                if (reasons is null)
+                    reasons = new List<string>(2);
+                else if (reasons.Contains(reason))
+                    return;
+
+                reasons.Add(reason);
+            }
+
+            if (response.EDNS is not null)
+            {
+                foreach (EDnsOption option in response.EDNS.Options)
+                {
+                    if (option.Code == EDnsOptionCode.EXTENDED_DNS_ERROR)
+                        Add(option.Data as EDnsExtendedDnsErrorOptionData);
+                }
+            }
+
+            foreach (EDnsExtendedDnsErrorOptionData ede in response.DnsClientExtendedErrors)
+                Add(ede);
+
+            if (reasons is null)
+                return null;
+
+            return string.Join(", ", reasons);
         }
 
         public void Write(EndPoint ep, DnsTransportProtocol protocol, string message)

@@ -3024,14 +3024,14 @@ namespace DnsServerCore.Dns
                     _log.Write(remoteEP, protocol, ex);
 
                     //a failed filter must not return the records it was supposed to inspect
-                    return new DnsDatagram(request.Identifier, true, request.OPCODE, false, false, request.RecursionDesired, response.RecursionAvailable, false, request.CheckingDisabled, DnsResponseCode.ServerFailure, request.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None) { Tag = response.Tag };
+                    return ServerFailure(request, response.RecursionAvailable, ex, response.Tag);
                 }
             }
 
             if (request.EDNS is null)
             {
                 if (response.EDNS is not null)
-                    response = response.CloneWithoutEDns();
+                    response = WithoutEdnsKeepingFailureReason(response);
 
                 return response;
             }
@@ -3128,7 +3128,7 @@ namespace DnsServerCore.Dns
                     }
                     catch (TimeoutException ex)
                     {
-                        DnsDatagram response = new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, request.CheckingDisabled, DnsResponseCode.ServerFailure, request.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None) { Tag = DnsServerResponseType.Authoritative };
+                        DnsDatagram response = ServerFailure(request, isRecursionAllowed, ex, DnsServerResponseType.Authoritative);
 
                         _log.Write(remoteEP, protocol, request, response);
                         _log.Write(remoteEP, protocol, ex);
@@ -3139,7 +3139,7 @@ namespace DnsServerCore.Dns
                     {
                         _log.Write(remoteEP, protocol, ex);
 
-                        return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, isRecursionAllowed, false, request.CheckingDisabled, DnsResponseCode.ServerFailure, request.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None) { Tag = DnsServerResponseType.Authoritative };
+                        return ServerFailure(request, isRecursionAllowed, ex, DnsServerResponseType.Authoritative);
                     }
 
                 case DnsOpcode.Notify:
@@ -5578,7 +5578,12 @@ namespace DnsServerCore.Dns
 
             //no response available; respond with ServerFailure
             EDnsOption[] options = [new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, new EDnsExtendedDnsErrorOptionData(EDnsExtendedDnsErrorCode.Other, "Waiting for resolver. Please try again."))];
-            return new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, false, request.CheckingDisabled, DnsResponseCode.ServerFailure, request.Question, null, null, null, request.EDNS is null ? ushort.MinValue : _udpPayloadSize, dnssecValidation ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None, options);
+            DnsDatagram waiting = new DnsDatagram(request.Identifier, true, DnsOpcode.StandardQuery, false, false, request.RecursionDesired, true, false, request.CheckingDisabled, DnsResponseCode.ServerFailure, request.Question, null, null, null, request.EDNS is null ? (ushort)512 : _udpPayloadSize, dnssecValidation ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None, options);
+
+            if (request.EDNS is null)
+                return WithoutEdnsKeepingFailureReason(waiting);
+
+            return waiting;
         }
 
         private async Task RecursiveResolverBackgroundTaskAsync(DnsQuestionRecord question, NetworkAddress eDnsClientSubnet, bool advancedForwardingClientSubnet, IReadOnlyList<DnsResourceRecord> conditionalForwarders, bool dnssecValidation, bool cachePrefetchOperation, bool skipDnsAppAuthoritativeRequestHandlers, TaskCompletionSource<RecursiveResolveResponse> taskCompletionSource, DnsClient.ResolverContext context)
@@ -5760,7 +5765,7 @@ namespace DnsServerCore.Dns
                 }
                 else
                 {
-                    IReadOnlyList<EDnsOption> options = [new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, new EDnsExtendedDnsErrorOptionData(EDnsExtendedDnsErrorCode.Other, "Resolver exception"))];
+                    IReadOnlyList<EDnsOption> options = [new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, new EDnsExtendedDnsErrorOptionData(EDnsExtendedDnsErrorCode.Other, QueryFailureReason(ex)))];
                     DnsDatagram failureResponse = new DnsDatagram(0, true, DnsOpcode.StandardQuery, false, false, true, true, false, dnssecValidation, DnsResponseCode.ServerFailure, [question], null, null, null, _udpPayloadSize, dnssecValidation ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None, options);
 
                     taskCompletionSource.SetResult(new RecursiveResolveResponse(failureResponse, failureResponse));
@@ -6420,7 +6425,104 @@ namespace DnsServerCore.Dns
             if (metadata is not null)
                 finalResponse.SetMetadata(metadata.NameServer, metadata.RoundTripTime);
 
+            // The OPT record is removed for a client that did not send EDNS. Keep the failure text for the query log.
+            // A Blocked code stays off this copy so the response type is chosen the same way as before.
+            if (request.EDNS is null)
+                finalResponse = CopyFailureReasons(finalResponse, response);
+
             return finalResponse;
+        }
+
+        static DnsDatagram CopyFailureReasons(DnsDatagram destination, DnsDatagram source)
+        {
+            List<EDnsOption> options = null;
+
+            void Add(EDnsExtendedDnsErrorOptionData ede)
+            {
+                if ((ede is null) || (ede.InfoCode == EDnsExtendedDnsErrorCode.Blocked))
+                    return;
+
+                if (options is null)
+                    options = new List<EDnsOption>(2);
+
+                options.Add(new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, ede));
+            }
+
+            if (source.EDNS is not null)
+            {
+                foreach (EDnsOption option in source.EDNS.Options)
+                {
+                    if (option.Code == EDnsOptionCode.EXTENDED_DNS_ERROR)
+                        Add(option.Data as EDnsExtendedDnsErrorOptionData);
+                }
+            }
+
+            foreach (EDnsExtendedDnsErrorOptionData ede in source.DnsClientExtendedErrors)
+                Add(ede);
+
+            if (options is null)
+                return destination;
+
+            DnsDatagram carrier = new DnsDatagram(destination.Identifier, true, destination.OPCODE, false, false, destination.RecursionDesired, destination.RecursionAvailable, false, destination.CheckingDisabled, destination.RCODE, destination.Question, null, null, null, 512, EDnsHeaderFlags.None, options);
+            return destination.CloneAndAddDnsClientExtendedErrorsFrom(carrier);
+        }
+
+        DnsDatagram ServerFailure(DnsDatagram request, bool recursionAvailable, Exception ex, object tag)
+        {
+            EDnsHeaderFlags flags = _dnssecValidation && request.DnssecOk ? EDnsHeaderFlags.DNSSEC_OK : EDnsHeaderFlags.None;
+            ushort payload = request.EDNS is null ? (ushort)512 : _udpPayloadSize;
+            IReadOnlyList<EDnsOption> options = [new EDnsOption(EDnsOptionCode.EXTENDED_DNS_ERROR, new EDnsExtendedDnsErrorOptionData(EDnsExtendedDnsErrorCode.Other, QueryFailureReason(ex)))];
+            DnsDatagram failure = new DnsDatagram(request.Identifier, true, request.OPCODE, false, false, request.RecursionDesired, recursionAvailable, false, request.CheckingDisabled, DnsResponseCode.ServerFailure, request.Question, null, null, null, payload, flags, options) { Tag = tag };
+
+            if (request.EDNS is null)
+                return WithoutEdnsKeepingFailureReason(failure);
+
+            return failure;
+        }
+
+        internal static DnsDatagram WithoutEdnsKeepingFailureReason(DnsDatagram response)
+        {
+            if (response.EDNS is null)
+                return response;
+
+            DnsDatagram stripped = response.CloneWithoutEDns();
+
+            if (!HasExtendedDnsError(response))
+                return stripped;
+
+            return stripped.CloneAndAddDnsClientExtendedErrorsFrom(response);
+        }
+
+        static bool HasExtendedDnsError(DnsDatagram response)
+        {
+            if (response.DnsClientExtendedErrors.Count > 0)
+                return true;
+
+            if (response.EDNS is null)
+                return false;
+
+            foreach (EDnsOption option in response.EDNS.Options)
+            {
+                if (option.Code == EDnsOptionCode.EXTENDED_DNS_ERROR)
+                    return true;
+            }
+
+            return false;
+        }
+
+        static string QueryFailureReason(Exception ex)
+        {
+            string reason = ex.Message;
+
+            if (string.IsNullOrEmpty(reason))
+                reason = ex.GetType().Name;
+
+            reason = reason.Replace('\r', ' ').Replace('\n', ' ');
+
+            if (reason.Length > 200)
+                reason = reason.Substring(0, 197) + "...";
+
+            return reason;
         }
 
         private static string GetResolverQueryKey(DnsQuestionRecord question, NetworkAddress eDnsClientSubnet)
